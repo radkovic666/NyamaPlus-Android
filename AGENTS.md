@@ -4,9 +4,11 @@
 
 - `main` is the stable production branch.
 - Do not make experimental changes directly to `main`.
-- `test` is the development and experimental branch.
-- All new fixes, patches and features should be based on `test`.
-- Changes are promoted from `test` to `main` only after manual testing.
+- `test` is the development and experimental base branch.
+- All Codex tasks must be STARTED from the GitHub `test` branch.
+- Codex Cloud may create an internal branch such as `work`; this is expected.
+- Do not attempt to switch to `test` inside a Codex Cloud sandbox if the workspace was already created from `test`.
+- Never base experimental work on `main`.
 
 ## Development rules
 
