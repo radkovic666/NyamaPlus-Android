@@ -1,0 +1,19 @@
+Nyama+ v1.0.1
+================
+
+Changes from v1.0.0
+- Launcher now opens Live TV directly instead of HomeActivity.
+- Existing Nyama TV v3.0.12 startup/playlist/EPG logic remains the TV foundation.
+- Last watched channel is restored through the existing Config last-channel key.
+- Added Nyama+ left navigation rail: TV / Movies / Series / Settings.
+- Live TV has a small NY+ left-edge handle; MENU/SETTINGS opens the navigation rail.
+- Movies and Series use the same left navigation and a redesigned native dark catalog.
+- Player 1 removed from the user flow; movie/series playback always opens Player 2.
+- Player 2 WebView blocks new windows and external main-frame redirects so popup/ad pages cannot replace the Nyama+ player.
+- BACK first exits HTML5 fullscreen, then WebView history/visible close controls, and requires a second BACK before leaving the player when no overlay/history was handled.
+- Catalog filters entries whose poster URL is unavailable; posterless titles are not shown.
+- No LibVLC / FFmpeg added; project remains lightweight.
+
+Important limitation
+- Pukanki currently exposes an embedded player page rather than a direct authorized media URL + subtitle tracks.
+  Nyama+ therefore cannot provide a native Media3 Bulgarian-subtitle switch in this version. Subtitle controls, when available, remain those exposed by Player 2.

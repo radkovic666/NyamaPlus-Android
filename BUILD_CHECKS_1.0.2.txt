@@ -1,0 +1,15 @@
+Nyama+ v1.0.5 static checks
+
+- Android XML/resources parse successfully.
+- Bulgarian/English resource names match; no duplicate strings.
+- versionCode 6 / versionName 1.0.2.
+- No LibVLC/FFmpeg dependency added.
+- No BuildConfig.VERSION_NAME dependency.
+- Fresh-start playlist refresh from NyamaTV 3.0.12 remains present.
+- EPG repository retained from v1.0.1 / working current-time patch.
+- No live-TV appNavOverlay/appNavHandle/showAppNavigation remains.
+- Channel browser contains app:movies, app:series and app:settings destinations.
+- Movie player no longer references R.string.player_2 and is borderless/fullscreen.
+- Catalog search uses 320 ms debounced live search and concurrent request executor.
+- javac parser-style scan found no syntax diagnostics; unresolved Android SDK symbols are expected in this environment.
+- Full Android build not performed because Android SDK is unavailable in this environment.

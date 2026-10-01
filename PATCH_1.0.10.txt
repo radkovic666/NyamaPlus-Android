@@ -1,0 +1,26 @@
+Nyama+ v1.0.10 / versionCode 12
+
+Scope: bug fixes only, based directly on v1.0.9 Code 11.
+
+1) Movies/Series default catalogue
+- Keeps posterless titles hidden.
+- Replaces the Code 11 full-catalog TV HEAD burst with lower-concurrency ranged GET poster verification.
+- Retries transient poster-host failures rather than silently treating them as missing posters.
+- Does not cache suspicious empty filtered catalogues.
+- TV count and paging are still derived from the actual poster-valid visible catalogue.
+- Search uses the same corrected filtering path.
+
+2) Title detail duplication
+- TV no longer renders the same metadata in both the summary row and detailed block.
+- Duplicate IMDb rating source is suppressed when the IMDb rating is already shown.
+- Watch and Favorite behavior is unchanged.
+- Phone detail behavior is unchanged.
+
+3) Android TV Player 2 remote
+- UP/DOWN/LEFT/RIGHT perform spatial navigation among the provider player's focusable controls when accessible.
+- OK/DPAD_CENTER activates the focused control.
+- Cross-origin/inaccessible player surfaces fall back to normal native WebView key delivery.
+- BACK first gives the player UI ESCAPE/dismiss behavior and cannot close playback on the first press.
+- No KEYCODE_TAB simulation. No mouse or hover synthesis. No protected View dispatch methods.
+
+No intended changes to live TV playback, EPG, playlist loading, authentication/device binding, settings, mobile controls or backend endpoints.

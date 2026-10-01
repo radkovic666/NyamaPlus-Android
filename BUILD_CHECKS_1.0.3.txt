@@ -1,0 +1,5 @@
+Nyama+ v1.0.5 static checks
+- versionCode 6 / versionName 1.0.3.
+- ChannelBrowserOverlay updated to show AppSidebar + categories + channels + guide detail.
+- BACK from plain TV playback now opens the browser sidebar menu instead of exit confirmation.
+- No LibVLC / FFmpeg additions.

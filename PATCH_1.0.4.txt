@@ -1,0 +1,8 @@
+Nyama+ v1.0.5
+
+Changes:
+- Improved portrait-phone sidebar/menu visibility so TV / Movies / Series / Settings fit better on mobile.
+- Compact AppSidebar mode on portrait phones: reduced padding, smaller item heights, hidden extra chrome.
+- TV browser portrait layout rebalanced to reserve more space for the top-level menu.
+- Movie/series detail screen redesigned with better buttons.
+- On phone detail screens, the title now appears underneath the poster instead of above it.

@@ -1,0 +1,28 @@
+Nyama+ v1.0.10 / versionCode 12 validation
+
+Scope
+- Base: v1.0.9 Code 11 only.
+- Runtime code changes are limited to Movies/Series catalogue poster filtering/counting,
+  Android TV title-detail duplicate metadata, Android TV Movie/Series player remote handling,
+  and version-identifying User-Agent strings.
+- Live TV, EPG, playlist loading, authentication/device binding, settings and mobile controls
+  were not changed by this patch.
+
+Checks completed in this packaging environment
+- app/build.gradle: versionName 1.0.10, versionCode 12.
+- Resource XML + AndroidManifest.xml: parsed successfully.
+- Injected Android-TV playback/subtitle JavaScript: Node syntax check passed.
+- Injected Android-TV remote-focus JavaScript: Node syntax check passed.
+- Java sources: javac parsing produced no Java syntax-error signatures. The diagnostics are
+  unresolved Android/AndroidX packages because this environment does not contain the Android SDK.
+- Changed Movie/Series files contain no KEYCODE_TAB simulation, dispatchHoverEvent,
+  MotionEvent/MouseEvent synthesis or dispatchTouchEvent bridge.
+- TV remote implementation uses public View.dispatchKeyEvent only; no protected View hover API.
+- BACK key-repeat is ignored so holding BACK cannot be interpreted as the second exit press.
+
+Build limitation
+- A full Android Gradle compile could not be run here because the supplied Code 11 project does
+  not contain gradle/wrapper/gradle-wrapper.jar and this execution environment has no Android SDK
+  or Gradle installation. This is an environment/project-wrapper limitation, not a successful
+  full-build claim. Build the ZIP in Android Studio/your normal Android SDK environment for the
+  final device compile and real Android-TV remote test.

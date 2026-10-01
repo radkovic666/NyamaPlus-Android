@@ -1,0 +1,5 @@
+Nyama+ v1.0.9 / Code 10 static checks
+- versionCode 10 / versionName 1.0.9.
+- TV fold stage clamped to 0/1 only.
+- RIGHT-to-TAB uses public View/WebView.dispatchKeyEvent(KeyEvent); no protected hover dispatch APIs.
+- No LibVLC or FFmpeg dependencies added.

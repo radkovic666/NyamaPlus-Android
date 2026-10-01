@@ -1,0 +1,19 @@
+Nyama+ v1.0.9 - Code 11
+
+Scoped changes only:
+- Android TV: refreshed TV / Movies / Series / Settings navigation icons.
+- Phone portrait only: redesigned the live-TV browser geometry so the app menu, categories,
+  channel list and EPG information no longer overlap on narrow screens. No phone playback,
+  backend or catalog behavior was changed.
+- Android TV Movies/Series: exact visible title count and paging after posterless titles are
+  removed. Posterless entries remain hidden.
+- Android TV Movies/Series cards: poster + title + year only.
+- Android TV title detail: complete catalog metadata is moved into the title window, including
+  year, runtime, rating, readable vote count, genres and series season/episode information.
+- Android TV Movie/Series player: removed the Nyama+ internal player-control bar and removed all
+  TAB-key emulation. DPAD/OK are delivered to the embedded player directly. TV playback helper
+  requests autoplay and prefers Bulgarian native/select/custom subtitle controls whenever the embedded player
+  exposes them to Android System WebView.
+
+No playlist, EPG, live-TV playback, authentication, update, admin/backend URL, or other unrelated
+logic was intentionally changed.

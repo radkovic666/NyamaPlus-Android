@@ -1,0 +1,6 @@
+Nyama+ v1.0.7 static checks
+- versionCode 8 / versionName 1.0.6.
+- AppSidebar has explicit UP/DOWN/CENTER remote handling.
+- ChannelBrowserOverlay progressive fold stages 0..3 use a 150ms ValueAnimator.
+- Folding is disabled in compact/phone mode.
+- No LibVLC / FFmpeg dependency added.

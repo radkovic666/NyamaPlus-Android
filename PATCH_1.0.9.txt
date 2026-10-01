@@ -1,0 +1,9 @@
+Nyama+ v1.0.9 / Code 10
+
+Small follow-up patch based directly on the uploaded v1.0.8 Code 9 source.
+
+Changes only:
+- TV channel browser now has exactly two fold states: expanded and collapsed.
+- Movie/series vote counts are compact and readable (for example 330K, 12.5K, 2.1M).
+- On Android TV in Player 2, DPAD RIGHT now sends a real KEYCODE_TAB down/up event to the WebView so the provider's native controls can be traversed the same way as a keyboard Tab key.
+- No other playback/catalog/menu behavior intentionally changed.

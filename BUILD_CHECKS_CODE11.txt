@@ -1,0 +1,15 @@
+Nyama+ v1.0.9 / Code 11 validation
+
+- versionCode 11 / versionName 1.0.9.
+- Mobile scope: only the portrait live-TV browser/menu layout was redesigned.
+- Android TV scope: navigation icons, poster-aware Movies/Series counts and paging,
+  simplified catalog cards, expanded title metadata, and Movie/Series player remote behavior.
+- No KEYCODE_TAB / TAB simulation remains in the project Java sources.
+- Android TV Movie/Series player no longer creates the Nyama+ internal control bar.
+- TV remote DPAD/OK events are sent directly to the embedded player surface.
+- TV player assistance requests autoplay and prefers Bulgarian native/select/custom subtitle controls.
+- Resource XML parsed successfully and string resources contain no duplicate keys.
+- Injected TV playback JavaScript passed Node syntax validation.
+- Java sources passed javac parsing with no syntax-error signatures. A full Android Gradle build
+  could not be run in this environment because the supplied project has no gradle-wrapper.jar and
+  this environment has no Android SDK/Gradle installation.

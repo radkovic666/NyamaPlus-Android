@@ -1,0 +1,10 @@
+Nyama+ v1.0.5
+
+Changes:
+- Live TV continues playing behind Movies, Series, title details, Settings and Admin Settings.
+- Those screens use a translucent dark surface so the live channel remains subtly visible underneath.
+- Opening an on-demand movie/series pauses live TV; leaving the player back to Nyama+ resumes the same live channel.
+- Movie/series catalog toolbar simplified to instant search + a single filter icon.
+- Filter dialog combines genres, Favorites-only and sort order.
+- Removed separate Search / Genres / Favorites / Sort controls from the catalog toolbar.
+- Preserved the 320 ms debounced instant search.

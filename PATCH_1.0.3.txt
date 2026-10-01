@@ -1,0 +1,8 @@
+Nyama+ v1.0.5
+
+Changes:
+- Live TV browser now uses a dedicated left sidebar similar to the catalog screens.
+- TV / Movies / Series / Settings are no longer mixed into the TV category list.
+- BACK while watching TV opens the opaque browser menu with live TV still playing behind it.
+- MENU/SETTINGS opens the same menu focused on the sidebar.
+- Existing TV behaviour, playback logic and movie player behaviour remain unchanged.

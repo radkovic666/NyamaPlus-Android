@@ -1,0 +1,12 @@
+Nyama+ v1.0.8 / versionCode 9
+
+Android TV patch
+- Movies and Series cards now reserve a real information area below each poster and show the available catalog metadata instead of clipping it.
+- WATCH / FAVORITE buttons on the title page are slightly smaller on TV.
+- Player 2 remote input is intercepted before WebView at dispatchKeyEvent level.
+- When Player 2 controls are visible, LEFT/UP and RIGHT/DOWN move through controls and OK activates the focused control.
+- When controls are hidden, OK/UP/DOWN opens the native Player 2 control strip; LEFT/RIGHT still seeks -10/+10 seconds.
+- The player gives the largest video/iframe surface focus after loading and after closing the native controls.
+- Sidebar TV/Movies/Series/Settings icons use TV vector drawables sized to fit the collapsed rail, fixing clipped icons.
+- Movies and Series search has an X inside the field to clear the query.
+- These UI/navigation changes are Android TV-only; phone/mobile catalog/detail/player behavior is retained.

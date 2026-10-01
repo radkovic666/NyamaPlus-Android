@@ -1,0 +1,12 @@
+Nyama+ 1.0.12 / versionCode 14
+
+Scope: Android TV Movies/Series catalogue paging + Player 2 remote interaction only.
+
+1. Catalogue pointer/long-hold scrolling removed.
+2. Movies/Series remain paginated at 30 titles per page.
+3. Count shows the complete catalogue/search-result total rather than current page size.
+4. Next/Previous changes focus poster #1 on the newly displayed page.
+5. Player 2 uses a TV-only on-player cursor and real WebView pointer events for provider controls.
+6. No external Nyama+ player control menu was added on TV.
+7. BACK requires two distinct physical presses; duplicate callbacks from one press are ignored.
+8. Live TV, EPG, auth, playlists, settings, mobile behavior, favorites unchanged.

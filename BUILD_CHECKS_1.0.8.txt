@@ -1,0 +1,9 @@
+Nyama+ v1.0.8 static checks
+- versionCode 9 / versionName 1.0.8.
+- No LibVLC or FFmpeg dependencies added.
+- Existing Live TV / EPG / playlist logic left untouched.
+- Android TV-only changes are guarded by Config.isPhoneMode() where behavior differs.
+- Player 2 remote interception uses dispatchKeyEvent so WebView cannot consume DPAD/OK first.
+- Catalog clear-X exists only in TV layout branch.
+- Expanded catalog card metadata exists only in TV adapter branch.
+- Smaller WATCH/FAVORITE sizing exists only in TV detail branch.

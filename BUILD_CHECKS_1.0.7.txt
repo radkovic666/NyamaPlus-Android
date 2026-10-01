@@ -1,0 +1,7 @@
+Nyama+ v1.0.7 static checks
+- versionCode 8 / versionName 1.0.7.
+- No LibVLC or FFmpeg dependencies added.
+- Existing TV/EPG/fresh-playlist logic preserved.
+- Catalog state is stored separately for Movies and Series.
+- Posters use FIT_CENTER.
+- Subtitle/quality actions use the controls/text tracks exposed by the embedded provider; availability remains provider-dependent.

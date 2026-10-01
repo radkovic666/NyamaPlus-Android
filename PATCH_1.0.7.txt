@@ -1,0 +1,11 @@
+Nyama+ v1.0.7
+
+Changes:
+- Movies/Series use more of the TV screen with 30-item pages, at least four columns on TV and smaller cards.
+- Posters use FIT_CENTER so poster headers/footers are not cropped.
+- Catalog sidebar starts collapsed to icons and expands/collapses smoothly with left/right TV navigation.
+- Removed Pukanki.Fun branding from Movies/Series headers.
+- Movies and Series remember their own search text, page, sorting, favorites-only filter, genres and selected position after switching to TV or another section.
+- Filter dialog redesigned with separate Favorites, Sort and Genres sections.
+- Watch/Favorite buttons have stronger focus highlights.
+- Movie player adds remote controls for play/pause, -10/+10 seconds, subtitles, quality/settings bridge, fullscreen and media keys.

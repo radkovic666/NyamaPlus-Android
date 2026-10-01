@@ -1,0 +1,41 @@
+Nyama+ v1.0.11 / versionCode 13
+
+Base
+- Built directly from Nyama+ v1.0.10 / Code 12.
+- Runtime changes are limited to Android TV Movies/Series catalogue loading/search and the requested catalogue pointer/long-press scrolling behavior.
+- Live TV, channel playback, EPG, authentication, playlists, settings, favorites, mobile behavior and Movie/Series player controls are not changed.
+
+1) Faster Movies/Series first paint
+- Android TV no longer waits for a full-catalogue poster validation sweep before showing anything.
+- First paint fetches/validates only a small page so the grid becomes usable quickly.
+- Full catalogue JSON is fetched separately on background executors.
+- Poster validation/enrichment continues in the background and does not hold the loading indicator open.
+
+2) In-memory catalogue cache
+- Added a 10-minute raw parsed catalogue cache separate from the existing poster-valid catalogue cache.
+- TV -> Movies -> Series -> Movies can reuse already parsed catalogue data instead of rebuilding it.
+- Cached raw catalogue data avoids a repeated catalogue network request on reopen.
+
+3) Real-time TV search
+- Search no longer reloads the Movies/Series API for each character.
+- Once the raw catalogue is available, title/original-title matching happens locally in memory.
+- Search does not show the Loading indicator while filtering.
+- Before the full poster-valid cache finishes warming, only the local matched subset is poster-checked; the entire catalogue is not rebuilt for each query.
+- After poster-valid cache warmup, search is a pure in-memory filter.
+
+4) Poster rule
+- Posterless items remain excluded from the validated TV catalogue.
+- First-page/search poster checks are bounded and do not treat a timeout as proof that every item has a poster.
+- The full exact poster-valid catalogue continues warming in the background and is cached for reuse.
+
+5) TV catalogue pointer + long-press scrolling
+- Movies/Series TV grid now has a visible pointer marker that follows the normally selected poster.
+- Normal DPAD navigation remains unchanged.
+- Holding DPAD UP/DOWN after normal navigation begins scrolls the existing GridView directly using native smooth scrolling.
+- No catalogue parsing, network load, search, sorting or adapter rebuild is performed per scroll step.
+- Pointer behavior is TV Movies/Series only; it is not introduced into Live TV or mobile mode.
+- OK, BACK and the Movies/Series player behavior are untouched.
+
+6) Large-catalogue display
+- Once the validated TV catalogue is available, it is kept in the existing recycled GridView rather than being rebuilt server-page by server-page.
+- GridView recycling means poster views are still created only as needed while long-press scrolling can move continuously through the catalogue.

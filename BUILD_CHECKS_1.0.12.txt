@@ -1,0 +1,19 @@
+Nyama+ 1.0.12 / versionCode 14 build checks
+
+PASS: Android resource XML parsing: 13 XML files parsed successfully.
+PASS: Java source parser stage: javac reported no syntax-pattern errors across all app Java sources.
+      (Symbol resolution cannot complete because this sandbox has no Android SDK/android.jar.)
+PASS: Catalogue pointer and Code 13 long-hold smooth-scroll hook removed.
+PASS: TV catalogue PAGE_SIZE remains 30 and full validated catalogue is sliced into real pages.
+PASS: 3926-title pagination simulation => 131 pages, final page 26 titles.
+PASS: Page change explicitly selects/focuses item 0 on Android TV.
+PASS: No KEYCODE_TAB simulation remains.
+PASS: No protected dispatchHoverEvent call exists.
+PASS: Player 2 TV control uses public View.dispatchTouchEvent / dispatchGenericMotionEvent only.
+PASS: BACK duplicate-event guard present; first distinct BACK arms exit, second distinct BACK closes.
+PASS: versionName=1.0.12 and versionCode=14.
+
+Gradle assembleDebug was attempted. The supplied project still does not contain gradle/wrapper/gradle-wrapper.jar.
+Its gradlew helper attempted to download the official Gradle 9.6.0 wrapper, but this sandbox has no outbound DNS:
+  curl: (6) Could not resolve host: raw.githubusercontent.com
+Therefore a full Android SDK/Gradle binary build cannot be truthfully claimed in this environment.

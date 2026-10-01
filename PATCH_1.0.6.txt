@@ -1,0 +1,10 @@
+Nyama+ v1.0.7
+
+Changes:
+- Android TV sidebar no longer gets stuck on TV.
+- UP/DOWN explicitly selects TV / Movies / Series / Settings.
+- CENTER/ENTER opens the selected sidebar destination.
+- Added fast 150ms progressive folding animation for the Live TV menu.
+- Sidebar fully expanded at the leftmost level; categories/channels fold progressively as focus moves right.
+- Moving left unfolds the previous menu level.
+- Mobile layout/navigation left unchanged.

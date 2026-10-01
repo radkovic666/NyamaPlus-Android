@@ -1,0 +1,26 @@
+Nyama+ v1.0.11 / versionCode 13 validation
+
+Scope verification
+- Base compared against v1.0.10 Code 12 ZIP.
+- Runtime source differences are limited to:
+  * app/build.gradle
+  * CatalogActivity.java
+  * PukankiApi.java
+- Mobile fetchCatalog(), genre loading and title-info API methods are byte-for-byte unchanged.
+- No changes were made to Live TV, EPG, authentication, playlists, settings, favorites or MoviePlayerActivity.
+
+Checks completed in this packaging environment
+- app/build.gradle: versionName 1.0.11, versionCode 13.
+- All 35 Java source files parsed successfully with the JDK compiler parser: 0 Java syntax errors.
+- All AndroidManifest/resource XML files parsed successfully: 0 XML errors.
+- Changed files contain no KEYCODE_TAB, hover/mouse synthesis, dispatchHoverEvent or dispatchTouchEvent additions.
+- Long-press catalogue scrolling uses the public native GridView/AbsListView smoothScrollBy API.
+- Search uses local in-memory filtering once raw/validated catalogue data is present and does not call loadPage() on TV text changes.
+- Phone mode keeps the existing 320 ms search path and fetchCatalog() behavior.
+
+Full Gradle build attempt
+- ./gradlew :app:assembleDebug was attempted.
+- The supplied project still lacks gradle/wrapper/gradle-wrapper.jar. Its custom gradlew attempts to download the official wrapper when missing.
+- This execution environment has no outbound DNS/network access, so the wrapper download failed before Gradle/Android compilation could begin.
+- The environment also does not contain an Android SDK/Gradle installation.
+- Therefore this file does NOT claim a successful full Android Gradle build. The source/XML checks above passed, but a final Android Studio/SDK assemble is still required on a normal build machine.

@@ -1,0 +1,8 @@
+Nyama+ v1.0.5 static checks
+- versionCode 6 / versionName 1.0.5.
+- Catalog / TitleDetail / Settings / Admin Settings use AppTheme.Translucent.
+- Live TV is not stopped when entering Movies/Series/Settings.
+- On-demand player explicitly pauses live TV and resumes it on intentional return.
+- Catalog toolbar contains search field + filter icon only.
+- Filter contains genres, Favorites-only and ordering.
+- No LibVLC / FFmpeg additions.

@@ -1,0 +1,11 @@
+Nyama+ v1.0.5
+
+- Removed the floating NY+ navigation handle and separate live-TV navigation overlay.
+- DOWN / OK opens the standard channel browser; Movies, Series and Settings are destinations in its category column.
+- MENU / SETTINGS also opens the same category-focused channel browser.
+- Movies/series playback opens directly in a borderless fullscreen internal WebView using the working streamimdb.ru source; no Player 2 label is shown.
+- Preserved popup/redirect blocking and BACK handling from v1.0.1.
+- Catalog search is now debounced live search and allows newer queries to overtake older network requests.
+- Catalog page size reduced to 24 and poster availability checks are more parallel/shorter for faster results while still filtering missing posters.
+- Preserved NyamaTV 3.0.12 live-TV, fresh-start playlist refresh and EPG-current-time fixes.
+- No LibVLC / FFmpeg dependency.

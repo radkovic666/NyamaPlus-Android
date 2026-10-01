@@ -1,0 +1,18 @@
+Nyama+ 1.0.0 static checks
+
+- Base source: Nyama TV 3.0.12.
+- applicationId: fun.nyama.plus
+- versionName: 1.0.0
+- versionCode: 1
+- LibVLC dependency absent.
+- Android XML resources parse successfully.
+- No duplicate string resources.
+- All new R.string references checked against default resources.
+- New Java files passed javac parser-level scan (Android classes unresolved as expected without SDK; no syntax-style errors found).
+- Existing modified Java files passed the same parser-level scan.
+- ChannelBrowserOverlay long-UP initialization safety preserved.
+- MainActivity EPG current-event selection fix preserved.
+- MainActivity fresh-start playlist refresh logic preserved.
+- MainActivity TV channel wrap navigation preserved.
+- Pukanki API endpoints mirror current FamiFlix/Pukanki server code.
+- No full assembleDebug was possible in the generation environment because Android SDK / wrapper network bootstrap was unavailable.
