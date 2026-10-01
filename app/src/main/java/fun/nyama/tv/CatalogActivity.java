@@ -212,7 +212,8 @@ public final class CatalogActivity extends Activity {
                 });
         sidebarExpanded = phone;
         if (!phone) sidebar.setExpanded(false, false);
-        shell.addView(sidebar, new LinearLayout.LayoutParams(dp(phone ? 112 : SIDEBAR_COLLAPSED_DP), -1));
+        int sidebarWidthDp = phone ? sidebar.recommendedMobileLandscapeWidthDp() : SIDEBAR_COLLAPSED_DP;
+        shell.addView(sidebar, new LinearLayout.LayoutParams(dp(sidebarWidthDp), -1));
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -346,7 +347,7 @@ public final class CatalogActivity extends Activity {
         root.addView(statusRow, new LinearLayout.LayoutParams(-1, dp(28)));
 
         grid = new GridView(this);
-        catalogColumns = phone ? calculateColumns(145, 2, 112) : calculateColumns(132, 4, SIDEBAR_COLLAPSED_DP);
+        catalogColumns = phone ? calculateColumns(145, 2, sidebarWidthDp) : calculateColumns(132, 4, SIDEBAR_COLLAPSED_DP);
         if (!phone) catalogColumns = Math.min(6, Math.max(4, catalogColumns));
         if (phone && getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE) catalogColumns = Math.max(catalogColumns, 3);
         grid.setNumColumns(catalogColumns);
