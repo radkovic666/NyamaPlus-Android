@@ -32,15 +32,12 @@ import java.util.List;
 /**
  * Internal Movies/Series player wrapper.
  *
- * Android TV uses VidAPI/vaplayer directly in Android System WebView so the provider's own player
- * controls remain available. Phone mode deliberately keeps the previous Nyama+ behavior.
+ * Both Android TV and phone mode use the same StreamIMDB embed. TV input is intercepted before
+ * the WebView so remote mappings remain deterministic while phone mode keeps its touch behavior.
  */
 public final class MoviePlayerActivity extends Activity {
-    private static final String LEGACY_PLAYER_HOST = "streamimdb.ru";
-    private static final String LEGACY_PLAYER_BASE = "https://streamimdb.ru/embed/";
-    // Android TV Movies/Series now load VidAPI's player directly. Mobile keeps the old provider.
-    private static final String TV_PLAYER_HOST = "vaplayer.ru";
-    private static final String TV_PLAYER_BASE = "https://vaplayer.ru/embed/";
+    private static final String PLAYER_HOST = "streamimdb.ru";
+    private static final String PLAYER_BASE = "https://streamimdb.ru/embed/";
     private static final long BACK_CONFIRM_MS = 2500L;
     private static final long BACK_DUPLICATE_GUARD_MS = 250L;
     private static final long CONTROLS_HIDE_MS = 5000L;
@@ -184,7 +181,7 @@ public final class MoviePlayerActivity extends Activity {
         s.setLoadWithOverviewMode(true);
         s.setUseWideViewPort(true);
         String ua = s.getUserAgentString();
-        s.setUserAgentString((ua == null ? "" : ua) + " NyamaPlus/1.0.16");
+        s.setUserAgentString((ua == null ? "" : ua) + " NyamaPlus/1.0.17");
         if (android.os.Build.VERSION.SDK_INT >= 21) {
             s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         }
@@ -257,8 +254,7 @@ public final class MoviePlayerActivity extends Activity {
         String scheme = safe(uri.getScheme()).toLowerCase(java.util.Locale.ROOT);
         if (!("https".equals(scheme) || "http".equals(scheme))) return false;
         String host = safe(uri.getHost()).toLowerCase(java.util.Locale.ROOT);
-        String allowedHost = tvMode ? TV_PLAYER_HOST : LEGACY_PLAYER_HOST;
-        return allowedHost.equals(host) || host.endsWith("." + allowedHost);
+        return PLAYER_HOST.equals(host) || host.endsWith("." + PLAYER_HOST);
     }
 
     private void hardenEmbedPage() {
@@ -321,16 +317,8 @@ public final class MoviePlayerActivity extends Activity {
 
     private void loadPlayer() {
         String path = "series".equals(type) ? "tv" : "movie";
-        if (tvMode) {
-            // VidAPI accepts IMDB/TMDB IDs. Keep its own UI/controls and ask for Bulgarian
-            // subtitles by default. /tv/{id} preserves the provider's own episode selector.
-            String url = TV_PLAYER_BASE + path + "/" + Uri.encode(id)
-                    + "?autoplay=1&controls=true&ds_lang=bg";
-            webView.loadUrl(url);
-        } else {
-            // Do not alter working phone/mobile playback in this patch.
-            webView.loadUrl(LEGACY_PLAYER_BASE + path + "/" + id);
-        }
+        // /tv/{id} retains StreamIMDB's provider-owned season and episode selector.
+        webView.loadUrl(PLAYER_BASE + path + "/" + Uri.encode(id));
     }
 
     private void seekBy(int seconds) {
@@ -443,7 +431,7 @@ public final class MoviePlayerActivity extends Activity {
      * video (including same-origin nested frames); otherwise the provider WebView receives the
      * native media/DPAD key as fallback.
      */
-    private void toggleTvPlayback() {
+    private void toggleTvPlayback(int fallbackKeyCode) {
         if (!tvMode || webView == null) return;
         String js = "(function(){try{" +
                 "function docs(d,a){a.push(d);var f=d.querySelectorAll('iframe');for(var i=0;i<f.length;i++){try{if(f[i].contentDocument)docs(f[i].contentDocument,a);}catch(e){}}return a;}" +
@@ -452,10 +440,9 @@ public final class MoviePlayerActivity extends Activity {
                 "}catch(e){return '0';}})();";
         webView.evaluateJavascript(js, result -> {
             if (result == null || !result.contains("1")) {
-                // The provider may keep its <video> inside a cross-origin frame. LEFT/RIGHT already
-                // work because their real DPAD keys are forwarded to that frame; do the same for OK.
-                // This is intentionally not TAB navigation and creates no cursor/focus overlay.
-                sendNativeKeyToPlayer(KeyEvent.KEYCODE_DPAD_CENTER);
+                // A cross-origin frame hides its <video> from injected JavaScript. Focus the actual
+                // player frame, then deliver the same physical OK/ENTER key that Android reported.
+                sendNativeKeyToPlayer(fallbackKeyCode);
             }
         });
     }
@@ -481,9 +468,22 @@ public final class MoviePlayerActivity extends Activity {
         if (target == null) return;
         target.setFocusable(true);
         target.requestFocus();
-        long now = android.os.SystemClock.uptimeMillis();
-        target.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0));
-        target.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0));
+        Runnable dispatch = () -> {
+            long now = android.os.SystemClock.uptimeMillis();
+            target.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0));
+            target.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0));
+        };
+        if (target != webView) {
+            dispatch.run();
+            return;
+        }
+        // Calling focus() on a cross-origin iframe element is permitted even though reading its
+        // document is not. This makes the provider, rather than an unrelated outer-page control,
+        // receive the real Android DPAD/ENTER fallback event.
+        String focusFrame = "(function(){try{var fs=document.querySelectorAll('iframe'),best=null,area=0;" +
+                "for(var i=0;i<fs.length;i++){var r=fs[i].getBoundingClientRect(),a=Math.max(0,r.width)*Math.max(0,r.height);if(a>area){area=a;best=fs[i];}}" +
+                "if(best){best.focus();return '1';}if(document.body)document.body.focus();return '0';}catch(e){return '0';}})();";
+        webView.evaluateJavascript(focusFrame, ignored -> dispatch.run());
     }
 
     private void clearBackArm() {
@@ -535,9 +535,9 @@ public final class MoviePlayerActivity extends Activity {
             case KeyEvent.KEYCODE_DPAD_CENTER:
             case KeyEvent.KEYCODE_ENTER:
             case KeyEvent.KEYCODE_NUMPAD_ENTER:
-                if (repeat == 0) toggleTvPlayback(); return true;
+                if (repeat == 0) toggleTvPlayback(keyCode); return true;
             case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
-                if (repeat == 0) toggleTvPlayback(); return true;
+                if (repeat == 0) toggleTvPlayback(keyCode); return true;
             case KeyEvent.KEYCODE_MEDIA_PLAY:
                 sendNativeKeyToPlayer(KeyEvent.KEYCODE_MEDIA_PLAY); return true;
             case KeyEvent.KEYCODE_MEDIA_PAUSE:
