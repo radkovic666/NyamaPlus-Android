@@ -1,3 +1,8 @@
+## 1.0.18 / versionCode 20
+- Android TV Movies/Series: OK, Enter, numpad Enter, and media play/pause now try direct HTML5 playback control and fall back to one complete native Space key press, matching StreamIMDB's verified shortcut in normal and fullscreen playback.
+- Added temporary `NyamaPlayer` key-routing diagnostics, including key/action/repeat, focus/fullscreen state, and the selected playback strategy.
+- Kept LEFT/RIGHT seeking at -10/+10 seconds, with native arrow delivery when a cross-origin player prevents direct HTML5 access.
+
 ## 1.0.16 / versionCode 18
 - Android TV Movies/Series only: remote OK now falls back to forwarding the real DPAD_CENTER key into the embedded player when its HTML5 video is cross-origin/inaccessible, so OK can toggle play/pause just as LEFT/RIGHT already reach the provider.
 - Removed the obsolete TV provider focus-navigation bridge; there is no TAB-key simulation or TAB-navigation code in the TV player path.
