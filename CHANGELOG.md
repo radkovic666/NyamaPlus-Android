@@ -1,3 +1,8 @@
+## 1.0.19 / versionCode 21
+- Mobile landscape Movies/Series: widened the navigation sidebar responsively so localized Television, Movies, Series, and Settings labels remain fully visible.
+- Mobile landscape navigation now reuses the Android TV vector icons while preserving the existing active-item accent highlight.
+- Portrait and Android TV navigation layouts remain unchanged.
+
 ## 1.0.18 / versionCode 20
 - Android TV Movies/Series: OK, Enter, numpad Enter, and media play/pause now try direct HTML5 playback control and fall back to one complete native Space key press, matching StreamIMDB's verified shortcut in normal and fullscreen playback.
 - Added temporary `NyamaPlayer` key-routing diagnostics, including key/action/repeat, focus/fullscreen state, and the selected playback strategy.
