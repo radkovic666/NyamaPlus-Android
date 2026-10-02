@@ -6,6 +6,7 @@ import android.animation.ValueAnimator;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -40,6 +41,7 @@ public final class AppSidebar extends LinearLayout {
     private final String activeSection;
     private final boolean compactPhonePortrait;
     private final boolean horizontalPhoneTabs;
+    private final boolean mobileLandscape;
 
     private final List<LinearLayout> menuItems = new ArrayList<>();
     private final List<TextView> menuLabels = new ArrayList<>();
@@ -67,6 +69,8 @@ public final class AppSidebar extends LinearLayout {
         this.compactPhonePortrait = config.isPhoneMode()
                 && getResources().getConfiguration().orientation == Configuration.ORIENTATION_PORTRAIT;
         this.horizontalPhoneTabs = compactPhonePortrait && phonePortraitTabs;
+        this.mobileLandscape = config.isPhoneMode()
+                && getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
 
         // Only the live-TV phone browser opts into the horizontal tab presentation.
         setOrientation(horizontalPhoneTabs ? HORIZONTAL : VERTICAL);
@@ -208,6 +212,25 @@ public final class AppSidebar extends LinearLayout {
 
     public boolean isExpanded() { return expanded; }
 
+    /** Width needed by the mobile-landscape rail without truncating its longest localized label. */
+    public int recommendedMobileLandscapeWidthDp() {
+        if (!mobileLandscape) return 112;
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+        paint.setTextSize(UiTheme.sp(context, 13) * getResources().getDisplayMetrics().scaledDensity);
+        float widest = 0f;
+        String[] labels = {
+                context.getString(R.string.home_tv),
+                context.getString(R.string.home_movies),
+                context.getString(R.string.home_series),
+                context.getString(R.string.settings_title)
+        };
+        for (String label : labels) widest = Math.max(widest, paint.measureText(mobileLandscapeLabel(label)));
+        int labelDp = (int) Math.ceil(widest / getResources().getDisplayMetrics().density);
+        // Outer/item padding + the TV vector icon + the gap before the label.
+        return Math.max(148, labelDp + 20 + 14 + 32 + 5);
+    }
+
     private LinearLayout addItem(String phoneIconText, int tvIconRes, String label, String section, Runnable action) {
         LinearLayout item = new LinearLayout(context);
         item.setOrientation(horizontalPhoneTabs ? VERTICAL : HORIZONTAL);
@@ -220,7 +243,7 @@ public final class AppSidebar extends LinearLayout {
         item.setClickable(true);
 
         final View icon;
-        if (config.isPhoneMode()) {
+        if (config.isPhoneMode() && !mobileLandscape) {
             TextView textIcon = new TextView(context);
             textIcon.setText(phoneIconText);
             textIcon.setTextColor(0xFFD8DEE6);
@@ -242,7 +265,7 @@ public final class AppSidebar extends LinearLayout {
         }
 
         TextView text = new TextView(context);
-        text.setText(label);
+        text.setText(mobileLandscapeLabel(label));
         text.setTextColor(0xFFD8DEE6);
         text.setTextSize(UiTheme.sp(context, horizontalPhoneTabs ? 10 : (compactPhonePortrait ? 12 : (config.isPhoneMode() ? 13 : 15))));
         text.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
@@ -283,6 +306,12 @@ public final class AppSidebar extends LinearLayout {
         }
         addView(item, lp);
         return item;
+    }
+
+    private String mobileLandscapeLabel(String label) {
+        return mobileLandscape
+                ? label.toUpperCase(getResources().getConfiguration().getLocales().get(0))
+                : label;
     }
 
     private void applyBackground(LinearLayout item, View icon, TextView label, boolean active, boolean focused) {

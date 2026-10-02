@@ -70,6 +70,7 @@ public final class EpgRepository {
             return;
         } catch (Exception e) {
             primaryError = e;
+            NetworkDiagnostics.logFailure(context, "primary EPG download/parse", e);
             deleteQuietly(staging);
         }
 
@@ -84,6 +85,7 @@ public final class EpgRepository {
                 config.setEpgLastRefresh(System.currentTimeMillis());
                 return;
             } catch (Exception fallbackError) {
+                NetworkDiagnostics.logFailure(context, "fallback EPG download/parse", fallbackError);
                 deleteQuietly(staging);
                 if (primaryError != null) primaryError.addSuppressed(fallbackError);
             }
