@@ -13,6 +13,7 @@ public final class EpgRefreshWorker extends Worker {
 
     @NonNull @Override public Result doWork() {
         Config config = new Config(getApplicationContext());
+        if (ActivationStore.managed(getApplicationContext())) return Result.success();
         long age = System.currentTimeMillis() - config.epgLastRefresh();
         if (config.epgLastRefresh() > 0L && age < Config.EPG_REFRESH_MS) return Result.success();
         try {

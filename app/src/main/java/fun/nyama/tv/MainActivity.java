@@ -156,6 +156,9 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         activeInstance = new WeakReference<>(this);
         config = new Config(this);
         AutoStartManager.cancelDelayedLaunches(this);
+        suppressNextUserLeaveHint = true;
+        if (!ActivationAccess.require(this)) return;
+        suppressNextUserLeaveHint = false;
         if (!config.isPhoneMode()) setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
         compactUi = config.isPhoneMode();
         accent = UiTheme.accent(this);
@@ -170,6 +173,9 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
 
     @Override protected void onResume() {
         super.onResume();
+        if (isFinishing()) return;
+        suppressNextUserLeaveHint = true;
+        if (!ActivationAccess.require(this)) return;
         resumed = true;
         suppressNextUserLeaveHint = false;
         immersive();
@@ -566,6 +572,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     }
 
     private void playChannel(int index, boolean refreshed) {
+        if (!ActivationAccess.playbackAllowed(this)) return;
         cancelExitPrompt();
         if (channels.isEmpty()) return;
         if (index < 0) index = channels.size() - 1;
@@ -758,6 +765,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     public static void resumePlaybackAfterOnDemand() {
         MainActivity activity = activeInstance.get();
         if (activity == null || activity.isFinishing()) return;
+        if (!ActivationAccess.playbackAllowed(activity)) return;
         activity.runOnUiThread(() -> {
             if (activity.player != null && activity.player.getMediaItemCount() > 0) {
                 activity.player.setPlayWhenReady(true);

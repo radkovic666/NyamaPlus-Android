@@ -10,8 +10,8 @@ android {
         applicationId 'fun.nyama.plus'
         minSdk 24
         targetSdk 36
-        versionCode 22
-        versionName '1.0.20'
+        versionCode 23
+        versionName '1.0.21'
     }
 
     buildTypes {
@@ -25,9 +25,16 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+    testOptions {
+        unitTests.includeAndroidResources = true
+    }
 }
 
 dependencies {
+    implementation 'com.google.zxing:core:3.5.3'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
+    testImplementation 'org.robolectric:robolectric:4.16.1'
     implementation 'androidx.core:core:1.17.0'
     def media3_version = '1.11.1'
     implementation "androidx.media3:media3-exoplayer:$media3_version"

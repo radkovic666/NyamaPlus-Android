@@ -114,6 +114,7 @@ public final class CatalogActivity extends Activity {
         config = new Config(this);
         favorites = new MovieFavorites(this);
         section = "series".equals(getIntent().getStringExtra(EXTRA_SECTION)) ? "series" : "movies";
+        if (!ActivationAccess.require(this)) return;
         if (state != null) restoreState(state);
         else restorePersistentState();
         setContentView(buildUi());
@@ -123,12 +124,13 @@ public final class CatalogActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        if (isFinishing() || !ActivationAccess.require(this)) return;
         if (firstResume) { firstResume = false; return; }
         if (favoritesOnly) loadPage();
     }
 
     @Override protected void onPause() {
-        savePersistentState();
+        if (grid != null) savePersistentState();
         super.onPause();
     }
 

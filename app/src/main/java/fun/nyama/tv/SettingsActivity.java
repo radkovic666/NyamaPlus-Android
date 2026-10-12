@@ -46,6 +46,8 @@ public final class SettingsActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        suppressNextUserLeaveHint = true;
+        if (isFinishing() || !ActivationAccess.require(this)) return;
         suppressNextUserLeaveHint = false;
         updateDataUsage();
         if (updateManager != null) updateManager.onResume();
@@ -293,6 +295,10 @@ public final class SettingsActivity extends Activity {
     }
 
     private void askAdminPin() {
+        if (ActivationStore.managed(this) && !config.hasPin()) {
+            if (ActivationAccess.require(this)) createAdminPin();
+            return;
+        }
         EditText input = new EditText(this);
         input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
         input.setHint(getString(R.string.admin_pin));
@@ -322,6 +328,43 @@ public final class SettingsActivity extends Activity {
         }));
         dialog.show();
         input.requestFocus();
+    }
+
+    /** Explicit owner setup after activation; never ship a shared PIN or expose the admin form. */
+    private void createAdminPin() {
+        boolean english = Config.LANG_EN.equals(config.language());
+        LinearLayout fields = new LinearLayout(this);
+        fields.setOrientation(LinearLayout.VERTICAL);
+        fields.setPadding(dp(20), dp(12), dp(20), 0);
+        EditText first = new EditText(this);
+        EditText confirmation = new EditText(this);
+        for (EditText field : new EditText[]{first, confirmation}) {
+            field.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+            field.setSingleLine(true);
+            field.setSaveEnabled(false);
+            fields.addView(field, new LinearLayout.LayoutParams(-1, dp(60)));
+        }
+        first.setHint(english ? "New administrator PIN (at least 6 digits)" : "Нов администраторски PIN (поне 6 цифри)");
+        confirmation.setHint(english ? "Confirm PIN" : "Потвърдете PIN");
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(english ? "Protect administrator settings" : "Защита на администраторските настройки")
+                .setMessage(english ? "The device owner chooses this PIN once. Keep it private." : "Собственикът на устройството задава този PIN веднъж. Пазете го в тайна.")
+                .setView(fields).setPositiveButton(english ? "Save PIN" : "Запази PIN", null)
+                .setNegativeButton(getString(R.string.cancel), null).create();
+        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String pin = first.getText().toString();
+            if (!pin.matches("[0-9]{6,}" ) || !pin.equals(confirmation.getText().toString())) {
+                confirmation.setError(english ? "Enter matching PINs with at least 6 digits" : "Въведете еднакви PIN кодове с поне 6 цифри");
+                return;
+            }
+            if (!ActivationAccess.playbackAllowed(this)) { dialog.dismiss(); ActivationAccess.require(this); return; }
+            if (!config.hasPin()) config.setPin(pin);
+            first.setText(""); confirmation.setText("");
+            dialog.dismiss();
+            askAdminPin(); // The protected form still requires an explicit PIN verification.
+        }));
+        dialog.show();
+        first.requestFocus();
     }
 
     private String accountUsername() {
