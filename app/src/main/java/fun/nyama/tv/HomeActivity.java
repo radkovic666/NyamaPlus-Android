@@ -27,6 +27,7 @@ public final class HomeActivity extends Activity {
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         config = new Config(this);
+        if (!ActivationAccess.require(this)) return;
         homeSignature = signature();
         if (!config.isPhoneMode()) setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
         setContentView(buildUi());
@@ -34,6 +35,7 @@ public final class HomeActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        if (isFinishing() || !ActivationAccess.require(this)) return;
         if (!config.isConfigured() && !setupOpen) {
             setupOpen = true;
             startActivity(new Intent(this, AdminSettingsActivity.class));

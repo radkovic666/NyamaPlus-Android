@@ -41,12 +41,18 @@ public final class TitleDetailActivity extends Activity {
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         config = new Config(this);
+        if (!ActivationAccess.require(this)) return;
         favorites = new MovieFavorites(this);
         id = safe(getIntent().getStringExtra("id"));
         section = "series".equals(getIntent().getStringExtra("type")) ? "series" : "movies";
         title = safe(getIntent().getStringExtra("title"));
         setContentView(buildUi());
         loadInfo();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        if (!isFinishing()) ActivationAccess.require(this);
     }
 
     @Override protected void onDestroy() {

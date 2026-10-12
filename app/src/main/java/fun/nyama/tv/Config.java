@@ -91,7 +91,12 @@ public final class Config {
         editor.apply();
     }
 
-    public boolean isConfigured() { return !playlistUrl().isEmpty() && hasPin(); }
+    // Provisioned playback does not require opening the administrator form. Settings still
+    // require a separately chosen PIN; managed mode is never itself an entitlement check.
+    public boolean isConfigured() { return !playlistUrl().isEmpty() && (hasPin() || ActivationStore.managed(context)); }
+    public void setActivationAccount(String username, String clientNumber) {
+        prefs.edit().putString("activation_username", username).putString("activation_client_number", clientNumber).apply();
+    }
     public boolean hasPin() { return !safe(prefs.getString(K_PIN_HASH, "")).isEmpty(); }
 
     public void setPin(String pin) { prefs.edit().putString(K_PIN_HASH, sha256(pin)).apply(); }

@@ -73,6 +73,7 @@ public final class MoviePlayerActivity extends Activity {
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         config = new Config(this);
+        if (!ActivationAccess.require(this)) return;
         tvMode = !config.isPhoneMode();
         id = safe(getIntent().getStringExtra("id"));
         type = "series".equals(getIntent().getStringExtra("type")) ? "series" : "movies";
@@ -773,6 +774,7 @@ public final class MoviePlayerActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        if (isFinishing() || !ActivationAccess.require(this)) return;
         immersive();
         if (webView != null) {
             webView.onResume();

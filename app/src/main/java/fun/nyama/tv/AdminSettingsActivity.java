@@ -39,6 +39,10 @@ public final class AdminSettingsActivity extends Activity {
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         config = new Config(this);
+        if (ActivationStore.managed(this) && (!config.hasPin() || !ActivationAccess.require(this))) {
+            finish();
+            return;
+        }
         firstTime = !config.isConfigured();
         selectedDeviceMode = config.deviceMode();
         if (!firstTime && !getIntent().getBooleanExtra(EXTRA_AUTHORIZED, false)) {
@@ -49,6 +53,15 @@ public final class AdminSettingsActivity extends Activity {
         setContentView(buildUi());
     }
 
+
+    @Override protected void onResume() {
+        super.onResume();
+        if (ActivationStore.managed(this) && !isFinishing()) {
+            suppressNextUserLeaveHint = true;
+            if (!ActivationAccess.require(this)) return;
+            suppressNextUserLeaveHint = false;
+        }
+    }
 
     @Override protected void onUserLeaveHint() {
         super.onUserLeaveHint();

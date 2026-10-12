@@ -13,6 +13,7 @@ public final class PlaylistRefreshWorker extends Worker {
 
     @NonNull @Override public Result doWork() {
         Config config = new Config(getApplicationContext());
+        if (ActivationStore.managed(getApplicationContext())) return Result.success();
         if (config.playlistUrl().isEmpty()) return Result.success();
         long age = System.currentTimeMillis() - config.playlistLastRefresh();
         // Avoid a duplicate network hit when the foreground 30-minute timer just refreshed.

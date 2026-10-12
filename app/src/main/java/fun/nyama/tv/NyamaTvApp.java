@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 public final class NyamaTvApp extends Application {
     @Override public void onCreate() {
         super.onCreate();
+        new ActivationAccess(this);
         DataUsageTracker.checkpoint(this);
         // Migrate/synchronize the autostart preference into device-protected storage and
         // explicitly enable/disable the boot receiver after upgrades.
