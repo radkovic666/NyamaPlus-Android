@@ -56,6 +56,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @OptIn(markerClass = UnstableApi.class)
 public final class MainActivity extends Activity implements ChannelBrowserOverlay.Listener, EpgGuideOverlay.Listener {
     public static final String EXTRA_EMBEDDED_IN_NYAMA_PLUS = "nyama_plus_embedded";
+    public static final String EXTRA_RETURN_FROM_ON_DEMAND = "return_from_on_demand";
+    private boolean returnFromOnDemand;
+    private String loadedPlaylistUrl = "";
     private static WeakReference<MainActivity> activeInstance = new WeakReference<>(null);
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newFixedThreadPool(2);
@@ -155,6 +158,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         super.onCreate(state);
         activeInstance = new WeakReference<>(this);
         config = new Config(this);
+        returnFromOnDemand = getIntent().getBooleanExtra(EXTRA_RETURN_FROM_ON_DEMAND, false);
         AutoStartManager.cancelDelayedLaunches(this);
         suppressNextUserLeaveHint = true;
         if (!ActivationAccess.require(this)) return;
@@ -190,14 +194,30 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
             startActivity(new Intent(this, AdminSettingsActivity.class));
             return;
         }
-        boolean forceStartupPlaylistRefresh = startupPlaylistRefreshPending;
+        boolean returning = returnFromOnDemand;
+        returnFromOnDemand = false;
+        boolean forceStartupPlaylistRefresh = startupPlaylistRefreshPending && !returning;
         startupPlaylistRefreshPending = false;
-        loadAndRefresh(forceStartupPlaylistRefresh);
+        if (!returning || !resumeLoadedLiveChannel()) loadAndRefresh(forceStartupPlaylistRefresh);
         startForegroundRefreshLoop();
         main.removeCallbacks(updateClock);
         main.post(updateClock);
         main.removeCallbacks(usageCheckpoint);
         main.post(usageCheckpoint);
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        returnFromOnDemand = intent.getBooleanExtra(EXTRA_RETURN_FROM_ON_DEMAND, false);
+    }
+
+    private boolean resumeLoadedLiveChannel() {
+        if (!ActivationAccess.playbackAllowed(this) || player == null || player.getMediaItemCount() == 0
+                || !loadedPlaylistUrl.equals(config.playlistUrl())) return false;
+        if (player.getPlaybackState() == Player.STATE_IDLE) player.prepare();
+        player.setPlayWhenReady(true);
+        return true;
     }
 
     @Override protected void onUserLeaveHint() {
@@ -573,6 +593,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
 
     private void playChannel(int index, boolean refreshed) {
         if (!ActivationAccess.playbackAllowed(this)) return;
+        loadedPlaylistUrl = config.playlistUrl();
         cancelExitPrompt();
         if (channels.isEmpty()) return;
         if (index < 0) index = channels.size() - 1;

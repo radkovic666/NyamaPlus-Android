@@ -40,10 +40,8 @@ public final class ActivationActivity extends Activity {
     private Future<?> pairingRequest;
     private boolean visible, pairingBusy, pairingError;
     private int pairingGeneration;
-    private long pairingRetryAt;
     private String pairingStatus = "";
     private String pairingErrorCode = "server_unavailable";
-    private final Runnable enablePairRetry = this::enablePairRetry;
     private final Runnable poll = this::pollPairing;
     private final Runnable expirePairing = () -> pairingFailure(new ActivationApi.Failure("pairing_expired", 0));
     private ActivationStore store;
@@ -51,11 +49,12 @@ public final class ActivationActivity extends Activity {
     private LinearLayout root;
     private TextView message;
     private EditText input;
-    private Button resend;
+    private Button resend, sendCode, verifyCode;
+    private int cooldownMessageAction = -1;
     private ProgressBar progress;
     private ActivationResponse lastResponse;
     private String email = "", challenge = "", screen = "welcome", payment = "";
-    private long resendAt, challengeExpiresAt;
+    private long challengeExpiresAt;
     private boolean busy, destroyed;
     private int requestGeneration;
     private Runnable retry = this::checkAuthorization;
@@ -69,7 +68,11 @@ public final class ActivationActivity extends Activity {
         if (!config.isPhoneMode()) setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         // No OTP/challenge/billing/token data is persisted into an Activity saved-state Bundle.
-        if (ActivationStore.managed(this)) checkAuthorization(); else welcome();
+        ActivationResponse renewal = ActivationAccess.takePendingRenewal();
+        if (renewal != null) apply(renewal);
+        else if (ActivationStore.managed(this)) checkAuthorization();
+        else if (state != null && ("email".equals(state.getString("activation_screen")) || "code".equals(state.getString("activation_screen")))) emailScreen();
+        else welcome();
     }
 
     private String tr(String bg, String en) { return Config.LANG_EN.equals(config.language()) ? en : bg; }
@@ -92,7 +95,8 @@ public final class ActivationActivity extends Activity {
         progress.setVisibility(View.GONE);
         root.addView(progress, new LinearLayout.LayoutParams(dp(40), dp(40)));
         input = null;
-        resend = null;
+        resend = sendCode = verifyCode = null;
+        cooldownMessageAction = -1;
     }
 
     private TextView text(String value, int size) {
@@ -210,7 +214,7 @@ public final class ActivationActivity extends Activity {
 
     private void startPairing() {
         if (!visible || destroyed || !"welcome".equals(screen) || pairingBusy || pairingError) return;
-        if (SystemClock.elapsedRealtime() < pairingRetryAt) {
+        if (ActivationCooldowns.remaining(ActivationCooldowns.PAIRING, SystemClock.elapsedRealtime()) > 0L) {
             pairingError = true;
             pairingErrorCode = "rate_limited";
             renderPairingError();
@@ -284,11 +288,14 @@ public final class ActivationActivity extends Activity {
                     result.run();
                 });
             } catch (Exception failure) {
+                long observedAt = SystemClock.elapsedRealtime();
+                if (failure instanceof ActivationApi.Failure) ActivationCooldowns.observe(ActivationCooldowns.PAIRING,
+                        ((ActivationApi.Failure) failure).retryAfter, observedAt, "rate_limited".equals(((ActivationApi.Failure) failure).code));
                 main.post(() -> {
                     if (!acceptPairing(generation)) return;
                     pairingBusy = false;
                     pairingRequest = null;
-                    pairingFailure(failure);
+                    pairingFailure(failure, observedAt);
                 });
             }
         });
@@ -298,40 +305,35 @@ public final class ActivationActivity extends Activity {
         return !destroyed && visible && "welcome".equals(screen) && generation == pairingGeneration;
     }
 
-    private void enablePairRetry() {
-        if (!destroyed && visible && pairingError && resend != null) resend.setEnabled(true);
-    }
-
     private void schedulePoll(long delay) {
         main.removeCallbacks(poll);
         main.removeCallbacks(expirePairing);
-        main.removeCallbacks(enablePairRetry);
         if (pairing == null || !visible || pairingError) return;
         long remaining = pairing.expiresAt - SystemClock.elapsedRealtime();
         if (remaining <= 0) { expirePairing.run(); return; }
         main.postDelayed(expirePairing, remaining);
-        main.postDelayed(poll, Math.max(delay, pairingRetryAt - SystemClock.elapsedRealtime()));
+        main.postDelayed(poll, Math.max(delay, ActivationCooldowns.remaining(ActivationCooldowns.PAIRING, SystemClock.elapsedRealtime()) * 1000L));
     }
 
     private void stopPairing() {
         pairingGeneration++;
         main.removeCallbacks(poll);
         main.removeCallbacks(expirePairing);
-        main.removeCallbacks(enablePairRetry);
         if (pairingApi != null) { pairingApi.cancel(); pairingApi = null; }
         if (pairingRequest != null) { pairingRequest.cancel(true); pairingRequest = null; }
         pairingBusy = false;
     }
 
-    private void pairingFailure(Exception failure) {
+    private void pairingFailure(Exception failure) { pairingFailure(failure, SystemClock.elapsedRealtime()); }
+
+    private void pairingFailure(Exception failure, long observedAt) {
         stopPairing();
         pairingError = true;
         String code = failure instanceof ActivationApi.Failure ? ((ActivationApi.Failure) failure).code
                 : failure instanceof java.io.IOException ? "network_unavailable" : "server_unavailable";
         int wait = failure instanceof ActivationApi.Failure ? ((ActivationApi.Failure) failure).retryAfter : 0;
         pairingErrorCode = code;
-        pairingRetryAt = Math.max(pairingRetryAt, SystemClock.elapsedRealtime()
-                + Math.max(wait, "rate_limited".equals(code) ? 60 : 3) * 1000L);
+        ActivationCooldowns.observe(ActivationCooldowns.PAIRING, wait, observedAt, "rate_limited".equals(code));
         boolean invalid = "pairing_expired".equals(code) || "pairing_invalid".equals(code)
                 || "activation_invalid".equals(code) || "device_limit_reached".equals(code)
                 || "inactive_account".equals(code);
@@ -347,16 +349,16 @@ public final class ActivationActivity extends Activity {
         boolean refresh = "pairing_expired".equals(code) || "pairing_invalid".equals(code);
         Button retryPair = button(refresh ? tr("Генерирай нов QR код", "Generate a new QR code")
                 : tr("Опитайте отново", "Try again"), () -> {
-            if (SystemClock.elapsedRealtime() < pairingRetryAt) return;
+            if (ActivationCooldowns.remaining(ActivationCooldowns.PAIRING, SystemClock.elapsedRealtime()) > 0L) return;
             pairingError = false;
             if (pairing != null && SystemClock.elapsedRealtime() >= pairing.expiresAt) pairing = null;
             renderPairing();
             startPairing();
         });
         resend = retryPair;
-        retryPair.setEnabled(SystemClock.elapsedRealtime() >= pairingRetryAt);
-        main.postDelayed(enablePairRetry,
-                Math.max(1, pairingRetryAt - SystemClock.elapsedRealtime()));
+        if ("rate_limited".equals(code) || ActivationCooldowns.rateLimited(ActivationCooldowns.PAIRING, SystemClock.elapsedRealtime()))
+            cooldownMessageAction = ActivationCooldowns.PAIRING;
+        tickCooldown();
         if (pairing != null) main.postDelayed(expirePairing, Math.max(1, pairing.expiresAt - SystemClock.elapsedRealtime()));
     }
 
@@ -367,61 +369,98 @@ public final class ActivationActivity extends Activity {
         layout(tr("Активиране на устройството", "Activate this device"));
         field(tr("Вашият имейл адрес", "Your email address"), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS, 254)
                 .setText(email);
-        button(tr("Изпрати код", "Send code"), () -> {
+        sendCode = button(tr("Изпрати код", "Send code"), () -> {
             email = input.getText().toString().trim();
             if (!android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()) { message.setText(error("invalid_input")); return; }
             requestCode();
         });
         button(tr("Назад", "Back"), this::welcome);
         input.requestFocus();
+        restoreCooldownMessage();
+        tickCooldown();
     }
 
     private void codeScreen() {
         screen = "code";
         layout(tr("Въведете шестцифрения код, изпратен на вашия имейл.", "Enter the six-digit code sent to your email."));
         field(tr("Шестцифрен код", "Six-digit code"), InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD, 6);
-        button(tr("Потвърди", "Verify"), this::verify);
+        verifyCode = button(tr("Потвърди", "Verify"), this::verify);
         resend = button(tr("Изпрати отново", "Resend code"), this::requestCode);
         button(tr("Назад", "Back"), this::emailScreen);
         input.requestFocus();
+        restoreCooldownMessage();
         tickCooldown();
     }
 
     private final Runnable cooldown = this::tickCooldown;
+    private void restoreCooldownMessage() {
+        long now = SystemClock.elapsedRealtime();
+        if ("code".equals(screen) && ActivationCooldowns.rateLimited(ActivationCooldowns.VERIFY, now))
+            cooldownMessageAction = ActivationCooldowns.VERIFY;
+        else if (ActivationCooldowns.rateLimited(ActivationCooldowns.EMAIL, now))
+            cooldownMessageAction = ActivationCooldowns.EMAIL;
+    }
+
+    private String rateLimitMessage(long seconds) {
+        if (seconds <= 0L) return tr("Твърде много заявки. Можете да опитате отново.", "Too many requests. You can try again.");
+        return tr("Твърде много заявки. Опитайте отново след ", "Too many requests. Try again in ")
+                + ActivationCooldowns.format(seconds) + ".";
+    }
+
     private void tickCooldown() {
         main.removeCallbacks(cooldown);
-        if (destroyed || resend == null) return;
-        long seconds = Math.max(0, (resendAt - SystemClock.elapsedRealtime() + 999) / 1000);
-        resend.setEnabled(!busy && seconds == 0);
-        resend.setText(tr("Изпрати отново", "Resend code") + (seconds > 0 ? " (" + seconds + ")" : ""));
-        if (seconds > 0) main.postDelayed(cooldown, 1000);
+        if (destroyed) return;
+        long now = SystemClock.elapsedRealtime();
+        long seconds = 0L, nextTick = 0L;
+        if ("welcome".equals(screen) && pairingError) {
+            seconds = ActivationCooldowns.remaining(ActivationCooldowns.PAIRING, now);
+            nextTick = ActivationCooldowns.nextTickDelay(ActivationCooldowns.PAIRING, now);
+            if (resend != null) resend.setEnabled(!pairingBusy && seconds == 0L);
+        } else if ("email".equals(screen) || "code".equals(screen)) {
+            long emailWait = ActivationCooldowns.remaining(ActivationCooldowns.EMAIL, now);
+            long verifyWait = ActivationCooldowns.remaining(ActivationCooldowns.VERIFY, now);
+            if (sendCode != null) sendCode.setEnabled(!busy && emailWait == 0L);
+            if (resend != null) {
+                resend.setEnabled(!busy && emailWait == 0L);
+                resend.setText(tr("Изпрати отново", "Resend code") + (emailWait > 0L ? " (" + ActivationCooldowns.format(emailWait) + ")" : ""));
+            }
+            if (verifyCode != null) verifyCode.setEnabled(!busy && verifyWait == 0L);
+            seconds = Math.max(emailWait, verifyWait);
+            long emailTick = ActivationCooldowns.nextTickDelay(ActivationCooldowns.EMAIL, now);
+            long verifyTick = ActivationCooldowns.nextTickDelay(ActivationCooldowns.VERIFY, now);
+            nextTick = emailTick == 0L ? verifyTick : verifyTick == 0L ? emailTick : Math.min(emailTick, verifyTick);
+        }
+        if (!busy && cooldownMessageAction >= 0)
+            message.setText(rateLimitMessage(ActivationCooldowns.remaining(cooldownMessageAction, now)));
+        // Rebuilding the UI must not shift second boundaries or postpone enabling at zero.
+        if (seconds > 0L && visible) main.postDelayed(cooldown, Math.max(1L, nextTick));
     }
 
     private void requestCode() {
-        if (SystemClock.elapsedRealtime() < resendAt) {
-            message.setText(tr("Изчакайте, преди да поискате нов код.", "Wait before requesting another code.")); return;
+        if (ActivationCooldowns.remaining(ActivationCooldowns.EMAIL, SystemClock.elapsedRealtime()) > 0L) {
+            tickCooldown(); return;
         }
         retry = this::requestCode;
-        // A timed-out response may still have delivered an email; avoid immediately sending another.
-        resendAt = SystemClock.elapsedRealtime() + 60000L;
-        run(() -> {
+        run(ActivationCooldowns.EMAIL, () -> {
             JSONObject response = controller().requestCode(email);
             String nextChallenge = response.getString("challenge_id");
             if (!nextChallenge.matches("[0-9a-f]{32}")) throw new ActivationApi.Failure("server_unavailable", 0);
             long now = SystemClock.elapsedRealtime();
             int lifetime = Math.min(600, Math.max(1, response.optInt("expires_in", 600)));
-            int wait = Math.max(60, response.optInt("resend_after", 60));
+            int wait = ActivationApi.retrySeconds(response, 0);
+            ActivationCooldowns.observe(ActivationCooldowns.EMAIL, wait, now);
             return () -> { challenge = nextChallenge; challengeExpiresAt = now + lifetime * 1000L;
-                resendAt = now + wait * 1000L; codeScreen(); };
+                codeScreen(); };
         });
     }
 
     private void verify() {
+        if (ActivationCooldowns.remaining(ActivationCooldowns.VERIFY, SystemClock.elapsedRealtime()) > 0L) { tickCooldown(); return; }
         String code = input.getText().toString();
         input.setText("");
         if (!code.matches("[0-9]{6}")) { message.setText(error("invalid_input")); return; }
         if (challenge.isEmpty() || SystemClock.elapsedRealtime() >= challengeExpiresAt) { message.setText(error("code_expired")); return; }
-        run(() -> {
+        run(ActivationCooldowns.VERIFY, () -> {
             ActivationResponse response = controller().verify(challenge, code);
             return () -> { challenge = ""; apply(response); };
         });
@@ -431,7 +470,7 @@ public final class ActivationActivity extends Activity {
         screen = "checking";
         layout(tr("Проверка на абонамента…", "Checking subscription…"));
         retry = this::checkAuthorization;
-        run(() -> {
+        run(-1, () -> {
             String token = store.token();
             if (token.isEmpty()) return this::welcome;
             ActivationResponse response = controller().config();
@@ -471,14 +510,17 @@ public final class ActivationActivity extends Activity {
 
     private interface Work { Runnable execute() throws Exception; }
 
-    private ActivationController controller() { return new ActivationController(new ActivationApi()::post, store); }
+    ActivationController emailController; // Optional mock transport; never a production authentication override.
+    private ActivationController controller() { return emailController != null ? emailController : new ActivationController(new ActivationApi()::post, store); }
 
-    private void run(Work work) {
+    private void run(int action, Work work) {
         if (busy) return;
         busy = true;
+        cooldownMessageAction = -1;
         progress.setVisibility(View.VISIBLE);
         int generation = ++requestGeneration;
         message.setText(tr("Моля, изчакайте…", "Please wait…"));
+        tickCooldown();
         io.execute(() -> {
             try {
                 Runnable result = work.execute();
@@ -489,6 +531,8 @@ public final class ActivationActivity extends Activity {
                 String code = failure instanceof ActivationApi.Failure ? ((ActivationApi.Failure) failure).code
                         : failure instanceof java.io.IOException ? "network_unavailable" : "server_unavailable";
                 int wait = failure instanceof ActivationApi.Failure ? ((ActivationApi.Failure) failure).retryAfter : 0;
+                long observedAt = SystemClock.elapsedRealtime();
+                if (action >= 0) ActivationCooldowns.observe(action, wait, observedAt, "rate_limited".equals(code));
                 boolean storedToken = false;
                 try { storedToken = !store.token().isEmpty(); } catch (Exception ignored) { }
                 boolean credentialAvailable = storedToken;
@@ -498,7 +542,6 @@ public final class ActivationActivity extends Activity {
                     busy = false;
                     progress.setVisibility(View.GONE);
                     ActivationAccess.deny();
-                    if ("rate_limited".equals(errorCode)) resendAt = SystemClock.elapsedRealtime() + Math.max(60, wait) * 1000L;
                     if ("code_expired".equals(errorCode)) challenge = "";
                     if ("activation_invalid".equals(errorCode)) welcome();
                     if (credentialAvailable && "code".equals(screen)) {
@@ -511,6 +554,7 @@ public final class ActivationActivity extends Activity {
                         button(tr("Опитай отново", "Try again"), retry).requestFocus();
                     }
                     message.setText(error(errorCode));
+                    if ("rate_limited".equals(errorCode) && action >= 0 && wait > 0) cooldownMessageAction = action;
                     tickCooldown();
                 });
             }
@@ -560,10 +604,15 @@ public final class ActivationActivity extends Activity {
         } else if ("code".equals(screen)) codeScreen();
         else if ("renewal".equals(screen) && lastResponse != null) apply(lastResponse);
         else if ("welcome".equals(screen)) {
-            if (!pairingError) renderPairing(); // Rotation preserves the current in-memory session.
+            if (pairingError) renderPairingError(); else renderPairing(); // Rotation preserves the current in-memory session.
         }
         else layout(tr("Проверка на абонамента…", "Checking subscription…"));
         if (busy) { progress.setVisibility(View.VISIBLE); message.setText(tr("Моля, изчакайте…", "Please wait…")); }
+    }
+
+    @Override protected void onSaveInstanceState(Bundle state) {
+        super.onSaveInstanceState(state);
+        state.putString("activation_screen", screen); // No email, OTP, challenge, token or billing data.
     }
 
     @Override protected void onDestroy() {
@@ -579,6 +628,7 @@ public final class ActivationActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         visible = true;
+        tickCooldown();
         if ("welcome".equals(screen)) {
             if (pairing != null && SystemClock.elapsedRealtime() >= pairing.expiresAt) expirePairing.run();
             else if (pairingError) {
@@ -590,6 +640,7 @@ public final class ActivationActivity extends Activity {
 
     @Override protected void onPause() {
         visible = false;
+        main.removeCallbacks(cooldown);
         stopPairing();
         super.onPause();
     }

@@ -60,12 +60,24 @@ final class ActivationApi {
             }
             if (status != 200 || !result.optBoolean("ok"))
                 throw new Failure(result.optString("error", "server_unavailable"),
-                        Math.max(retry, result.optInt("resend_after", result.optInt("retry_after", 0))));
+                        retrySeconds(result, retry));
             return result;
         } finally {
             synchronized (this) { if (active == connection) active = null; }
             connection.disconnect();
         }
+    }
+
+    static int retrySeconds(JSONObject result, int header) {
+        return Math.max(Math.max(0, header), Math.max(seconds(result, "retry_after"), seconds(result, "resend_after")));
+    }
+
+    private static int seconds(JSONObject result, String field) {
+        Object raw = result.opt(field);
+        if (!(raw instanceof Number)) return 0;
+        double value = ((Number) raw).doubleValue();
+        if (value < 0 || value > Integer.MAX_VALUE || value != Math.floor(value)) return 0;
+        return ((Number) raw).intValue();
     }
 
     static int retryDelay(String header, long now) {

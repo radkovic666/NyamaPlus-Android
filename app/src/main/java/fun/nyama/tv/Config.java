@@ -94,6 +94,8 @@ public final class Config {
     // Provisioned playback does not require opening the administrator form. Settings still
     // require a separately chosen PIN; managed mode is never itself an entitlement check.
     public boolean isConfigured() { return !playlistUrl().isEmpty() && (hasPin() || ActivationStore.managed(context)); }
+    public String activationUsername() { return safe(prefs.getString("activation_username", "")); }
+
     public void setActivationAccount(String username, String clientNumber) {
         prefs.edit().putString("activation_username", username).putString("activation_client_number", clientNumber).apply();
     }

@@ -30,6 +30,10 @@ public final class SettingsActivity extends Activity {
     private TextView textScaleValue;
     private TextView clockScaleValue;
     private TextView dataUsageValue;
+    private TextView subscriptionValue, subscriptionExpiry;
+    private final android.os.Handler accountUi = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable subscriptionTick = this::updateSubscription;
+    private boolean accountVisible;
     private UpdateManager updateManager;
     private boolean suppressNextUserLeaveHint;
 
@@ -50,6 +54,11 @@ public final class SettingsActivity extends Activity {
         if (isFinishing() || !ActivationAccess.require(this)) return;
         suppressNextUserLeaveHint = false;
         updateDataUsage();
+        accountVisible = true;
+        updateSubscription();
+        if (ActivationStore.managed(this)) ActivationAccess.refreshAccount(this, () -> {
+            if (accountVisible && !isFinishing()) updateSubscription();
+        });
         if (updateManager != null) updateManager.onResume();
     }
 
@@ -73,7 +82,15 @@ public final class SettingsActivity extends Activity {
         super.onBackPressed();
     }
 
+    @Override protected void onPause() {
+        accountVisible = false;
+        accountUi.removeCallbacks(subscriptionTick);
+        super.onPause();
+    }
+
     @Override protected void onDestroy() {
+        accountVisible = false;
+        accountUi.removeCallbacksAndMessages(null);
         if (updateManager != null) updateManager.destroy();
         super.onDestroy();
     }
@@ -110,6 +127,17 @@ public final class SettingsActivity extends Activity {
         LinearLayout.LayoutParams accountParams = new LinearLayout.LayoutParams(-1, -2);
         accountParams.setMargins(0, 0, 0, dp(18));
         root.addView(account, accountParams);
+
+        // Entitlement details belong to Settings, with no playback overlay or per-second HTTP.
+        if (ActivationStore.managed(this)) {
+            LinearLayout accountCard = card();
+            subscriptionValue = label("", 17, Color.WHITE, true);
+            subscriptionExpiry = label("", 15, 0xFFAAB3BF, false);
+            accountCard.addView(subscriptionValue);
+            accountCard.addView(subscriptionExpiry);
+            addSection(root, Config.LANG_EN.equals(config.language()) ? "Subscription" : "Абонамент", accountCard);
+            updateSubscription();
+        }
 
         // General settings card.
         LinearLayout general = card();
@@ -367,7 +395,22 @@ public final class SettingsActivity extends Activity {
         first.requestFocus();
     }
 
+    private void updateSubscription() {
+        accountUi.removeCallbacks(subscriptionTick);
+        if (subscriptionValue == null) return;
+        SubscriptionInfo info = ActivationAccess.subscription();
+        boolean english = Config.LANG_EN.equals(config.language());
+        long now = android.os.SystemClock.elapsedRealtime();
+        subscriptionValue.setText(info.display(english, now));
+        String expiry = info.expiryDisplay(english);
+        subscriptionExpiry.setText(expiry);
+        subscriptionExpiry.setVisibility(expiry.isEmpty() ? View.GONE : View.VISIBLE);
+        if (accountVisible && info.hasCountdown() && info.remainingAt(now) > 0L)
+            accountUi.postDelayed(subscriptionTick, 1000L);
+    }
+
     private String accountUsername() {
+        if (!config.activationUsername().isEmpty()) return config.activationUsername();
         try {
             Uri uri = Uri.parse(config.playlistUrl());
             String username = uri.getQueryParameter("username");

@@ -19,6 +19,7 @@ import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.animation.DecelerateInterpolator;
 import android.view.View;
 import android.view.ViewGroup;
@@ -358,16 +359,25 @@ public final class CatalogActivity extends Activity {
         grid.setPadding(dp(2), dp(4), dp(2), dp(6));
         grid.setClipToPadding(false);
         grid.setClipChildren(false);
-        grid.setSelector(new ColorDrawable((accent & 0x00FFFFFF) | 0x55000000));
+        // TV cards draw their own exact accent background and contrasting focus outline.
+        grid.setSelector(new ColorDrawable(phone ? (accent & 0x00FFFFFF) | 0x55000000 : Color.TRANSPARENT));
         adapter = new CatalogAdapter(this);
         grid.setAdapter(adapter);
         grid.setOnFocusChangeListener((v, focused) -> {
             if (focused && !phone) setCatalogSidebarExpanded(false, true);
+            if (!phone) updateTvCardHighlights();
         });
         grid.setOnItemClickListener((parent, view, position, id) -> openDetail(adapter.getItem(position)));
         grid.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             private View previous;
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (!phone) {
+                    if (previous != null && previous != view) updateTvCardAppearance(previous);
+                    updateTvCardHighlights();
+                    if (view != null) updateTvCardAppearance(view);
+                    previous = view;
+                    return;
+                }
                 if (previous != null && previous != view) {
                     previous.animate().scaleX(1f).scaleY(1f).setDuration(110L).start();
                     if (android.os.Build.VERSION.SDK_INT >= 21) previous.setElevation(0f);
@@ -379,6 +389,12 @@ public final class CatalogActivity extends Activity {
                 previous = view;
             }
             @Override public void onNothingSelected(AdapterView<?> parent) {
+                if (!phone) {
+                    if (previous != null) updateTvCardAppearance(previous);
+                    previous = null;
+                    updateTvCardHighlights();
+                    return;
+                }
                 if (previous != null) {
                     previous.animate().scaleX(1f).scaleY(1f).setDuration(110L).start();
                     if (android.os.Build.VERSION.SDK_INT >= 21) previous.setElevation(0f);
@@ -404,6 +420,31 @@ public final class CatalogActivity extends Activity {
             grid.post(() -> { if (grid.getCount() > 0) grid.requestFocus(); else search.requestFocus(); });
         }
         return shell;
+    }
+
+    private void updateTvCardHighlights() {
+        if (grid == null || config.isPhoneMode()) return;
+        for (int i = 0; i < grid.getChildCount(); i++) updateTvCardAppearance(grid.getChildAt(i));
+    }
+
+    private void updateTvCardAppearance(View card) {
+        if (config.isPhoneMode() || !(card.getTag() instanceof Holder)) return;
+        Holder h = (Holder) card.getTag();
+        boolean focused = grid != null && grid.hasFocus() && h.position == grid.getSelectedItemPosition();
+        boolean highlighted = focused || h.hovered;
+        int accent = UiTheme.accent(this);
+        int foreground = UiTheme.contrastingTextColor(accent);
+        card.setBackground(panelBackground(highlighted ? accent : 0xFF11161C,
+                highlighted ? foreground : 0xFF242C35, highlighted ? 2 : 1));
+        h.title.setTextColor(highlighted ? foreground : Color.WHITE);
+        h.meta.setTextColor(highlighted ? foreground : 0xFF9CA6B1);
+        // Keep the poster image and its dark matte intact; focus is around the whole card.
+        if (h.highlighted != highlighted) {
+            float scale = highlighted ? 1.035f : 1f;
+            card.animate().scaleX(scale).scaleY(scale).setDuration(110L).start();
+            card.setElevation(highlighted ? dp(10) : 0f);
+            h.highlighted = highlighted;
+        }
     }
 
     private void setCatalogSidebarExpanded(boolean expanded, boolean animate) {
@@ -1022,7 +1063,19 @@ public final class CatalogActivity extends Activity {
                 box.addView(meta, new LinearLayout.LayoutParams(-1, dp(phone ? 23 : 24)));
                 box.setLayoutParams(new AbsListView.LayoutParams(-1, dp(phone ? 272 : 254)));
                 h = new Holder(poster, title, meta); box.setTag(h); convertView = box;
+                if (!phone) box.setOnHoverListener((v, event) -> {
+                    int action = event.getActionMasked();
+                    if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE
+                            || action == MotionEvent.ACTION_HOVER_EXIT) {
+                        ((Holder) v.getTag()).hovered = action != MotionEvent.ACTION_HOVER_EXIT;
+                        updateTvCardAppearance(v);
+                    }
+                    return false;
+                });
             } else h = (Holder) convertView.getTag();
+            // A recycled card must not inherit another title's mouse highlight.
+            if (h.position != position) h.hovered = false;
+            h.position = position;
             CatalogItem item = getItem(position);
             if (item != null) {
                 h.poster.setImageDrawable(null);
@@ -1037,12 +1090,16 @@ public final class CatalogActivity extends Activity {
                 }
                 PosterLoader.load(CatalogActivity.this, item.id, h.poster);
             }
+            if (!config.isPhoneMode()) updateTvCardAppearance(convertView);
             return convertView;
         }
     }
 
     private static final class Holder {
         final ImageView poster; final TextView title; final TextView meta;
+        int position = -1;
+        boolean hovered;
+        boolean highlighted;
         Holder(ImageView poster, TextView title, TextView meta) { this.poster = poster; this.title = title; this.meta = meta; }
     }
 }

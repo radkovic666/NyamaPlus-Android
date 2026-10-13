@@ -6,10 +6,12 @@ import java.net.URI;
 /** Server entitlement is independent of permanent device authentication. */
 final class ActivationResponse {
     final boolean active;
+    final SubscriptionInfo subscription;
     final String playlist, epg, pukanki, payment, username, clientNumber;
 
     ActivationResponse(JSONObject body) throws Exception {
         if (!body.optBoolean("ok")) throw new ActivationApi.Failure(body.optString("error", "server_unavailable"), 0);
+        subscription = SubscriptionInfo.from(body, 0L);
         String status = body.optString("access_status");
         active = "active".equals(status);
         if (!active && !"subscription_expired".equals(status))

@@ -39,6 +39,7 @@ public class ActivationUiTest {
     private static final String PAYMENT = "https://nyama.fun/subscription_payment.php?token=synthetic-account-token";
 
     @Before public void before() {
+        ActivationCooldowns.clear();
         context = RuntimeEnvironment.getApplication();
         ActivationAccess.deny();
         context.getSharedPreferences("nyama_activation_mode", 0).edit().clear().commit();

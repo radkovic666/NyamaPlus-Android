@@ -30,6 +30,7 @@ import static fun.nyama.tv.PairingControllerTest.*;
 @Config(sdk = 28, application = Application.class)
 public class PairingUiTest {
     @Before public void before() {
+        ActivationCooldowns.clear();
         Context c = RuntimeEnvironment.getApplication(); ActivationAccess.deny();
         c.getSharedPreferences("nyama_activation_mode", 0).edit().clear().commit();
         c.getSharedPreferences("nyama_tv_private", 0).edit().clear().commit();
