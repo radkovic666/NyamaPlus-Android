@@ -47,15 +47,14 @@ final class ActivationAccess implements Application.ActivityLifecycleCallbacks {
         activity.finish();
     }
 
-    static void accept(Context context, ActivationResponse response) {
+    static boolean accept(Context context, ActivationResponse response) {
         authorized = false;
-        if (!response.active) return;
         Config config = new Config(context);
-        config.saveUrls(response.playlist, response.epg);
-        config.setPukankiBaseUrl(response.pukanki);
-        config.setActivationAccount(response.username, response.clientNumber);
+        if (!config.saveActivation(response)) return false;
+        if (!response.active) return true;
         authorizedAt = android.os.SystemClock.elapsedRealtime();
         authorized = true;
+        return true;
     }
 
     static void deny() { authorized = false; }
@@ -76,8 +75,7 @@ final class ActivationAccess implements Application.ActivityLifecycleCallbacks {
             ActivationResponse result = response;
             main.post(() -> {
                 if (requestGeneration != generation || started == 0) return;
-                if (result != null && result.active) {
-                    accept(context, result);
+                if (result != null && result.active && accept(context, result)) {
                     schedule();
                 } else {
                     deny();

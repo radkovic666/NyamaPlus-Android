@@ -28,12 +28,24 @@ import org.json.JSONObject;
 import java.util.Collections;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 /** Native enrollment/renewal only; normal playback screens and controls remain unchanged. */
 public final class ActivationActivity extends Activity {
-    private static final String REGISTER = "https://nyama.fun/register_now.php";
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final ExecutorService io = Executors.newSingleThreadExecutor();
+    ExecutorService io = Executors.newSingleThreadExecutor();
+    ActivationController pairingController; // Optional injected boundary for deterministic mock/UI tests.
+    private ActivationApi pairingApi;
+    private PairingSession pairing;
+    private Future<?> pairingRequest;
+    private boolean visible, pairingBusy, pairingError;
+    private int pairingGeneration;
+    private long pairingRetryAt;
+    private String pairingStatus = "";
+    private String pairingErrorCode = "server_unavailable";
+    private final Runnable enablePairRetry = this::enablePairRetry;
+    private final Runnable poll = this::pollPairing;
+    private final Runnable expirePairing = () -> pairingFailure(new ActivationApi.Failure("pairing_expired", 0));
     private ActivationStore store;
     private Config config;
     private LinearLayout root;
@@ -63,6 +75,7 @@ public final class ActivationActivity extends Activity {
     private String tr(String bg, String en) { return Config.LANG_EN.equals(config.language()) ? en : bg; }
 
     private void layout(String title) {
+        main.removeCallbacks(cooldown);
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         root = new LinearLayout(this);
@@ -162,17 +175,194 @@ public final class ActivationActivity extends Activity {
     }
 
     private void welcome() {
+        stopPairing();
+        pairing = null;
+        pairingStatus = "";
+        pairingError = false;
         screen = "welcome";
         challenge = "";
-        layout("Добре дошли в Nyama+\nWelcome to Nyama+");
-        qr(REGISTER);
-        text(tr("Сканирайте QR кода, за да се регистрирате и да получите 14 дни безплатен достъп.",
-                "Scan the QR code to register and receive 14 days of free access."), 18);
-        if (config.isPhoneMode()) button(tr("Регистрация", "Register"), () -> openBrowser(REGISTER));
+        renderPairing();
+        if (visible) startPairing();
+    }
+
+    private void renderPairing() {
+        layout(tr("Добре дошли в Nyama+", "Welcome to Nyama+"));
+        text(tr("Сканирайте QR кода, за да се регистрирате и активирате устройството.",
+                "Scan the QR code to register and activate this device."), 18);
+        if (pairing != null) {
+            qr(pairing.qrUrl);
+            // Keep the waiting status below the QR, including the TV side-by-side layout.
+            message = text(pairingStatus.isEmpty() ? tr("Очакваме регистрация и потвърждение...",
+                    "Waiting for registration and confirmation...") : pairingStatus, 17);
+            if (config.isPhoneMode()) button(tr("Регистрация", "Register"), () -> openBrowser(pairing.qrUrl));
+        } else {
+            message.setText(tr("Зареждане на QR кода…", "Loading QR code…"));
+            progress.setVisibility(View.VISIBLE);
+        }
         button("Вече съм регистриран / I am registered already", this::emailScreen).requestFocus();
     }
 
+    private ActivationController pairingController() {
+        if (pairingController != null) return pairingController;
+        pairingApi = new ActivationApi();
+        return new ActivationController(pairingApi::post, store);
+    }
+
+    private void startPairing() {
+        if (!visible || destroyed || !"welcome".equals(screen) || pairingBusy || pairingError) return;
+        if (SystemClock.elapsedRealtime() < pairingRetryAt) {
+            pairingError = true;
+            pairingErrorCode = "rate_limited";
+            renderPairingError();
+            return;
+        }
+        if (pairing != null) { schedulePoll(0); return; }
+        long started = SystemClock.elapsedRealtime();
+        runPairing(controller -> {
+            PairingSession next = controller.startPairing(started);
+            return () -> {
+                pairing = next;
+                renderPairing();
+                schedulePoll(next.pollAfter * 1000L);
+            };
+        });
+    }
+
+    private void pollPairing() {
+        if (pairing == null || !visible || pairingBusy || pairingError || !"welcome".equals(screen)) return;
+        if (SystemClock.elapsedRealtime() >= pairing.expiresAt) { expirePairing.run(); return; }
+        PairingSession current = pairing;
+        runPairing(controller -> {
+            PairingResult result = controller.pollPairing(current);
+            return () -> {
+                if (result.activated()) {
+                    try {
+                        // The generation was checked on the main thread before this callback.
+                        // Save first, then provision; a config/storage failure uses config retry
+                        // with the saved token instead of enrolling the customer a second time.
+                        ActivationResponse response = controller.completePairing(current, result);
+                        stopPairing();
+                        pairing = null;
+                        apply(response);
+                    } catch (Exception failure) {
+                        stopPairing();
+                        pairing = null;
+                        try {
+                            if (controller.hasToken()) checkAuthorization();
+                            else pairingFailure(new ActivationApi.Failure("storage_unavailable", 0));
+                        } catch (Exception storageFailure) {
+                            pairingFailure(new ActivationApi.Failure("storage_unavailable", 0));
+                        }
+                    }
+                } else {
+                    pairingStatus = "waiting_for_confirmation".equals(result.status)
+                            ? tr("Регистрацията е получена!\nПотвърдете имейла си, за да активирате Nyama+.",
+                                 "Registration received!\nConfirm your email to activate Nyama+.")
+                            : tr("Очакваме да сканирате QR кода...", "Waiting for you to scan the QR code...");
+                    message.setText(pairingStatus);
+                    schedulePoll(result.pollAfter * 1000L);
+                }
+            };
+        });
+    }
+
+    private interface PairWork { Runnable execute(ActivationController controller) throws Exception; }
+
+    private void runPairing(PairWork work) {
+        if (pairingBusy) return;
+        pairingBusy = true;
+        int generation = ++pairingGeneration;
+        ActivationController controller = pairingController();
+        pairingRequest = io.submit(() -> {
+            try {
+                Runnable result = work.execute(controller);
+                main.post(() -> {
+                    if (!acceptPairing(generation)) return;
+                    pairingBusy = false;
+                    pairingRequest = null;
+                    progress.setVisibility(View.GONE);
+                    result.run();
+                });
+            } catch (Exception failure) {
+                main.post(() -> {
+                    if (!acceptPairing(generation)) return;
+                    pairingBusy = false;
+                    pairingRequest = null;
+                    pairingFailure(failure);
+                });
+            }
+        });
+    }
+
+    private boolean acceptPairing(int generation) {
+        return !destroyed && visible && "welcome".equals(screen) && generation == pairingGeneration;
+    }
+
+    private void enablePairRetry() {
+        if (!destroyed && visible && pairingError && resend != null) resend.setEnabled(true);
+    }
+
+    private void schedulePoll(long delay) {
+        main.removeCallbacks(poll);
+        main.removeCallbacks(expirePairing);
+        main.removeCallbacks(enablePairRetry);
+        if (pairing == null || !visible || pairingError) return;
+        long remaining = pairing.expiresAt - SystemClock.elapsedRealtime();
+        if (remaining <= 0) { expirePairing.run(); return; }
+        main.postDelayed(expirePairing, remaining);
+        main.postDelayed(poll, Math.max(delay, pairingRetryAt - SystemClock.elapsedRealtime()));
+    }
+
+    private void stopPairing() {
+        pairingGeneration++;
+        main.removeCallbacks(poll);
+        main.removeCallbacks(expirePairing);
+        main.removeCallbacks(enablePairRetry);
+        if (pairingApi != null) { pairingApi.cancel(); pairingApi = null; }
+        if (pairingRequest != null) { pairingRequest.cancel(true); pairingRequest = null; }
+        pairingBusy = false;
+    }
+
+    private void pairingFailure(Exception failure) {
+        stopPairing();
+        pairingError = true;
+        String code = failure instanceof ActivationApi.Failure ? ((ActivationApi.Failure) failure).code
+                : failure instanceof java.io.IOException ? "network_unavailable" : "server_unavailable";
+        int wait = failure instanceof ActivationApi.Failure ? ((ActivationApi.Failure) failure).retryAfter : 0;
+        pairingErrorCode = code;
+        pairingRetryAt = Math.max(pairingRetryAt, SystemClock.elapsedRealtime()
+                + Math.max(wait, "rate_limited".equals(code) ? 60 : 3) * 1000L);
+        boolean invalid = "pairing_expired".equals(code) || "pairing_invalid".equals(code)
+                || "activation_invalid".equals(code) || "device_limit_reached".equals(code)
+                || "inactive_account".equals(code);
+        if (invalid) pairing = null;
+        renderPairingError();
+    }
+
+    private void renderPairingError() {
+        String code = pairingErrorCode;
+        renderPairing();
+        progress.setVisibility(View.GONE);
+        message.setText(error(code));
+        boolean refresh = "pairing_expired".equals(code) || "pairing_invalid".equals(code);
+        Button retryPair = button(refresh ? tr("Генерирай нов QR код", "Generate a new QR code")
+                : tr("Опитайте отново", "Try again"), () -> {
+            if (SystemClock.elapsedRealtime() < pairingRetryAt) return;
+            pairingError = false;
+            if (pairing != null && SystemClock.elapsedRealtime() >= pairing.expiresAt) pairing = null;
+            renderPairing();
+            startPairing();
+        });
+        resend = retryPair;
+        retryPair.setEnabled(SystemClock.elapsedRealtime() >= pairingRetryAt);
+        main.postDelayed(enablePairRetry,
+                Math.max(1, pairingRetryAt - SystemClock.elapsedRealtime()));
+        if (pairing != null) main.postDelayed(expirePairing, Math.max(1, pairing.expiresAt - SystemClock.elapsedRealtime()));
+    }
+
     private void emailScreen() {
+        stopPairing();
+        pairing = null;
         screen = "email";
         layout(tr("Активиране на устройството", "Activate this device"));
         field(tr("Вашият имейл адрес", "Your email address"), InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS, 254)
@@ -250,8 +440,16 @@ public final class ActivationActivity extends Activity {
     }
 
     private void apply(ActivationResponse response) {
+        stopPairing();
+        pairing = null;
         lastResponse = response;
-        ActivationAccess.accept(this, response);
+        if (!ActivationAccess.accept(this, response)) {
+            screen = "checking";
+            layout(tr("Проверка на абонамента", "Check subscription"));
+            message.setText(error("storage_unavailable"));
+            button(tr("Опитайте отново", "Try again"), this::checkAuthorization).requestFocus();
+            return;
+        }
         if (response.active) {
             startActivity(new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
             finish();
@@ -326,14 +524,16 @@ public final class ActivationActivity extends Activity {
             case "wrong_code": return tr("Неправилен код. Опитайте отново.", "Incorrect code. Try again.");
             case "code_expired": return tr("Кодът е изтекъл или вече е използван. Поискайте нов код.", "The code expired or was used. Request a new code.");
             case "inactive_account": return tr("Акаунтът е спрян или няма разрешен достъп. Свържете се с администратора.", "This account is blocked or ineligible. Contact the administrator.");
-            case "device_limit_reached": return tr("Достигнат е лимитът за активирани устройства.", "The activated-device limit has been reached.");
+            case "device_limit_reached": return tr("Достигнат е лимитът за активирани устройства. Управлявайте устройствата в акаунта си или използвайте активиране с имейл.", "The device limit has been reached. Manage your account devices or use email activation.");
+            case "pairing_expired": return tr("QR кодът изтече.", "The QR code expired.");
+            case "pairing_invalid": return tr("QR кодът вече не е валиден. Генерирайте нов QR код.", "This QR code is no longer valid. Generate a new QR code.");
             case "activation_invalid": return tr("Активирането е невалидно или отменено. Потвърдете имейла отново.", "Activation is invalid or revoked. Verify your email again.");
             case "rate_limited": return tr("Твърде много заявки. Изчакайте, преди да опитате отново.", "Too many requests. Wait before retrying.");
             case "mail_unavailable": return tr("Имейл услугата временно не е достъпна. Опитайте по-късно.", "Email delivery is temporarily unavailable. Try later.");
             case "invalid_input": return tr("Проверете въведения имейл или шестцифрен код.", "Check the email or six-digit code.");
             case "invalid_device_id": return tr("Идентификаторът на инсталацията не е приет. Опитайте отново.", "The installation ID was rejected. Try again.");
             case "https_required": return tr("Проблем с HTTPS настройките на сървъра. Свържете се с администратора.", "Server HTTPS configuration problem. Contact the administrator.");
-            case "network_unavailable": return tr("Няма връзка със сървъра. Проверете интернет връзката и опитайте отново.", "Cannot connect securely. Check your internet connection and retry.");
+            case "network_unavailable": return tr("Няма връзка със сървъра. Опитайте отново.", "No connection to the server. Try again.");
             case "storage_unavailable": return tr("Защитеното хранилище не е достъпно. Опитайте отново.", "Secure storage is unavailable. Try again.");
             default: return tr("Сървърът временно не е достъпен или отговорът не е валиден. Опитайте отново.", "The server is unavailable or returned an invalid response. Try again.");
         }
@@ -349,7 +549,7 @@ public final class ActivationActivity extends Activity {
         if (busy) return;
         if ("code".equals(screen)) emailScreen();
         else if ("email".equals(screen)) welcome();
-        else finishAndRemoveTask(); // Renewal/errors must never reveal cached playback behind the gate.
+        else { stopPairing(); finishAndRemoveTask(); } // Never reveal cached playback behind the gate.
     }
 
     @Override public void onConfigurationChanged(android.content.res.Configuration configuration) {
@@ -359,17 +559,39 @@ public final class ActivationActivity extends Activity {
             emailScreen();
         } else if ("code".equals(screen)) codeScreen();
         else if ("renewal".equals(screen) && lastResponse != null) apply(lastResponse);
-        else if ("welcome".equals(screen)) welcome();
+        else if ("welcome".equals(screen)) {
+            if (!pairingError) renderPairing(); // Rotation preserves the current in-memory session.
+        }
         else layout(tr("Проверка на абонамента…", "Checking subscription…"));
         if (busy) { progress.setVisibility(View.VISIBLE); message.setText(tr("Моля, изчакайте…", "Please wait…")); }
     }
 
     @Override protected void onDestroy() {
         destroyed = true;
+        stopPairing();
+        pairing = null;
         requestGeneration++;
         main.removeCallbacksAndMessages(null);
         io.shutdownNow();
         super.onDestroy();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        visible = true;
+        if ("welcome".equals(screen)) {
+            if (pairing != null && SystemClock.elapsedRealtime() >= pairing.expiresAt) expirePairing.run();
+            else if (pairingError) {
+                // Rebuild retry controls/timers that were removed on pause.
+                renderPairingError();
+            } else startPairing();
+        }
+    }
+
+    @Override protected void onPause() {
+        visible = false;
+        stopPairing();
+        super.onPause();
     }
 
     private int dp(int size) { return Math.round(size * getResources().getDisplayMetrics().density); }

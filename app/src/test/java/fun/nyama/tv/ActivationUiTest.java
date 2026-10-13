@@ -53,7 +53,7 @@ public class ActivationUiTest {
 
     private void tv() { Shadows.shadowOf(context.getPackageManager()).setSystemFeature(PackageManager.FEATURE_LEANBACK, true); }
 
-    private ActivationActivity welcome() { return Robolectric.buildActivity(ActivationActivity.class).create().start().resume().visible().get(); }
+    private ActivationActivity welcome() { return PairingUiTest.welcome(); }
 
     private static List<View> views(View root) {
         List<View> result = new ArrayList<>(); result.add(root);
@@ -105,8 +105,8 @@ public class ActivationUiTest {
     }
 
     @Test public void phoneWelcomeQrEncodesRegistrationLocally() throws Exception {
-        ActivationActivity activity = welcome(); assertEquals("https://nyama.fun/register_now.php", decode(bitmap(activity)));
-        assertTrue(text(activity).contains("14 дни")); assertTrue(text(activity).contains("Welcome to Nyama+"));
+        ActivationActivity activity = welcome(); assertEquals(PairingControllerTest.QR, decode(bitmap(activity)));
+        assertTrue(text(activity).contains("Добре дошли в Nyama+")); assertTrue(text(activity).contains("Очакваме регистрация"));
     }
 
     @Test public void tvWelcomeButtonSupportsFocusableRemoteAndClick() {
@@ -119,7 +119,7 @@ public class ActivationUiTest {
     @Test public void phoneRegistrationButtonOpensExactWebsite() {
         ActivationActivity activity = welcome(); button(activity, "Регистрация").performClick();
         Intent intent = Shadows.shadowOf(activity).getNextStartedActivity();
-        assertEquals(Intent.ACTION_VIEW, intent.getAction()); assertEquals("https://nyama.fun/register_now.php", intent.getDataString());
+        assertEquals(Intent.ACTION_VIEW, intent.getAction()); assertEquals(PairingControllerTest.QR, intent.getDataString());
     }
 
     @Test public void emailScreenNeverAsksWebsitePasswordAndDoesNotSaveInputState() {
@@ -235,7 +235,7 @@ public class ActivationUiTest {
 
     @Test @Config(sdk = 24, application = Application.class)
     public void enrollmentUiWorksAtMinimumSdk24() throws Exception {
-        ActivationActivity activity = welcome(); assertEquals("https://nyama.fun/register_now.php", decode(bitmap(activity)));
+        ActivationActivity activity = welcome(); assertEquals(PairingControllerTest.QR, decode(bitmap(activity)));
         button(activity, "I am registered already").performClick(); assertTrue(text(activity).contains("Вашият имейл адрес"));
     }
 }

@@ -97,6 +97,21 @@ public final class Config {
     public void setActivationAccount(String username, String clientNumber) {
         prefs.edit().putString("activation_username", username).putString("activation_client_number", clientNumber).apply();
     }
+
+    // Enrollment is complete only after the supplied configuration/account is on disk.
+    // Preserve PIN, favorites, device mode and every unrelated preference.
+    boolean saveActivation(ActivationResponse response) {
+        SharedPreferences.Editor editor = prefs.edit()
+                .putString("activation_username", response.username)
+                .putString("activation_client_number", response.clientNumber);
+        if (response.active) {
+            editor.putString(K_PLAYLIST, response.playlist).putString(K_EPG, response.epg)
+                    .putString(K_PUKANKI, response.pukanki);
+            if (!playlistUrl().equals(response.playlist)) editor.putLong(K_PLAYLIST_REFRESH, 0L);
+            if (!epgUrl().equals(response.epg)) editor.putLong(K_EPG_REFRESH, 0L);
+        }
+        return editor.commit();
+    }
     public boolean hasPin() { return !safe(prefs.getString(K_PIN_HASH, "")).isEmpty(); }
 
     public void setPin(String pin) { prefs.edit().putString(K_PIN_HASH, sha256(pin)).apply(); }

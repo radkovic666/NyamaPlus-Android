@@ -22,6 +22,25 @@ final class ActivationController {
         return api.post("request-code", new JSONObject().put("email", email).put("device_id", credentials.deviceId()), "");
     }
 
+    PairingSession startPairing(long now) throws Exception {
+        String id = credentials.deviceId();
+        return new PairingSession(id, api.post("pair-start", new JSONObject().put("device_id", id), ""), now);
+    }
+
+    PairingResult pollPairing(PairingSession session) throws Exception {
+        return new PairingResult(api.post("pair-status", session.request(), ""));
+    }
+
+    // Called only after the visible Activity accepts this session's generation. Transport
+    // callbacks never persist credentials: late responses cannot replace a newer token.
+    ActivationResponse completePairing(PairingSession session, PairingResult result) throws Exception {
+        if (!result.activated()) throw new ActivationApi.Failure("server_unavailable", 0);
+        credentials.saveToken(session.deviceId, result.activationToken());
+        return new ActivationResponse(result.body());
+    }
+
+    boolean hasToken() throws Exception { return !credentials.token().isEmpty(); }
+
     ActivationResponse verify(String challenge, String code) throws Exception {
         String id = credentials.deviceId();
         JSONObject body = api.post("verify-code", new JSONObject().put("challenge_id", challenge)
