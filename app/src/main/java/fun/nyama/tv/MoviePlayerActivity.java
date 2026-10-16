@@ -1,12 +1,7 @@
 package fun.nyama.tv;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.Intent;
-import android.media.AudioManager;
-import android.widget.HorizontalScrollView;
-import org.json.JSONArray;
-import org.json.JSONObject;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -39,8 +34,8 @@ import java.util.List;
 /**
  * Internal Movies/Series player wrapper.
  *
- * Both Android TV and phone mode retain the existing StreamIMDB embed. TV input switches
- * explicitly between playback shortcuts and supported native controls; phone behavior is retained.
+ * TV uses a minimal fullscreen surface and documented exact-episode embeds. Phone routes,
+ * controls, touch handling and session state retain their existing behavior.
  */
 public final class MoviePlayerActivity extends Activity {
     private static final String TAG = "NyamaPlayer";
@@ -69,11 +64,12 @@ public final class MoviePlayerActivity extends Activity {
     private boolean closeArmed;
     private boolean resumeTvWhenClosing;
     private boolean providerMenuMode;
-    private boolean tvControlsMode;
-    private boolean appFullscreen = true;
-    private Button subtitleControl;
-    private AlertDialog subtitleDialog;
-    private int controlsGeneration;
+    private boolean returnToSeries;
+    private boolean playbackFailed;
+    private boolean leavingPlayback;
+    private String loadedPlayerUrl = "";
+    private String selectedPlaybackHost = PLAYER_HOST;
+    private View playbackError;
     private final Runnable clearCloseArm = () -> closeArmed = false;
     private final Runnable hideControls = () -> setControlsVisible(false, false);
 
@@ -89,6 +85,7 @@ public final class MoviePlayerActivity extends Activity {
         id = safe(getIntent().getStringExtra("id"));
         type = "series".equals(getIntent().getStringExtra("type")) ? "series" : "movies";
         title = safe(getIntent().getStringExtra("title"));
+        returnToSeries = tvMode && "series".equals(type) && getIntent().getBooleanExtra("return_to_series", false);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         MainActivity.pausePlaybackForOnDemand();
         setContentView(buildUi());
@@ -112,42 +109,17 @@ public final class MoviePlayerActivity extends Activity {
         root.addView(fullscreenContainer, new FrameLayout.LayoutParams(-1, -1));
 
 
-        remoteControls = new LinearLayout(this);
-        remoteControls.setOrientation(LinearLayout.HORIZONTAL);
-        remoteControls.setGravity(Gravity.CENTER_VERTICAL);
-        remoteControls.setPadding(dp(14), dp(10), dp(14), dp(10));
-        GradientDrawable controlBg = new GradientDrawable();
-        controlBg.setColor(0xE6101419);
-        controlBg.setCornerRadius(dp(14));
-        controlBg.setStroke(dp(1), 0xFF343B45);
-        remoteControls.setBackground(controlBg);
-        remoteControls.setVisibility(View.GONE);
-
-        if (tvMode) {
-            firstControl = addControl(getString(R.string.player_play_pause), this::toggleTvPlayback);
-            addControl("−10s", () -> seekTvPlayback(-10));
-            addControl("+10s", () -> seekTvPlayback(10));
-            AudioManager audio = (AudioManager) getSystemService(AUDIO_SERVICE);
-            if (audio != null && !audio.isVolumeFixed()) {
-                addControl("Vol −", () -> adjustDeviceVolume(AudioManager.ADJUST_LOWER));
-                addControl(config.language().equals("en") ? "Mute" : "Без звук",
-                        () -> adjustDeviceVolume(AudioManager.ADJUST_TOGGLE_MUTE));
-                addControl("Vol +", () -> adjustDeviceVolume(AudioManager.ADJUST_RAISE));
-            }
-            addControl(getString(R.string.player_fullscreen), () -> {
-                appFullscreen = !appFullscreen;
-                immersive();
-                if (appFullscreen) setControlsVisible(false, false);
-            });
-            HorizontalScrollView scroll = new HorizontalScrollView(this);
-            scroll.setFillViewport(true);
-            scroll.setHorizontalScrollBarEnabled(false);
-            scroll.addView(remoteControls, new HorizontalScrollView.LayoutParams(-2, -2));
-            FrameLayout.LayoutParams cp = new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM);
-            cp.setMargins(dp(18), dp(18), dp(18), dp(26));
-            root.addView(scroll, cp);
-        } else {
-            // Keep the existing phone controls and their touch behavior.
+        if (!tvMode) {
+            remoteControls = new LinearLayout(this);
+            remoteControls.setOrientation(LinearLayout.HORIZONTAL);
+            remoteControls.setGravity(Gravity.CENTER_VERTICAL);
+            remoteControls.setPadding(dp(14), dp(10), dp(14), dp(10));
+            GradientDrawable controlBg = new GradientDrawable();
+            controlBg.setColor(0xE6101419);
+            controlBg.setCornerRadius(dp(14));
+            controlBg.setStroke(dp(1), 0xFF343B45);
+            remoteControls.setBackground(controlBg);
+            remoteControls.setVisibility(View.GONE);
             firstControl = addControl(getString(R.string.player_play_pause), this::togglePlayPause);
             addControl("−10s", () -> seekBy(-10));
             addControl("+10s", () -> seekBy(10));
@@ -195,26 +167,10 @@ public final class MoviePlayerActivity extends Activity {
         bg.setColor(focused ? ((accent & 0x00FFFFFF) | 0xDD000000) : 0xFF20262D);
         bg.setStroke(dp(focused ? 2 : 1), focused ? Color.WHITE : 0xFF3A424C);
         b.setBackground(bg);
-        if (tvMode) b.setTextColor(focused ? UiTheme.contrastingTextColor(accent) : Color.WHITE);
         b.animate().scaleX(focused ? 1.055f : 1f).scaleY(focused ? 1.055f : 1f).setDuration(90L).start();
     }
 
-    private void adjustDeviceVolume(int direction) {
-        AudioManager audio = (AudioManager) getSystemService(AUDIO_SERVICE);
-        try {
-            if (audio == null || audio.isVolumeFixed()) throw new IllegalStateException();
-            audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, AudioManager.FLAG_SHOW_UI);
-        } catch (RuntimeException unsupported) {
-            Toast.makeText(this, R.string.player_control_unavailable, Toast.LENGTH_SHORT).show();
-        }
-    }
-
     private void immersive() {
-        if (tvMode && !appFullscreen) {
-            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
-            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
-            return;
-        }
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
         getWindow().getDecorView().setSystemUiVisibility(
                 View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
@@ -261,13 +217,29 @@ public final class MoviePlayerActivity extends Activity {
                 catch (Exception ignored) { return true; }
             }
 
+            @Override public void onReceivedHttpError(WebView view, WebResourceRequest request, android.webkit.WebResourceResponse response) {
+                if (tvMode && view == webView && request != null && response != null && isPlaybackDocument(request))
+                    showPlaybackError(tvText("Епизодът или видеото не е достъпно от този източник.", "This episode or video is unavailable from this source."));
+            }
+
+            @Override public void onReceivedError(WebView view, WebResourceRequest request, android.webkit.WebResourceError error) {
+                if (tvMode && view == webView && request != null && isPlaybackDocument(request))
+                    showPlaybackError(tvText("Видеото не може да бъде заредено. Проверете връзката и опитайте отново.", "Cannot load this video. Check your connection and try again."));
+            }
+
+            @Override public void onReceivedSslError(WebView view, android.webkit.SslErrorHandler handler, android.net.http.SslError error) {
+                super.onReceivedSslError(view, handler, error); // Default certificate rejection is preserved.
+                if (tvMode && view == webView && error != null && isPlaybackDocumentUrl(Uri.parse(safe(error.getUrl()))))
+                    showPlaybackError(tvText("Не може да се установи защитена връзка с видео източника.", "Cannot establish a secure connection to the video source."));
+            }
+
             @Override public void onPageFinished(WebView v, String url) {
                 super.onPageFinished(v, url);
+                if (tvMode && v != webView) return;
                 hardenEmbedPage();
                 if (tvMode) {
                     Uri location = Uri.parse(url == null ? "" : url);
                     Log.d(TAG, "player main-frame host=" + safe(location.getHost()));
-                    discoverTvSubtitles();
                     suppressTvEdgeFocus();
                     installTvPlaybackAssist();
                     main.postDelayed(MoviePlayerActivity.this::installTvPlaybackAssist, 900L);
@@ -311,6 +283,8 @@ public final class MoviePlayerActivity extends Activity {
         String scheme = safe(uri.getScheme()).toLowerCase(java.util.Locale.ROOT);
         if (!("https".equals(scheme) || "http".equals(scheme))) return false;
         String host = safe(uri.getHost()).toLowerCase(java.util.Locale.ROOT);
+        if (tvMode) return "https".equals(scheme)
+                && (selectedPlaybackHost.equals(host) || host.endsWith("." + selectedPlaybackHost));
         return PLAYER_HOST.equals(host) || host.endsWith("." + PLAYER_HOST);
     }
 
@@ -336,14 +310,14 @@ public final class MoviePlayerActivity extends Activity {
         webView.evaluateJavascript(js, null);
     }
 
-    /** Prefer an actually available standard HTML5 Bulgarian track without touching protected frames. */
+    /** Prefer an actually available app-language HTML5 track once, without touching protected frames. */
     private void installTvPlaybackAssist() {
         if (!tvMode || webView == null) return;
         String js = "(function(){try{" + accessibleVideoScript() +
                 "if(!best||!best.textTracks)return '0';" +
                 "if(best.__nyamaSubtitlePreferenceApplied)return '1';" +
                 "var found=-1;for(var i=0;i<best.textTracks.length;i++){var t=best.textTracks[i];" +
-                "if(/^(bg|bul)(-|$)/i.test(t.language||''))found=i;}" +
+                "if(new RegExp('^(" + (Config.LANG_EN.equals(config.language()) ? "en|eng" : "bg|bul") + ")(-|$)','i').test(t.language||''))found=i;}" +
                 "if(found<0)return '0';best.__nyamaSubtitlePreferenceApplied=true;" +
                 "for(var j=0;j<best.textTracks.length;j++)best.textTracks[j].mode=(j===found?'showing':'disabled');" +
                 "return '1';}catch(e){return '0';}})();";
@@ -359,74 +333,77 @@ public final class MoviePlayerActivity extends Activity {
                 "if(a>area){area=a;best=v;}}}";
     }
 
-    /** Discover only standard, accessible textTracks; absent cross-origin controls stay absent. */
-    private void discoverTvSubtitles() {
-        if (!tvMode || webView == null) return;
-        int generation = ++controlsGeneration;
-        webView.evaluateJavascript("(function(){try{" + accessibleVideoScript() +
-                "var ts=[];if(best&&best.textTracks)for(var i=0;i<best.textTracks.length;i++){var t=best.textTracks[i];" +
-                "if(t.kind==='subtitles'||t.kind==='captions')ts.push({index:i,label:t.label||t.language||(''+(i+1)),selected:t.mode==='showing'});}" +
-                "return JSON.stringify(ts);}catch(e){return '[]';}})();", value -> {
-            if (generation != controlsGeneration || webView == null || isFinishing()) return;
-            JSONArray tracks = decodeTracks(value);
-            if (tracks.length() == 0) {
-                if (subtitleControl != null) {
-                    controlButtons.remove(subtitleControl);
-                    remoteControls.removeView(subtitleControl);
-                    subtitleControl = null;
-                    controlIndex = Math.min(controlIndex, controlButtons.size() - 1);
-                    if (tvControlsMode) controlButtons.get(Math.max(0, controlIndex)).requestFocus();
-                }
-            } else if (subtitleControl == null) {
-                subtitleControl = addControl(getString(R.string.player_subtitles), this::showTvSubtitles);
-            }
-        });
-    }
-
-    private JSONArray decodeTracks(String encoded) {
-        try {
-            Object value = new org.json.JSONTokener(encoded == null ? "null" : encoded).nextValue();
-            return value instanceof String ? new JSONArray((String) value) : value instanceof JSONArray ? (JSONArray) value : new JSONArray();
-        } catch (Exception unavailable) { return new JSONArray(); }
-    }
-
-    private void showTvSubtitles() {
-        if (webView == null) return;
-        webView.evaluateJavascript("(function(){try{" + accessibleVideoScript() +
-                "var ts=[];if(best&&best.textTracks)for(var i=0;i<best.textTracks.length;i++){var t=best.textTracks[i];" +
-                "if(t.kind==='subtitles'||t.kind==='captions')ts.push({index:i,label:t.label||t.language||(''+(i+1)),selected:t.mode==='showing'});}" +
-                "return JSON.stringify(ts);}catch(e){return '[]';}})();", value -> {
-            if (webView == null || isFinishing()) return;
-            JSONArray tracks = decodeTracks(value);
-            if (tracks.length() == 0) { discoverTvSubtitles(); return; }
-            String[] names = new String[tracks.length() + 1];
-            names[0] = config.language().equals("en") ? "Off" : "Изключени";
-            int selected = 0;
-            for (int i = 0; i < tracks.length(); i++) {
-                JSONObject track = tracks.optJSONObject(i);
-                names[i + 1] = track.optString("label");
-                if (track.optBoolean("selected")) selected = i + 1;
-            }
-            subtitleDialog = new AlertDialog.Builder(this).setTitle(getString(R.string.player_subtitles))
-                    .setSingleChoiceItems(names, selected, (dialog, position) -> {
-                        int index = position == 0 ? -1 : tracks.optJSONObject(position - 1).optInt("index", -1);
-                        if (webView != null) webView.evaluateJavascript("(function(){try{" + accessibleVideoScript() +
-                                "if(!best||!best.textTracks)return '0';for(var i=0;i<best.textTracks.length;i++)" +
-                                "best.textTracks[i].mode=(i===" + index + "?'showing':'disabled');return '1';}catch(e){return '0';}})();", null);
-                        dialog.dismiss();
-                    }).setNegativeButton(R.string.cancel, null).create();
-            subtitleDialog.setOnDismissListener(dialog -> {
-                subtitleDialog = null;
-                if (tvControlsMode && subtitleControl != null) subtitleControl.requestFocus();
-            });
-            subtitleDialog.show();
-        });
-    }
-
     private void loadPlayer() {
         String path = "series".equals(type) ? "tv" : "movie";
-        // /tv/{id} retains StreamIMDB's provider-owned season and episode selector.
-        webView.loadUrl(PLAYER_BASE + path + "/" + Uri.encode(id));
+        if (!tvMode) {
+            webView.loadUrl(PLAYER_BASE + path + "/" + Uri.encode(id));
+            return;
+        }
+        try {
+            boolean selection = getIntent().hasExtra("season") || getIntent().hasExtra("episode") || returnToSeries;
+            if ("series".equals(type) && selection) {
+                loadedPlayerUrl = TvPlaybackSource.episode(id, safe(getIntent().getStringExtra("series_imdb_id")),
+                        getIntent().getIntExtra("season", -1), getIntent().getIntExtra("episode", -1), config.language(), UiTheme.accent(this));
+            } else if ("movies".equals(type)) {
+                loadedPlayerUrl = TvPlaybackSource.movie(id, config.language(), UiTheme.accent(this));
+            } else {
+                // No accurate episode metadata: preserve the existing series route, never invent S1E1.
+                loadedPlayerUrl = PLAYER_BASE + "tv/" + Uri.encode(id);
+            }
+            selectedPlaybackHost = Uri.parse(loadedPlayerUrl).getHost();
+            webView.loadUrl(loadedPlayerUrl);
+        } catch (IllegalArgumentException invalidIdentity) {
+            showPlaybackError(tvText("Избраният епизод или идентификатор не е валиден. Изберете епизода отново.",
+                    "The selected episode or title identity is invalid. Select the episode again."));
+        }
+    }
+
+    private boolean isPlaybackDocument(WebResourceRequest request) {
+        if (request.isForMainFrame()) return true;
+        return isPlaybackDocumentUrl(request.getUrl());
+    }
+
+    private boolean isPlaybackDocumentUrl(Uri uri) {
+        return uri != null && "https".equals(uri.getScheme()) && !loadedPlayerUrl.isEmpty()
+                && (selectedPlaybackHost.equals(uri.getHost()) || "nextgencloudfabric.com".equals(uri.getHost()))
+                && Uri.parse(loadedPlayerUrl).getPath().equals(uri.getPath());
+    }
+
+    private String tvText(String bg, String en) { return Config.LANG_EN.equals(config.language()) ? en : bg; }
+
+    private void showPlaybackError(String explanation) {
+        if (!tvMode || isFinishing() || isDestroyed() || leavingPlayback || playbackFailed) return;
+        playbackFailed = true;
+        releaseMovieWebView();
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setGravity(Gravity.CENTER);
+        panel.setPadding(dp(40), dp(32), dp(40), dp(32));
+        panel.setBackgroundColor(0xFF080A0D);
+        TextView message = new TextView(this);
+        message.setText(explanation);
+        message.setTextSize(22);
+        message.setTextColor(Color.WHITE);
+        message.setGravity(Gravity.CENTER);
+        panel.addView(message, new LinearLayout.LayoutParams(-1, -2));
+        Button retry = new Button(this);
+        retry.setText(tvText("Опитай отново", "Try again"));
+        retry.setAllCaps(false);
+        retry.setOnClickListener(view -> {
+            playbackFailed = false;
+            playbackError = null;
+            setContentView(buildUi());
+            loadPlayer(); // The identical selected title/episode only; no provider or episode fallback.
+        });
+        panel.addView(retry, new LinearLayout.LayoutParams(dp(400), dp(60)));
+        Button back = new Button(this);
+        back.setText(returnToSeries ? tvText("Назад към епизодите", "Back to episodes") : tvText("Назад", "Back"));
+        back.setAllCaps(false);
+        back.setOnClickListener(view -> finishTvPlayback());
+        panel.addView(back, new LinearLayout.LayoutParams(dp(400), dp(60)));
+        playbackError = panel;
+        root.addView(panel, new FrameLayout.LayoutParams(-1, -1));
+        retry.requestFocus();
     }
 
     private void seekBy(int seconds) {
@@ -506,53 +483,28 @@ public final class MoviePlayerActivity extends Activity {
         }
     }
 
-    private void moveNativeControl(int delta) {
-        if (controlButtons.isEmpty()) return;
-        int focused = -1;
-        for (int i = 0; i < controlButtons.size(); i++) {
-            if (controlButtons.get(i).hasFocus()) { focused = i; break; }
-        }
-        if (focused >= 0) controlIndex = focused;
-        controlIndex = (controlIndex + delta + controlButtons.size()) % controlButtons.size();
-        Button target = controlButtons.get(controlIndex);
-        target.requestFocus();
-        scheduleControlsHide();
-    }
-
-    private void activateNativeControl() {
-        if (controlButtons.isEmpty()) return;
-        int focused = -1;
-        for (int i = 0; i < controlButtons.size(); i++) {
-            if (controlButtons.get(i).hasFocus()) { focused = i; break; }
-        }
-        if (focused >= 0) controlIndex = focused;
-        controlButtons.get(Math.max(0, Math.min(controlIndex, controlButtons.size() - 1))).performClick();
-    }
-
-
-
-
-
     /**
      * Android-TV Movies/Series control without an external Nyama+ control bar.
      * The selected provider stays in the existing WebView. We first control an accessible HTML5
      * video (including same-origin nested frames); otherwise the provider WebView receives a
-     * complete native SPACE press as fallback. StreamIMDB is known to handle SPACE even when
-     * its cross-origin player does not handle ENTER or DPAD_CENTER.
+     * complete native SPACE press as fallback. Cross-origin shortcut support depends on the
+     * provider; a routed key is not proof that playback changed.
      */
     private void toggleTvPlayback() {
         if (!tvMode || webView == null) return;
+        final WebView requestedView = webView;
         String js = "(function(){try{" +
                 "function docs(d,a){a.push(d);var f=d.querySelectorAll('iframe');for(var i=0;i<f.length;i++){try{if(f[i].contentDocument)docs(f[i].contentDocument,a);}catch(e){}}return a;}" +
                 "var ds=docs(document,[]),best=null,area=-1;for(var j=0;j<ds.length;j++){var vs=ds[j].querySelectorAll('video');for(var k=0;k<vs.length;k++){var v=vs[k],r=v.getBoundingClientRect(),a=Math.max(0,r.width)*Math.max(0,r.height);if(a>area){area=a;best=v;}}}" +
                 "if(!best)return '0';if(best.paused||best.ended){var p=best.play();if(p&&p.catch)p.catch(function(){});}else{best.pause();}return '1';" +
                 "}catch(e){return '0';}})();";
         webView.evaluateJavascript(js, result -> {
+            if (requestedView != webView || playbackFailed || leavingPlayback) return;
             if (result != null && result.contains("1")) {
                 Log.d(TAG, "play/pause strategy=direct HTML5 video");
             } else {
                 // A cross-origin frame hides its <video> from injected JavaScript. SPACE is the
-                // provider shortcut proven to work; ENTER/DPAD_CENTER is deliberately not reused.
+                // existing shortcut fallback; ENTER/DPAD_CENTER is deliberately not reused.
                 Log.d(TAG, "play/pause strategy=KEYCODE_SPACE fallback");
                 sendNativeKeyToPlayer(KeyEvent.KEYCODE_SPACE);
             }
@@ -561,10 +513,12 @@ public final class MoviePlayerActivity extends Activity {
 
     private void setTvPlayback(boolean play) {
         if (!tvMode || webView == null) return;
+        final WebView requestedView = webView;
         String action = play ? "play" : "pause";
         String js = "(function(){try{var v=document.querySelector('video');if(!v)return '0';v."
                 + action + "();return '1';}catch(e){return '0';}})();";
         webView.evaluateJavascript(js, result -> {
+            if (requestedView != webView || playbackFailed || leavingPlayback) return;
             if (result != null && result.contains("1")) {
                 Log.d(TAG, action + " strategy=direct HTML5 video");
             } else {
@@ -578,12 +532,14 @@ public final class MoviePlayerActivity extends Activity {
 
     private void seekTvPlayback(int seconds) {
         if (!tvMode || webView == null) return;
+        final WebView requestedView = webView;
         String js = "(function(){try{" +
                 "function docs(d,a){a.push(d);var f=d.querySelectorAll('iframe');for(var i=0;i<f.length;i++){try{if(f[i].contentDocument)docs(f[i].contentDocument,a);}catch(e){}}return a;}" +
                 "var ds=docs(document,[]),best=null,area=-1;for(var j=0;j<ds.length;j++){var vs=ds[j].querySelectorAll('video');for(var k=0;k<vs.length;k++){var v=vs[k],r=v.getBoundingClientRect(),a=Math.max(0,r.width)*Math.max(0,r.height);if(a>area){area=a;best=v;}}}" +
                 "if(!best)return '0';var d=isFinite(best.duration)?best.duration:1e15;best.currentTime=Math.max(0,Math.min(d,(best.currentTime||0)+(" + seconds + ")));return '1';" +
                 "}catch(e){return '0';}})();";
         webView.evaluateJavascript(js, result -> {
+            if (requestedView != webView || playbackFailed || leavingPlayback) return;
             if (result == null || !result.contains("1")) {
                 // Let the provider handle its own keyboard shortcut when the media element lives
                 // inside an inaccessible/cross-origin frame.
@@ -599,13 +555,12 @@ public final class MoviePlayerActivity extends Activity {
         target.setFocusableInTouchMode(true);
         target.requestFocus();
         Runnable dispatch = () -> {
+            if (leavingPlayback || playbackFailed || target != (customView != null ? customView : webView)) return;
             long now = android.os.SystemClock.uptimeMillis();
             Log.d(TAG, "forwarding " + KeyEvent.keyCodeToString(keyCode) + " down/up to "
                     + (target == customView ? "fullscreen customView" : "WebView"));
             target.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0));
             target.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0));
-            if (tvControlsMode && !controlButtons.isEmpty())
-                controlButtons.get(Math.max(0, Math.min(controlIndex, controlButtons.size() - 1))).requestFocus();
         };
         if (target != webView) {
             dispatch.run();
@@ -627,8 +582,6 @@ public final class MoviePlayerActivity extends Activity {
 
     /** TV BACK is intentionally two distinct physical presses; duplicate callbacks are ignored. */
     private void handleTvBackPressed() {
-        if (subtitleDialog != null) { subtitleDialog.dismiss(); clearBackArm(); return; }
-        if (tvControlsMode) { setControlsVisible(false, false); clearBackArm(); return; }
         long now = android.os.SystemClock.uptimeMillis();
         if (now - lastAcceptedBackAt < BACK_DUPLICATE_GUARD_MS) return;
         lastAcceptedBackAt = now;
@@ -638,11 +591,11 @@ public final class MoviePlayerActivity extends Activity {
             clearBackArm();
             return;
         }
-        if (webView == null) return;
+        if (webView == null && !playbackFailed) return;
 
         if (closeArmed) {
             clearBackArm();
-            returnToLiveTv();
+            finishTvPlayback();
             return;
         }
 
@@ -658,35 +611,14 @@ public final class MoviePlayerActivity extends Activity {
     private boolean handleTvRemoteKeyDown(KeyEvent event) {
         int keyCode = event.getKeyCode();
         int repeat = event.getRepeatCount();
-        if (tvControlsMode) {
-            if (repeat > 0) return true;
-            switch (keyCode) {
-                case KeyEvent.KEYCODE_DPAD_LEFT:
-                case KeyEvent.KEYCODE_DPAD_UP:
-                    moveNativeControl(-1); return true;
-                case KeyEvent.KEYCODE_DPAD_RIGHT:
-                    moveNativeControl(1); return true;
-                case KeyEvent.KEYCODE_DPAD_DOWN:
-                case KeyEvent.KEYCODE_BACK:
-                case KeyEvent.KEYCODE_ESCAPE:
-                    setControlsVisible(false, false); clearBackArm(); return true;
-                case KeyEvent.KEYCODE_DPAD_CENTER:
-                case KeyEvent.KEYCODE_ENTER:
-                case KeyEvent.KEYCODE_NUMPAD_ENTER:
-                    activateNativeControl(); return true;
-                case KeyEvent.KEYCODE_MENU:
-                case KeyEvent.KEYCODE_SETTINGS:
-                case KeyEvent.KEYCODE_INFO:
-                    return true;
-            }
-        }
+
         switch (keyCode) {
             case KeyEvent.KEYCODE_DPAD_UP:
             case KeyEvent.KEYCODE_DPAD_DOWN:
             case KeyEvent.KEYCODE_MENU:
             case KeyEvent.KEYCODE_SETTINGS:
             case KeyEvent.KEYCODE_INFO:
-                if (repeat == 0) { clearBackArm(); setControlsVisible(true, true); discoverTvSubtitles(); }
+                // Playback mode has no Nyama+ controls surface or hidden focus targets.
                 return true;
             case KeyEvent.KEYCODE_DPAD_LEFT:
                 if (repeat == 0) seekTvPlayback(-10); return true;
@@ -740,6 +672,9 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if (tvMode && playbackFailed && event != null
+                && event.getKeyCode() != KeyEvent.KEYCODE_BACK && event.getKeyCode() != KeyEvent.KEYCODE_ESCAPE)
+            return super.dispatchKeyEvent(event); // Retry/Return are real focusable error actions, not playback controls.
         if (!tvMode || event == null || !isTvRemoteKey(event.getKeyCode())) {
             return super.dispatchKeyEvent(event);
         }
@@ -772,7 +707,6 @@ public final class MoviePlayerActivity extends Activity {
     private void setControlsVisible(boolean visible, boolean focus) {
         if (remoteControls == null) return;
         remoteControls.setVisibility(visible ? View.VISIBLE : View.GONE);
-        if (tvMode) tvControlsMode = visible;
         main.removeCallbacks(hideControls);
         if (visible) {
             providerMenuMode = false;
@@ -925,6 +859,16 @@ public final class MoviePlayerActivity extends Activity {
         tryDismissPlayerOverlayThenMaybeClose();
     }
 
+    private void finishTvPlayback() {
+        leavingPlayback = true;
+        if (returnToSeries) {
+            clearBackArm();
+            releaseMovieWebView();
+            resumeTvWhenClosing = false;
+            finish(); // Existing series detail Activity and its selected episode remain in place.
+        } else returnToLiveTv();
+    }
+
     private void returnToLiveTv() {
         clearBackArm();
         // Destroy movie media before requesting Live TV, so the two audio sources cannot overlap.
@@ -937,8 +881,6 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     private void releaseMovieWebView() {
-        if (subtitleDialog != null) subtitleDialog.dismiss();
-        controlsGeneration++;
         hideCustomView();
         if (webView != null) {
             webView.stopLoading();
@@ -953,6 +895,7 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        leavingPlayback = true;
         main.removeCallbacks(clearCloseArm);
         main.removeCallbacks(hideControls);
         releaseMovieWebView();

@@ -3,11 +3,12 @@ package fun.nyama.tv;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.ActivityInfo;
+import android.content.ActivityNotFoundException;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
+import android.net.Uri;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
@@ -22,6 +23,7 @@ import org.json.JSONObject;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 public final class TitleDetailActivity extends Activity {
     private final ExecutorService io = Executors.newSingleThreadExecutor();
@@ -33,6 +35,12 @@ public final class TitleDetailActivity extends Activity {
     private Button favoriteButton;
     private TextView details;
     private ProgressBar loading;
+    private Button watchButton;
+    private TvSeriesSelectionView seriesSelection;
+    private Future<?> infoTask;
+    private volatile boolean detailDestroyed;
+    private int infoGeneration;
+    private boolean restoreSeriesFocus;
 
     @Override protected void attachBaseContext(Context newBase) {
         super.attachBaseContext(LocaleHelper.wrap(newBase));
@@ -46,16 +54,29 @@ public final class TitleDetailActivity extends Activity {
         id = safe(getIntent().getStringExtra("id"));
         section = "series".equals(getIntent().getStringExtra("type")) ? "series" : "movies";
         title = safe(getIntent().getStringExtra("title"));
+        restoreSeriesFocus = state != null && state.getBoolean("series_selection_focus", false);
         setContentView(buildUi());
         loadInfo();
     }
 
     @Override protected void onResume() {
         super.onResume();
-        if (!isFinishing()) ActivationAccess.require(this);
+        if (!isFinishing() && ActivationAccess.require(this) && restoreSeriesFocus && seriesSelection != null) {
+            seriesSelection.post(() -> {
+                if (!detailDestroyed && !isFinishing()) seriesSelection.restoreSelectionFocus();
+            });
+        }
+    }
+
+    @Override protected void onSaveInstanceState(Bundle state) {
+        state.putBoolean("series_selection_focus", restoreSeriesFocus);
+        super.onSaveInstanceState(state);
     }
 
     @Override protected void onDestroy() {
+        detailDestroyed = true;
+        infoGeneration++;
+        if (infoTask != null) infoTask.cancel(true);
         io.shutdownNow();
         super.onDestroy();
     }
@@ -120,6 +141,7 @@ public final class TitleDetailActivity extends Activity {
         LinearLayout actions = horizontal();
         actions.setGravity(phone ? Gravity.CENTER_HORIZONTAL : Gravity.START | Gravity.CENTER_VERTICAL);
         Button watch = primaryButton(getString(R.string.watch_now), phone ? 18 : 15, accent);
+        watchButton = watch;
         watch.setOnClickListener(v -> openPlayer());
         favoriteButton = secondaryButton("", phone ? 17 : 14, accent);
         favoriteButton.setOnClickListener(v -> { favorites.toggle(id); updateFavoriteButton(); });
@@ -136,6 +158,21 @@ public final class TitleDetailActivity extends Activity {
         }
         LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(-1, -2); ap.setMargins(0, dp(18), 0, dp(16));
         info.addView(actions, ap);
+
+        if (!phone && "series".equals(section)) {
+            seriesSelection = new TvSeriesSelectionView(this, id, new TvSeriesSelectionView.Listener() {
+                @Override public void onSelectionChanged(TvSeriesMetadata.Episode episode, boolean metadataPresent) {
+                    watchButton.setEnabled(!metadataPresent || episode != null);
+                    watchButton.setAlpha(watchButton.isEnabled() ? 1f : 0.55f);
+                    watchButton.setContentDescription(episode == null ? getString(R.string.watch_now)
+                            : getString(R.string.watch_now) + " · S" + episode.season + " E" + episode.number);
+                }
+                @Override public void onPlay(TvSeriesMetadata.Episode episode) { openEpisode(episode); }
+                @Override public void onSource(String url) { openMetadataSource(url); }
+            });
+            seriesSelection.setAbove(watch);
+            info.addView(seriesSelection, new LinearLayout.LayoutParams(-1, -2));
+        }
 
         loading = new ProgressBar(this);
         loading.setIndeterminate(true);
@@ -195,17 +232,44 @@ public final class TitleDetailActivity extends Activity {
     }
 
     private void loadInfo() {
-        io.execute(() -> {
+        final int generation = ++infoGeneration;
+        final String requestedId = id;
+        final boolean loadEpisodes = seriesSelection != null;
+        final Context context = getApplicationContext();
+        infoTask = io.submit(() -> {
+            JSONObject fetched = null;
             try {
-                JSONObject data = PukankiApi.fetchTitleInfo(this, id);
-                runOnUiThread(() -> renderInfo(data));
+                fetched = PukankiApi.fetchTitleInfo(context, requestedId);
             } catch (Exception e) {
-                runOnUiThread(() -> {
+                // Episode metadata has its own cache and can still be loaded when title info fails.
+            }
+            final JSONObject data = fetched;
+            runOnUiThread(() -> {
+                if (!currentInfo(generation, requestedId)) return;
+                if (data != null) renderInfo(data);
+                else {
                     loading.setVisibility(View.GONE);
                     details.setText(getString(R.string.info_unavailable));
+                }
+            });
+            if (!loadEpisodes || detailDestroyed || Thread.currentThread().isInterrupted()) return;
+            try {
+                TvSeriesMetadata metadata = TvSeriesRepository.get(context).load(requestedId, data, System.currentTimeMillis());
+                runOnUiThread(() -> {
+                    if (!currentInfo(generation, requestedId)) return;
+                    seriesSelection.bind(metadata);
+                    if (restoreSeriesFocus || seriesSelection.hadRememberedSelection()) seriesSelection.restoreSelectionFocus();
+                });
+            } catch (Exception failure) {
+                runOnUiThread(() -> {
+                    if (currentInfo(generation, requestedId)) seriesSelection.showUnavailable();
                 });
             }
         });
+    }
+
+    private boolean currentInfo(int generation, String requestedId) {
+        return !detailDestroyed && !isFinishing() && generation == infoGeneration && requestedId.equals(id);
     }
 
     private void renderInfo(JSONObject data) {
@@ -281,9 +345,33 @@ public final class TitleDetailActivity extends Activity {
     }
 
     private void openPlayer() {
+        if (seriesSelection != null && seriesSelection.hasMetadata()) {
+            TvSeriesMetadata.Episode episode = seriesSelection.selectedEpisode();
+            if (episode != null) openEpisode(episode);
+            return;
+        }
         Intent i = new Intent(this, MoviePlayerActivity.class);
         i.putExtra("id", id); i.putExtra("type", section); i.putExtra("title", title);
         startActivity(i);
+    }
+
+    private void openEpisode(TvSeriesMetadata.Episode episode) {
+        if (config.isPhoneMode() || !"series".equals(section) || episode == null
+                || !episode.eligibleForPlayback() || episode.season < 0 || episode.number <= 0
+                || !id.matches("tt[0-9]{7,10}") || seriesSelection == null
+                || seriesSelection.selectedEpisode() != episode) return;
+        restoreSeriesFocus = true;
+        startActivity(new Intent(this, MoviePlayerActivity.class)
+                .putExtra("id", id).putExtra("type", section).putExtra("title", title)
+                .putExtra("series_imdb_id", id).putExtra("season", episode.season)
+                .putExtra("episode", episode.number).putExtra("return_to_series", true));
+    }
+
+    private void openMetadataSource(String value) {
+        String url = TvSeriesSelectionView.safeSourceUrl(value);
+        if (url.isEmpty()) return;
+        try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))); }
+        catch (ActivityNotFoundException ignored) { /* TV devices need not have a browser. */ }
     }
 
     private void updateFavoriteButton() {
