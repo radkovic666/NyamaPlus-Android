@@ -3,6 +3,7 @@ package fun.nyama.tv;
 import android.app.Application;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Color;
 import android.net.Uri;
 import android.net.http.SslCertificate;
 import android.net.http.SslError;
@@ -12,6 +13,7 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
 import android.webkit.SslErrorHandler;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -32,6 +34,10 @@ import org.robolectric.RuntimeEnvironment;
 import org.robolectric.Shadows;
 import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Config;
+import org.robolectric.annotation.Implementation;
+import org.robolectric.annotation.Implements;
+import org.robolectric.annotation.RealObject;
+import org.robolectric.shadows.ShadowWebView;
 import org.robolectric.annotation.LooperMode;
 import org.robolectric.shadow.api.Shadow;
 import org.robolectric.util.ReflectionHelpers;
@@ -48,7 +54,7 @@ import static org.junit.Assert.*;
 
 /** Native remote/routing checks with synthetic WebView responses; no live provider or hardware. */
 @RunWith(RobolectricTestRunner.class)
-@Config(sdk = 28, application = Application.class)
+@Config(sdk = 28, application = Application.class, shadows = MoviePlayerControlsTest.PlayerLayoutWebViewShadow.class)
 @LooperMode(LooperMode.Mode.PAUSED)
 public class MoviePlayerControlsTest {
     private static final String MOVIE = "tt0111161";
@@ -71,6 +77,24 @@ public class MoviePlayerControlsTest {
         activities.clear();
     }
 
+    /** Models the real provider's superclass layout delegation, absent from Robolectric's proxy. */
+    @Implements(WebView.class)
+    public static class PlayerLayoutWebViewShadow extends ShadowWebView {
+        @RealObject private WebView target;
+        @Implementation protected boolean setFrame(int left, int top, int right, int bottom) {
+            return Shadow.directlyOn(target, View.class, "setFrame",
+                    ReflectionHelpers.ClassParameter.from(int.class, left),
+                    ReflectionHelpers.ClassParameter.from(int.class, top),
+                    ReflectionHelpers.ClassParameter.from(int.class, right),
+                    ReflectionHelpers.ClassParameter.from(int.class, bottom));
+        }
+        @Implementation protected void onMeasure(int width, int height) {
+            Shadow.directlyOn(target, View.class, "onMeasure",
+                    ReflectionHelpers.ClassParameter.from(int.class, width),
+                    ReflectionHelpers.ClassParameter.from(int.class, height));
+        }
+    }
+
     private static Intent title(String type, String id) {
         return new Intent(RuntimeEnvironment.getApplication(), MoviePlayerActivity.class)
                 .putExtra("id", id).putExtra("type", type).putExtra("title", "Synthetic title");
@@ -81,24 +105,27 @@ public class MoviePlayerControlsTest {
                 .putExtra("season", season).putExtra("episode", episode).putExtra("return_to_series", true);
     }
 
-    private ActivityController<MoviePlayerActivity> open(boolean phone, String type) {
+    private ActivityController<MoviePlayerActivity> open(boolean phone, String type) throws Exception {
         return open(phone, title(type, "series".equals(type) ? SERIES : MOVIE));
     }
 
-    private ActivityController<MoviePlayerActivity> open(boolean phone, Intent intent) {
+    private ActivityController<MoviePlayerActivity> open(boolean phone, Intent intent) throws Exception {
         Context context = RuntimeEnvironment.getApplication();
         new fun.nyama.tv.Config(context).setDeviceMode(phone ? fun.nyama.tv.Config.MODE_PHONE : fun.nyama.tv.Config.MODE_TV);
         ActivityController<MoviePlayerActivity> lifecycle = Robolectric.buildActivity(MoviePlayerActivity.class, intent)
                 .create().start().resume().visible();
         activities.add(lifecycle);
         MoviePlayerActivity activity = lifecycle.get();
-        View root = activity.findViewById(android.R.id.content);
-        root.measure(View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY));
-        root.layout(0, 0, 1920, 1080);
+        layoutPlayer(activity);
         idle();
         // Physical remote presses occur after creation, outside the duplicate BACK guard.
         Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300));
+        if (!flag(activity, "playbackFailed")) {
+            WebView browser = web(activity);
+            assertNotNull("Foreground=" + flag(activity, "tvForeground") + ", attached=" + browser.isAttachedToWindow()
+                    + ", browser size=" + browser.getWidth() + "x" + browser.getHeight()
+                    + ": the foreground player must load its selected document", url(activity));
+        }
         return lifecycle;
     }
 
@@ -108,6 +135,33 @@ public class MoviePlayerControlsTest {
     }
 
     private static void idle() { Shadows.shadowOf(Looper.getMainLooper()).idle(); }
+
+    private static void layoutPlayer(MoviePlayerActivity activity) {
+        View decor = activity.getWindow().getDecorView();
+        decor.measure(View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY));
+        decor.layout(0, 0, 1920, 1080);
+        View root = activity.findViewById(android.R.id.content);
+        root.measure(View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY));
+        root.layout(0, 0, 1920, 1080);
+        // A programmatic setContentView replacement does not receive a platform traversal in
+        // Robolectric's paused looper. Supply the Activity's full-parent player frame as well.
+        if (root instanceof ViewGroup) {
+            ViewGroup content = (ViewGroup) root;
+            for (int i = 0; i < content.getChildCount(); i++) {
+                View playerFrame = content.getChildAt(i);
+                playerFrame.measure(View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY),
+                        View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY));
+                playerFrame.layout(0, 0, 1920, 1080);
+            }
+        }
+        for (View child : views(root)) if (child instanceof WebView) {
+            assertTrue("The browser fixture must be attached to the actual Activity window", child.isAttachedToWindow());
+            assertTrue("The browser fixture must have real full-parent bounds: " + child.getWidth() + "x" + child.getHeight(),
+                    child.getWidth() > 0 && child.getHeight() > 0);
+        }
+    }
 
     private static Field field(String name) throws Exception {
         Field field = MoviePlayerActivity.class.getDeclaredField(name);
@@ -173,6 +227,7 @@ public class MoviePlayerControlsTest {
         long now = SystemClock.uptimeMillis();
         activity.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, key, 0));
         activity.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, key, 0));
+        layoutPlayer(activity);
         idle();
     }
 
@@ -224,6 +279,7 @@ public class MoviePlayerControlsTest {
     }
 
     private static void assertVapRoute(MoviePlayerActivity activity, String path, String language) throws Exception {
+        assertNotNull("The selected VAPLayer document must actually be loaded", url(activity));
         Uri uri = Uri.parse(url(activity));
         assertEquals("https", uri.getScheme());
         assertEquals("vaplayer.ru", uri.getHost());
@@ -568,6 +624,7 @@ public class MoviePlayerControlsTest {
         idle();
         assertTrue(Shadows.shadowOf(failed).wasDestroyCalled());
         screenButton(activity, "Try again").performClick();
+        layoutPlayer(activity);
         idle();
         WebView retried = web(activity);
         assertNotNull(retried);
@@ -632,4 +689,210 @@ public class MoviePlayerControlsTest {
         assertFalse(phoneClient.shouldOverrideUrlLoading(phoneWeb, "https://streamimdb.ru/embed/movie/" + MOVIE));
         assertTrue(phoneClient.shouldOverrideUrlLoading(phoneWeb, "https://vaplayer.ru/embed/movie/" + MOVIE));
     }
+    /** Models only Android's render acknowledgement; never claims provider media is playable. */
+    private static final class VisualWebView extends WebView {
+        VisualStateCallback visualCallback;
+        long requestId;
+        VisualWebView(Context context) { super(context); }
+        @Override public void postVisualStateCallback(long requestId, VisualStateCallback callback) {
+            this.requestId = requestId;
+            visualCallback = callback;
+        }
+        void presentFrame() {
+            assertNotNull("A selected-document render callback must have been requested", visualCallback);
+            visualCallback.onComplete(requestId);
+        }
+    }
+
+    private static VisualWebView captureVisualState(MoviePlayerActivity activity) throws Exception {
+        WebView old = web(activity);
+        ViewGroup parent = (ViewGroup) old.getParent();
+        int index = parent.indexOfChild(old);
+        ViewGroup.LayoutParams params = old.getLayoutParams();
+        String selected = url(activity);
+        parent.removeView(old);
+        old.destroy();
+        VisualWebView target = new VisualWebView(activity);
+        field("webView").set(activity, target);
+        ReflectionHelpers.callInstanceMethod(activity, "configureWebView",
+                ReflectionHelpers.ClassParameter.from(WebView.class, target));
+        parent.addView(target, index, params);
+        target.loadUrl(selected);
+        layoutPlayer(activity);
+        return target;
+    }
+
+    private static View loadingSurface(MoviePlayerActivity activity) throws Exception {
+        return (View) field("tvLoadingSurface").get(activity);
+    }
+
+    @Test public void tvLoadingIsDarkAndNonFocusableUntilSelectedDocumentFrameIsPresented() throws Exception {
+        MoviePlayerActivity activity = open(false, episode(2, 3)).get();
+        VisualWebView target = captureVisualState(activity);
+        View loading = loadingSurface(activity);
+        assertEquals(Color.BLACK, Shadows.shadowOf(target).getBackgroundColor());
+        assertEquals(View.VISIBLE, loading.getVisibility());
+        assertFalse(loading.isFocusable());
+        assertFalse(loading.isClickable());
+        WebViewClient client = Shadows.shadowOf(target).getWebViewClient();
+        client.onPageCommitVisible(target, "about:blank");
+        client.onPageCommitVisible(target, "https://vaplayer.ru/embed/tv/" + SERIES + "/2/4");
+        assertNull(target.visualCallback);
+        client.onPageCommitVisible(target, url(activity));
+        assertNotNull(target.visualCallback);
+        assertEquals("Commit requests a render acknowledgement rather than exposing a blank surface",
+                View.VISIBLE, loading.getVisibility());
+        target.presentFrame();
+        assertEquals(View.GONE, loading.getVisibility());
+        assertNoTvPlaybackBar(activity);
+    }
+
+    @Test public void delayedVisualCallbackCannotRevealAReplacementPlayer() throws Exception {
+        MoviePlayerActivity activity = open(false, episode(2, 3)).get();
+        VisualWebView failed = captureVisualState(activity);
+        WebViewClient client = Shadows.shadowOf(failed).getWebViewClient();
+        client.onPageCommitVisible(failed, url(activity));
+        assertTrue(client.onRenderProcessGone(failed, null));
+        idle();
+        layoutPlayer(activity);
+        idle();
+        assertNotSame(failed, web(activity));
+        View replacementLoading = loadingSurface(activity);
+        assertEquals(View.VISIBLE, replacementLoading.getVisibility());
+        failed.presentFrame();
+        assertEquals(View.VISIBLE, replacementLoading.getVisibility());
+    }
+
+    @Test public void explicitRendererLossRecoversOnlyOnceUsingTheExactSelectedEpisode() throws Exception {
+        MoviePlayerActivity activity = open(false, episode(2, 3)).get();
+        String selected = url(activity);
+        WebView failed = web(activity);
+        assertTrue(Shadows.shadowOf(failed).getWebViewClient().onRenderProcessGone(failed, null));
+        idle();
+        layoutPlayer(activity);
+        idle();
+        WebView replacement = web(activity);
+        assertNotNull(replacement);
+        assertNotSame(failed, replacement);
+        assertTrue(Shadows.shadowOf(failed).wasDestroyCalled());
+        assertEquals("Dead renderers must not be navigated to about:blank", selected,
+                Shadows.shadowOf(failed).getLastLoadedUrl());
+        assertEquals(selected, url(activity));
+        assertTrue("A replacement in a resumed Activity must resume global WebView timers",
+                Shadows.shadowOf(replacement).wasOnResumeCalled());
+        assertNull(Shadows.shadowOf(activity).getNextStartedActivity());
+        assertTrue(Shadows.shadowOf(replacement).getWebViewClient().onRenderProcessGone(replacement, null));
+        idle();
+        assertNull(web(activity));
+        assertNotNull(screenButton(activity, "Try again"));
+        assertNotNull(screenButton(activity, "Back to episodes"));
+        screenButton(activity, "Try again").performClick();
+        layoutPlayer(activity);
+        idle();
+        assertEquals(selected, url(activity));
+        WebView manualRetry = web(activity);
+        assertTrue(Shadows.shadowOf(manualRetry).getWebViewClient().onRenderProcessGone(manualRetry, null));
+        idle();
+        assertNull("Explicit Retry must not create an endless automatic recovery loop", web(activity));
+        assertNotNull(screenButton(activity, "Try again"));
+    }
+
+    @Test public void rendererRecoveryWaitsUntilTheTvActivityResumes() throws Exception {
+        ActivityController<MoviePlayerActivity> lifecycle = open(false, episode(2, 3));
+        MoviePlayerActivity activity = lifecycle.get();
+        String selected = url(activity);
+        WebView failed = web(activity);
+        lifecycle.pause();
+        assertTrue(Shadows.shadowOf(failed).getWebViewClient().onRenderProcessGone(failed, null));
+        idle();
+        assertNull(web(activity));
+        assertTrue(flag(activity, "rendererRecoveryPending"));
+        assertNull(Shadows.shadowOf(activity).getNextStartedActivity());
+        lifecycle.resume();
+        layoutPlayer(activity);
+        idle();
+        assertNotNull(web(activity));
+        assertEquals(selected, url(activity));
+        assertFalse(flag(activity, "rendererRecoveryPending"));
+    }
+
+    @Test public void pauseBeforeFirstLayoutDefersTvAutoplayUntilResume() throws Exception {
+        new fun.nyama.tv.Config(RuntimeEnvironment.getApplication()).setDeviceMode(fun.nyama.tv.Config.MODE_TV);
+        ActivityController<MoviePlayerActivity> lifecycle = Robolectric.buildActivity(MoviePlayerActivity.class, episode(3, 7))
+                .create().start().resume();
+        activities.add(lifecycle);
+        MoviePlayerActivity activity = lifecycle.get();
+        assertNull(url(activity));
+        lifecycle.pause();
+        lifecycle.visible();
+        layoutPlayer(activity);
+        idle();
+        assertNull("A queued layout must not start VOD while the Activity is paused", url(activity));
+        lifecycle.resume();
+        layoutPlayer(activity);
+        idle();
+        assertVapRoute(activity, "/embed/tv/" + SERIES + "/3/7", "en");
+    }
+
+    @Test public void sameProviderWrongDocumentFinishesWithRetryRatherThanPermanentLoadingCover() throws Exception {
+        MoviePlayerActivity activity = open(false, episode(2, 3)).get();
+        WebView target = web(activity);
+        Shadows.shadowOf(target).getWebViewClient().onPageFinished(target, "https://vaplayer.ru/asb.html");
+        idle();
+        assertNull(web(activity));
+        assertNotNull(screenButton(activity, "Try again"));
+        assertTrue(visibleText(activity).contains("selected video"));
+        assertNull(Shadows.shadowOf(activity).getNextStartedActivity());
+    }
+
+    @Test public void tvCustomFullscreenUsesDarkPosterAndHidesLoadingWithoutNewControls() throws Exception {
+        MoviePlayerActivity activity = open(false, episode(2, 3)).get();
+        WebView target = web(activity);
+        WebChromeClient chrome = Shadows.shadowOf(target).getWebChromeClient();
+        assertEquals(Color.BLACK, chrome.getDefaultVideoPoster().getPixel(0, 0));
+        chrome.onShowCustomView(new View(activity), () -> {});
+        idle();
+        assertEquals(View.GONE, loadingSurface(activity).getVisibility());
+        assertNoTvPlaybackBar(activity);
+    }
+
+    @Test public void staleFullscreenHideCannotDismissReplacementFullscreen() throws Exception {
+        MoviePlayerActivity activity = open(false, episode(2, 3)).get();
+        WebView failed = web(activity);
+        WebChromeClient staleChrome = Shadows.shadowOf(failed).getWebChromeClient();
+        final boolean[] failedCallback = { false };
+        staleChrome.onShowCustomView(new View(activity), () -> failedCallback[0] = true);
+        Shadows.shadowOf(failed).getWebViewClient().onRenderProcessGone(failed, null);
+        idle();
+        layoutPlayer(activity);
+        idle();
+        assertFalse("A dead renderer's fullscreen callback must not be invoked", failedCallback[0]);
+        View currentFullscreen = new View(activity);
+        Shadows.shadowOf(web(activity)).getWebChromeClient().onShowCustomView(currentFullscreen, () -> {});
+        staleChrome.onHideCustomView();
+        assertSame(currentFullscreen, field("customView").get(activity));
+    }
+
+    @Test public void phoneKeepsImmediateLoadingAndDefaultRendererFailureBehavior() throws Exception {
+        MoviePlayerActivity activity = open(true, "movies").get();
+        WebView target = web(activity);
+        assertNull(loadingSurface(activity));
+        assertFalse(Shadows.shadowOf(target).getWebViewClient().onRenderProcessGone(target, null));
+        assertSame(target, web(activity));
+        assertFalse(Shadows.shadowOf(target).wasDestroyCalled());
+        assertEquals("https://streamimdb.ru/embed/movie/" + MOVIE, url(activity));
+        assertNotNull(controls(activity));
+    }
+
+    @Test @Config(sdk = 24) public void android7TvMovieRetainsExactRouteAndRenderAcknowledgement() throws Exception {
+        MoviePlayerActivity activity = open(false, "movies").get();
+        assertVapRoute(activity, "/embed/movie/" + MOVIE, "en");
+        VisualWebView target = captureVisualState(activity);
+        Shadows.shadowOf(target).getWebViewClient().onPageCommitVisible(target, url(activity));
+        assertEquals(View.VISIBLE, loadingSurface(activity).getVisibility());
+        target.presentFrame();
+        assertEquals(View.GONE, loadingSurface(activity).getVisibility());
+        assertNoTvPlaybackBar(activity);
+    }
+
 }

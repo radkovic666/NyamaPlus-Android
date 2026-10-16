@@ -105,10 +105,100 @@ public class TvSeriesRepositoryTest {
         assertEquals(2, selected.number);
         assertEquals("The Night Lands", selected.title);
         assertEquals("Actual description & detail", selected.summary);
+        assertEquals("Actual description & detail", selected.fullSummary);
+        assertEquals("2012-04-08", selected.airDate);
         assertEquals(57, selected.durationMinutes);
         assertTrue(selected.eligibleForPlayback());
         assertEquals("https://api.tvmaze.com/lookup/shows?imdb=tt0944947", transport.addresses.get(0));
         assertEquals("https://api.tvmaze.com/shows/82/episodes", transport.addresses.get(2));
+    }
+
+    @Test public void completeSourceDetailsSurviveDiskCacheWithoutDoubleDecoding() throws Exception {
+        enqueueShow("tt0944947", 82);
+        transport.json("[{\"number\":1}]");
+        JSONObject row = episode(1, 1, "Complete title", "2011-04-17")
+                .put("airstamp", "2011-04-18T01:00:00+00:00")
+                .put("summary", "<p>First &amp; detail.</p><p>Second<br>line &amp;lt;literal&amp;gt;.</p>");
+        transport.json(new JSONArray().put(row).toString());
+        TvSeriesMetadata.Episode loaded = repository.load("tt0944947", null, NOW).seasons.get(0).episodes.get(0);
+        assertEquals("First & detail.\n\nSecond\nline &lt;literal&gt;.", loaded.fullSummary);
+        assertEquals("2011-04-17", loaded.airDate); // Source calendar date, not UTC broadcast date.
+        assertEquals(57, loaded.durationMinutes);
+        assertEquals("First & detail. Second line <literal>.", loaded.summary); // Existing preview unchanged.
+        TvSeriesMetadata.Episode cached = new TvSeriesRepository(cache, new FakeTransport(), clock)
+                .load("tt0944947", null, NOW + 1000).seasons.get(0).episodes.get(0);
+        assertEquals(loaded.fullSummary, cached.fullSummary);
+        assertEquals(loaded.airDate, cached.airDate);
+        assertEquals(loaded.airStampMs, cached.airStampMs);
+    }
+
+    @Test public void originalAirDateRequiresARealSourceCalendarDate() throws Exception {
+        enqueueShow("tt0944947", 82);
+        transport.json("[{\"number\":1}]");
+        transport.json(new JSONArray()
+                .put(episode(1, 1, "Timestamp only", "").put("airstamp", "2011-04-18T01:00:00+00:00"))
+                .put(episode(1, 2, "Invalid date", "2021-02-29"))
+                .put(episode(1, 3, "Timestamp in calendar field", "2011-04-17T23:00:00-02:00"))
+                .put(episode(1, 4, "Valid leap day", "2020-02-29")).toString());
+        List<TvSeriesMetadata.Episode> episodes = repository.load("tt0944947", null, NOW).seasons.get(0).episodes;
+        assertEquals("", episodes.get(0).airDate);
+        assertEquals("", episodes.get(1).airDate);
+        assertEquals("", episodes.get(2).airDate);
+        assertEquals("2020-02-29", episodes.get(3).airDate);
+    }
+
+    @Test public void primaryReleasedDateAndParagraphsArePreservedWithoutNetwork() throws Exception {
+        JSONObject row = new JSONObject().put("season", 1).put("episode", 1)
+                .put("Title", "A verified title").put("Released", "17 Apr 2011")
+                .put("Plot", "<p>First paragraph.</p><p>Second <b>paragraph</b>.</p>");
+        JSONObject primary = new JSONObject().put("imdbID", "tt0944947").put("episodes", new JSONArray().put(row));
+        TvSeriesMetadata.Episode episode = repository.load("tt0944947", primary, NOW).seasons.get(0).episodes.get(0);
+        assertEquals("2011-04-17", episode.airDate);
+        assertEquals("First paragraph.\n\nSecond paragraph.", episode.fullSummary);
+        assertEquals("First paragraph. Second paragraph .", episode.summary);
+        assertEquals(0, transport.addresses.size());
+    }
+
+    @Test public void legacyCacheWithoutCompleteDetailsRemainsUsableOffline() throws Exception {
+        enqueueSingleSeason(); repository.load("tt0944947", null, NOW);
+        removeFullDetailsFromCache();
+        FakeTransport offline = new FakeTransport();
+        TvSeriesMetadata result = new TvSeriesRepository(cache, offline, clock).load("tt0944947", null, NOW + 1000);
+        TvSeriesMetadata.Episode episode = result.seasons.get(0).episodes.get(0);
+        assertTrue(result.stale);
+        assertEquals(episode.summary, episode.fullSummary);
+        assertEquals("", episode.airDate);
+        assertEquals(1, offline.addresses.size());
+    }
+
+    @Test public void legacyCacheRefreshesCompleteDetailsOnceWithoutChangingSchemaOrTtl() throws Exception {
+        enqueueSingleSeason(); repository.load("tt0944947", null, NOW);
+        removeFullDetailsFromCache();
+        FakeTransport upgrade = new FakeTransport();
+        upgrade.json(new JSONObject().put("id", 82).put("externals", new JSONObject().put("imdb", "tt0944947")).toString());
+        upgrade.json("[{\"number\":1}]");
+        upgrade.json(new JSONArray().put(episode(1, 1, "Pilot", "2011-04-17")
+                .put("summary", "<p>First.</p><p>Second.</p>")).toString());
+        TvSeriesRepository restarted = new TvSeriesRepository(cache, upgrade, clock);
+        TvSeriesMetadata.Episode result = restarted.load("tt0944947", null, NOW + 1000).seasons.get(0).episodes.get(0);
+        assertEquals("First.\n\nSecond.", result.fullSummary);
+        assertEquals("2011-04-17", result.airDate);
+        restarted.load("tt0944947", null, NOW + 2000);
+        assertEquals(3, upgrade.addresses.size());
+        JSONObject saved = new JSONObject(new String(java.nio.file.Files.readAllBytes(new File(cache, "tt0944947.json").toPath()), java.nio.charset.StandardCharsets.UTF_8));
+        assertEquals(1, saved.getInt("schema"));
+        assertEquals(NOW + 1000, saved.getLong("savedAt"));
+        assertEquals(TvSeriesRepository.CACHE_TTL_MS, 60L * 60L * 1000L);
+        assertEquals(result.fullSummary, new TvSeriesRepository(cache, new FakeTransport(), clock)
+                .load("tt0944947", null, NOW + 3000).seasons.get(0).episodes.get(0).fullSummary);
+    }
+
+    private void removeFullDetailsFromCache() throws Exception {
+        File stored = new File(cache, "tt0944947.json");
+        JSONObject root = new JSONObject(new String(java.nio.file.Files.readAllBytes(stored.toPath()), java.nio.charset.StandardCharsets.UTF_8));
+        root.getJSONArray("episodes").getJSONObject(0).remove("fullSummary");
+        root.getJSONArray("episodes").getJSONObject(0).remove("airDate");
+        java.nio.file.Files.write(stored.toPath(), root.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     @Test public void miniseriesHasOnlyItsExplicitSeasonAndEpisodes() throws Exception {

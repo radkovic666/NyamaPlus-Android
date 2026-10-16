@@ -225,7 +225,7 @@ public final class CatalogActivity extends Activity {
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(!phone && "movies".equals(section) ? 0x770A0C0F : 0xD90A0C0F);
+        root.setBackgroundColor(!phone ? 0x770A0C0F : 0xD90A0C0F);
         root.setPadding(dp(phone ? 10 : 16), dp(phone ? 8 : 10), dp(phone ? 10 : 16), dp(8));
         shell.addView(root, new LinearLayout.LayoutParams(0, -1, 1f));
 
@@ -375,7 +375,7 @@ public final class CatalogActivity extends Activity {
                     updateTvCardHighlights();
                     if (view != null) updateTvCardAppearance(view);
                     previous = view;
-                    showMovieArtwork(adapter.getItem(position));
+                    showCatalogArtwork(adapter.getItem(position));
                     return;
                 }
                 if (previous != null && previous != view) {
@@ -419,7 +419,7 @@ public final class CatalogActivity extends Activity {
         if (!phone) {
             grid.post(() -> { if (grid.getCount() > 0) grid.requestFocus(); else search.requestFocus(); });
         }
-        if (!phone && "movies".equals(section)) {
+        if (!phone) {
             // Artwork is a visual layer only: browsing must never acquire audio focus or touch TV playback.
             FrameLayout cinematicShell = new FrameLayout(this);
             cinematicBackground = new TvCinematicBackground(this);
@@ -430,8 +430,8 @@ public final class CatalogActivity extends Activity {
         return shell;
     }
 
-    private void showMovieArtwork(CatalogItem item) {
-        if (cinematicBackground == null || config.isPhoneMode() || !"movies".equals(section)) return;
+    private void showCatalogArtwork(CatalogItem item) {
+        if (cinematicBackground == null || config.isPhoneMode()) return;
         if (item == null || item.id.isEmpty()) cinematicBackground.showFallback();
         else cinematicBackground.show(PukankiApi.posterUrl(this, item.id), true);
     }
@@ -1149,7 +1149,7 @@ public final class CatalogActivity extends Activity {
                         ((Holder) v.getTag()).hovered = action != MotionEvent.ACTION_HOVER_EXIT;
                         updateTvCardAppearance(v);
                         if (action != MotionEvent.ACTION_HOVER_EXIT) {
-                            showMovieArtwork(adapter.getItem(((Holder) v.getTag()).position));
+                            showCatalogArtwork(adapter.getItem(((Holder) v.getTag()).position));
                         }
                     }
                     return false;

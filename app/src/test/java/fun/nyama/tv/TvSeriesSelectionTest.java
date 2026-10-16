@@ -92,7 +92,7 @@ public class TvSeriesSelectionTest {
 
     private static TvSeriesMetadata.Episode episode(int season, int number, long airStamp) {
         return new TvSeriesMetadata.Episode(season, number, "Actual title " + number, 42,
-                "<p>Actual summary " + number + "</p>", "", airStamp, NOW);
+                "Actual summary " + number, "", airStamp, NOW);
     }
 
     private static TvSeriesMetadata metadata(String imdb) {
@@ -154,7 +154,8 @@ public class TvSeriesSelectionTest {
         assertNotNull(tagged(selector, "episode:1:4"));
         assertNull(tagged(selector, "episode:1:2"));
         tagged(selector, "season:3").performClick();
-        assertFalse(tagged(selector, "episode:3:7").isEnabled());
+        assertTrue(tagged(selector, "episode:3:7").isFocusable());
+        assertFalse(tagged(selector, "episode:3:7").isClickable());
         assertNull(tagged(selector, "episode:3:9"));
         assertTrue(text(selector).contains("Air date is unconfirmed"));
         assertTrue(text(selector).contains("Provider availability is not confirmed"));
@@ -237,7 +238,7 @@ public class TvSeriesSelectionTest {
         assertTrue(text(season).contains("✓"));
         assertTrue(views(selector).stream().anyMatch(view -> view instanceof HorizontalScrollView));
         assertEquals(2, views(selector).stream().filter(view -> view instanceof HorizontalScrollView).count());
-        assertFalse(views(selector).stream().anyMatch(view -> view instanceof ScrollView));
+        assertEquals(1, views(selector).stream().filter(view -> view instanceof TvEpisodeInformationView).count());
     }
 
     @Test public void unknownDatesDisableWatchAndFutureOnlyMetadataDoesNotUseGenericFallback() throws Exception {
@@ -246,7 +247,9 @@ public class TvSeriesSelectionTest {
         selector.bind(new TvSeriesMetadata(IMDB, "TVmaze (CC BY-SA)", "", Arrays.asList(
                 new TvSeriesMetadata.Season(2, Arrays.asList(episode(2, 1, -1))))));
         assertFalse(watch(activity).isEnabled());
-        assertFalse(tagged(selector, "episode:2:1").isEnabled());
+        assertTrue(tagged(selector, "episode:2:1").isFocusable());
+        tagged(selector, "episode:2:1").performClick();
+        assertNull(Shadows.shadowOf(activity).getNextStartedActivity());
         assertNull(selector.selectedEpisode());
         selector.bind(new TvSeriesMetadata(IMDB, "TVmaze (CC BY-SA)", "", Arrays.asList(
                 new TvSeriesMetadata.Season(2, Arrays.asList(episode(2, 1, NOW + 1000))))));
@@ -295,7 +298,8 @@ public class TvSeriesSelectionTest {
         assertFalse(text(selector).contains("Metadata:"));
         for (View view : views(selector)) {
             if (view.isFocusable()) assertTrue(view.getTag() != null
-                    && (view.getTag().toString().startsWith("season:") || view.getTag().toString().startsWith("episode:")));
+                    && (view.getTag().toString().startsWith("season:") || view.getTag().toString().startsWith("episode:")
+                            || "episode-information".equals(view.getTag())));
         }
     }
 
@@ -350,37 +354,58 @@ public class TvSeriesSelectionTest {
         }
     }
 
-    @Test public void bulgarianRowsReverseOnlyVisualOrderAndKeepAdjacentRemoteNavigation() throws Exception {
+    @Test public void bulgarianRowsAreChronologicalAndKeepAdjacentRemoteNavigation() throws Exception {
+        assertChronologicalRows(fun.nyama.tv.Config.LANG_BG);
+    }
+
+    @Test public void englishRowsAreChronologicalAndKeepAdjacentRemoteNavigation() throws Exception {
+        assertChronologicalRows(fun.nyama.tv.Config.LANG_EN);
+    }
+
+    private void assertChronologicalRows(String language) {
         ActivityController<Activity> host = Robolectric.buildActivity(Activity.class).setup().visible();
         try {
             fun.nyama.tv.Config config = new fun.nyama.tv.Config(host.get());
             config.setDeviceMode(fun.nyama.tv.Config.MODE_TV);
-            config.setLanguage(fun.nyama.tv.Config.LANG_BG);
+            config.setLanguage(language);
             TvSeriesSelectionView selector = new TvSeriesSelectionView(host.get(), IMDB, noOpListener());
             host.get().setContentView(selector);
-            selector.bind(metadata(IMDB));
+            List<TvSeriesMetadata.Season> unsorted = new ArrayList<>();
+            for (int number : new int[] {5, 3, 0, 2, 1, 4}) unsorted.add(new TvSeriesMetadata.Season(number,
+                    Arrays.asList(episode(number, 4, NOW - 1000), episode(number, 2, NOW - 1000),
+                            episode(number, 1, NOW - 1000), episode(number, 3, NOW - 1000))));
+            selector.bind(new TvSeriesMetadata(IMDB, "TVmaze (CC BY-SA)", "", unsorted));
             layout(host.get());
+            LinearLayout seasonRow = (LinearLayout) tagged(selector, "season-row");
+            for (int index = 0; index < 5; index++) {
+                View season = seasonRow.getChildAt(index);
+                assertEquals("season:" + (index + 1), season.getTag());
+                if (index > 0) assertTrue(seasonRow.getChildAt(index - 1).getLeft() < season.getLeft());
+            }
+            assertEquals("season:0", seasonRow.getChildAt(5).getTag());
+            LinearLayout episodeRow = (LinearLayout) tagged(selector, "episode-row");
+            for (int index = 0; index < 4; index++) assertEquals("episode:1:" + (index + 1), episodeRow.getChildAt(index).getTag());
             View season1 = tagged(selector, "season:1");
-            View season3 = tagged(selector, "season:3");
+            View season2 = tagged(selector, "season:2");
             View episode1 = tagged(selector, "episode:1:1");
-            View episode4 = tagged(selector, "episode:1:4");
-            assertTrue(season3.getLeft() < season1.getLeft());
-            assertTrue(episode4.getLeft() < episode1.getLeft());
+            View episode2 = tagged(selector, "episode:1:2");
             assertTrue(episode1.requestFocus());
             key(episode1, KeyEvent.KEYCODE_DPAD_LEFT);
-            assertTrue(episode4.hasFocus());
-            assertEquals(4, selector.selectedEpisode().number);
-            key(episode4, KeyEvent.KEYCODE_DPAD_RIGHT);
+            assertTrue(episode1.hasFocus());
+            key(episode1, KeyEvent.KEYCODE_DPAD_RIGHT);
+            assertTrue(episode2.hasFocus());
+            assertEquals(2, selector.selectedEpisode().number);
+            key(episode2, KeyEvent.KEYCODE_DPAD_LEFT);
             assertTrue(episode1.hasFocus());
             key(episode1, KeyEvent.KEYCODE_DPAD_UP);
             assertTrue(season1.hasFocus());
-            key(season1, KeyEvent.KEYCODE_DPAD_LEFT);
-            assertTrue(season3.hasFocus());
-            key(season3, KeyEvent.KEYCODE_DPAD_DOWN);
+            key(season1, KeyEvent.KEYCODE_DPAD_RIGHT);
+            assertTrue(season2.hasFocus());
+            key(season2, KeyEvent.KEYCODE_DPAD_DOWN);
             layout(host.get());
-            assertTrue(tagged(selector, "episode:3:2").hasFocus());
-            key(tagged(selector, "episode:3:2"), KeyEvent.KEYCODE_DPAD_UP);
-            assertTrue(season3.hasFocus());
+            assertTrue(tagged(selector, "episode:2:1").hasFocus());
+            key(tagged(selector, "episode:2:1"), KeyEvent.KEYCODE_DPAD_UP);
+            assertTrue(season2.hasFocus());
         } finally { host.pause().stop().destroy(); }
     }
 
@@ -420,6 +445,137 @@ public class TvSeriesSelectionTest {
         } finally { host.pause().stop().destroy(); }
     }
 
+    @Test public void focusedInformationShowsFullTextSourceDateAndRuntimeAndFollowsHover() {
+        ActivityController<Activity> host = Robolectric.buildActivity(Activity.class).setup().visible();
+        try {
+            new fun.nyama.tv.Config(host.get()).setLanguage(fun.nyama.tv.Config.LANG_EN);
+            TvSeriesSelectionView selector = new TvSeriesSelectionView(host.get(), IMDB, noOpListener());
+            host.get().setContentView(selector);
+            String title = "The complete original episode title, including every word and its final ending";
+            StringBuilder summary = new StringBuilder("Opening paragraph.\n\n");
+            for (int index = 0; index < 80; index++) summary.append("A full verified paragraph with readable words and facts.\n\n");
+            summary.append("Final paragraph remains accessible. Literal <not markup> and &lt; stay as supplied.");
+            TvSeriesMetadata.Episode first = new TvSeriesMetadata.Episode(1, 1, title, 47,
+                    "Concise preview", "", "", NOW - 1000, NOW, summary.toString(), "2011-04-17");
+            TvSeriesMetadata.Episode second = new TvSeriesMetadata.Episode(1, 2, "Second complete title", -1,
+                    "", "", "", NOW - 1000, NOW, "Second complete description", "");
+            selector.bind(new TvSeriesMetadata(IMDB, "TVmaze (CC BY-SA)", "", Arrays.asList(
+                    new TvSeriesMetadata.Season(1, Arrays.asList(first, second)))));
+            layout(host.get());
+            View firstCard = tagged(selector, "episode:1:1");
+            View secondCard = tagged(selector, "episode:1:2");
+            assertTrue(firstCard.requestFocus());
+            TextView fullTitle = (TextView) tagged(selector, "episode-information-title");
+            TextView fullSummary = (TextView) tagged(selector, "episode-information-summary");
+            TextView info = (TextView) tagged(selector, "episode-information-metadata");
+            assertEquals(title, fullTitle.getText().toString());
+            assertEquals(summary.toString(), fullSummary.getText().toString());
+            assertNull(fullTitle.getEllipsize());
+            assertNull(fullSummary.getEllipsize());
+            assertTrue(fullTitle.getMaxLines() > 100 || fullTitle.getMaxLines() == -1);
+            assertTrue(fullSummary.getMaxLines() > 100 || fullSummary.getMaxLines() == -1);
+            assertTrue(info.getText().toString().contains("Season 1  ·  Episode 1"));
+            assertTrue(info.getText().toString().contains("47 min"));
+            assertTrue(info.getText().toString().contains("2011-04-17"));
+
+            key(firstCard, KeyEvent.KEYCODE_DPAD_RIGHT);
+            assertTrue(secondCard.hasFocus());
+            assertEquals("Second complete title", fullTitle.getText().toString());
+            assertEquals("Second complete description", fullSummary.getText().toString());
+            assertFalse(info.getText().toString().contains("min"));
+            assertFalse(info.getText().toString().contains("Aired:"));
+            MotionEvent hover = MotionEvent.obtain(0, 0, MotionEvent.ACTION_HOVER_ENTER, 1, 1, 0);
+            hover.setSource(InputDevice.SOURCE_MOUSE);
+            firstCard.dispatchGenericMotionEvent(hover);
+            hover.recycle();
+            assertEquals(title, fullTitle.getText().toString());
+            assertTrue(secondCard.hasFocus());
+        } finally { host.pause().stop().destroy(); }
+    }
+
+    @Test public void longInformationScrollsAndRemoteReturnsToExactEpisodeAndSeason() {
+        ActivityController<Activity> host = Robolectric.buildActivity(Activity.class).setup().visible();
+        try {
+            new fun.nyama.tv.Config(host.get()).setLanguage(fun.nyama.tv.Config.LANG_EN);
+            TvSeriesSelectionView selector = new TvSeriesSelectionView(host.get(), IMDB, noOpListener());
+            host.get().setContentView(selector);
+            StringBuilder summary = new StringBuilder();
+            for (int i = 0; i < 100; i++) summary.append("Complete paragraph ").append(i).append(" without truncation.\n\n");
+            TvSeriesMetadata.Episode first = new TvSeriesMetadata.Episode(1, 1, "Long information", 44,
+                    "Short preview", "", "", NOW - 1000, NOW, summary.toString(), "2011-04-17");
+            selector.bind(new TvSeriesMetadata(IMDB, "TVmaze (CC BY-SA)", "", Arrays.asList(
+                    new TvSeriesMetadata.Season(1, Arrays.asList(first, episode(1, 2, NOW - 1000))))));
+            layout(host.get());
+            View firstCard = tagged(selector, "episode:1:1");
+            TvEpisodeInformationView information = (TvEpisodeInformationView) tagged(selector, "episode-information");
+            assertTrue(firstCard.requestFocus());
+            key(firstCard, KeyEvent.KEYCODE_DPAD_DOWN);
+            assertTrue(information.hasFocus());
+            key(information, KeyEvent.KEYCODE_DPAD_DOWN);
+            assertTrue(information.getScrollY() > 0);
+            assertTrue(information.hasFocus());
+            for (int count = 0; count < 100 && information.hasFocus(); count++) key(information, KeyEvent.KEYCODE_DPAD_UP);
+            assertTrue(firstCard.hasFocus());
+            key(firstCard, KeyEvent.KEYCODE_DPAD_DOWN);
+            key(information, KeyEvent.KEYCODE_DPAD_RIGHT);
+            assertTrue(tagged(selector, "episode:1:2").hasFocus());
+            key(tagged(selector, "episode:1:2"), KeyEvent.KEYCODE_DPAD_UP);
+            assertTrue(tagged(selector, "season:1").hasFocus());
+            key(tagged(selector, "season:1"), KeyEvent.KEYCODE_DPAD_DOWN);
+            assertTrue(tagged(selector, "episode:1:2").hasFocus());
+        } finally { host.pause().stop().destroy(); }
+    }
+
+    @Test public void unknownAirDateMetadataRemainsReadableButCannotLaunchPlayback() throws Exception {
+        TitleDetailActivity activity = detail(false, IMDB);
+        TvSeriesSelectionView selector = selector(activity);
+        selector.bind(new TvSeriesMetadata(IMDB, "TVmaze (CC BY-SA)", "", Arrays.asList(
+                new TvSeriesMetadata.Season(1, Arrays.asList(episode(1, 1, NOW - 1000), episode(1, 2, -1))))));
+        layout(activity);
+        View known = tagged(selector, "episode:1:1");
+        View unknown = tagged(selector, "episode:1:2");
+        assertTrue(known.requestFocus());
+        key(known, KeyEvent.KEYCODE_DPAD_RIGHT);
+        assertTrue(unknown.hasFocus());
+        assertEquals("Actual title 2", ((TextView) tagged(selector, "episode-information-title")).getText().toString());
+        assertFalse(watch(activity).isEnabled());
+        assertNull(selector.selectedEpisode());
+        unknown.performClick();
+        assertNull(Shadows.shadowOf(activity).getNextStartedActivity());
+    }
+
+    @Test public void focusedCardIsFullyRevealedAfterChangingSeasonAndAtFarHorizontalEdges() {
+        ActivityController<Activity> host = Robolectric.buildActivity(Activity.class).setup().visible();
+        try {
+            new fun.nyama.tv.Config(host.get()).setLanguage(fun.nyama.tv.Config.LANG_EN);
+            TvSeriesSelectionView selector = new TvSeriesSelectionView(host.get(), IMDB, noOpListener());
+            host.get().setContentView(selector);
+            List<TvSeriesMetadata.Episode> episodes = new ArrayList<>();
+            for (int number = 1; number <= 18; number++) episodes.add(episode(2, number, NOW - 1000));
+            selector.bind(new TvSeriesMetadata(IMDB, "TVmaze (CC BY-SA)", "", Arrays.asList(
+                    new TvSeriesMetadata.Season(1, Arrays.asList(episode(1, 1, NOW - 1000))),
+                    new TvSeriesMetadata.Season(2, episodes))));
+            layout(host.get());
+            View season = tagged(selector, "season:2");
+            assertTrue(season.requestFocus());
+            key(season, KeyEvent.KEYCODE_DPAD_DOWN);
+            layout(host.get());
+            for (int number = 1; number < 18; number++) key(tagged(selector, "episode:2:" + number), KeyEvent.KEYCODE_DPAD_RIGHT);
+            View last = tagged(selector, "episode:2:18");
+            assertTrue(last.hasFocus());
+            Rect visible = new Rect();
+            assertTrue(last.getLocalVisibleRect(visible));
+            assertEquals(0, visible.left);
+            assertEquals(last.getWidth(), visible.right);
+            for (int number = 18; number > 1; number--) key(tagged(selector, "episode:2:" + number), KeyEvent.KEYCODE_DPAD_LEFT);
+            View first = tagged(selector, "episode:2:1");
+            assertTrue(first.hasFocus());
+            assertTrue(first.getLocalVisibleRect(visible));
+            assertEquals(0, visible.left);
+            assertEquals(first.getWidth(), visible.right);
+        } finally { host.pause().stop().destroy(); }
+    }
+
     @Test public void verifiedProgressFlagsRefreshImmediatelyAndRemainIsolatedAcrossSeasons() throws Exception {
         TitleDetailActivity activity = detail(false, IMDB);
         TvSeriesSelectionView selector = selector(activity);
@@ -434,7 +590,7 @@ public class TvSeriesSelectionTest {
         TextView partial = first.findViewWithTag("watch-status");
         TextView completed = fourth.findViewWithTag("watch-status");
         assertEquals(View.VISIBLE, partial.getVisibility());
-        assertEquals("▶ In progress", partial.getText().toString());
+        assertEquals("▶ Started", partial.getText().toString());
         assertEquals(View.VISIBLE, completed.getVisibility());
         assertEquals("✓ Watched", completed.getText().toString());
         tagged(selector, "season:3").performClick();
@@ -443,7 +599,20 @@ public class TvSeriesSelectionTest {
         assertEquals("✓ Watched", ((TextView) tagged(selector, "episode:1:4").findViewWithTag("watch-status")).getText().toString());
     }
 
-    private static void seedProgress(Activity context, int season, int episode, int watchedSeconds) {
+    @Test public void bulgarianProgressUsesStartedLabelWithoutChangingCompletedLabel() {
+        Application context = RuntimeEnvironment.getApplication();
+        seedProgress(context, 1, 1, 10);
+        seedProgress(context, 1, 2, 90);
+        TvEpisodeProgressStore store = new TvEpisodeProgressStore(context);
+        TvEpisodeCard started = new TvEpisodeCard(context, episode(1, 1, NOW - 1000), true);
+        TvEpisodeCard watched = new TvEpisodeCard(context, episode(1, 2, NOW - 1000), true);
+        started.updateWatchStatus(store.get(IMDB, 1, 1));
+        watched.updateWatchStatus(store.get(IMDB, 1, 2));
+        assertEquals("▶ Започнат", ((TextView) started.findViewWithTag("watch-status")).getText().toString());
+        assertEquals("✓ Гледан", ((TextView) watched.findViewWithTag("watch-status")).getText().toString());
+    }
+
+    private static void seedProgress(android.content.Context context, int season, int episode, int watchedSeconds) {
         TvEpisodeProgressStore store = new TvEpisodeProgressStore(context);
         TvEpisodeProgressTracker tracker = store.load(IMDB, season, episode);
         for (int seconds = 0; seconds <= watchedSeconds; seconds += 5) {
@@ -468,6 +637,53 @@ public class TvSeriesSelectionTest {
     @Test @Config(qualifiers = "w1920dp-h1080dp")
     public void cardsHaveReadableBoundedDimensionsAt1080p() {
         assertReadableCard();
+    }
+
+    @Test @Config(qualifiers = "w960dp-h540dp")
+    public void fullInformationRemainsReadableAndRemoteReachableOn720pTelevisionDensity() throws Exception {
+        assertResponsiveInformation(960, 540);
+    }
+
+    @Test @Config(qualifiers = "w1920dp-h1080dp")
+    public void fullInformationRemainsReadableAndRemoteReachableAt1080p() throws Exception {
+        assertResponsiveInformation(1920, 1080);
+    }
+
+    private void assertResponsiveInformation(int widthDp, int heightDp) throws Exception {
+        TitleDetailActivity activity = detail(false, IMDB);
+        TvSeriesSelectionView selector = selector(activity);
+        StringBuilder fullSummary = new StringBuilder();
+        for (int index = 0; index < 90; index++) fullSummary.append("A full paragraph with readable words and a complete ending.\n\n");
+        TvSeriesMetadata.Episode episode = new TvSeriesMetadata.Episode(1, 1, "Full title visible in the information area", 46,
+                "Short preview", "", "", NOW - 1000, NOW, fullSummary.toString(), "2011-04-17");
+        selector.bind(new TvSeriesMetadata(IMDB, "TVmaze (CC BY-SA)", "", Arrays.asList(
+                new TvSeriesMetadata.Season(1, Arrays.asList(episode)))));
+        View root = activity.getWindow().getDecorView();
+        float density = root.getResources().getDisplayMetrics().density;
+        int width = Math.round(widthDp * density);
+        int height = Math.round(heightDp * density);
+        root.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY));
+        root.layout(0, 0, width, height);
+        Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
+        TvEpisodeInformationView information = (TvEpisodeInformationView) tagged(selector, "episode-information");
+        TextView summary = (TextView) tagged(selector, "episode-information-summary");
+        assertEquals(fullSummary.toString(), summary.getText().toString());
+        assertNull(summary.getEllipsize());
+        assertTrue(information.getHeight() >= Math.round(150 * density));
+        assertTrue(information.getHeight() <= Math.round(230 * density));
+        assertTrue(summary.getTextSize() >= 17 * root.getResources().getDisplayMetrics().scaledDensity);
+        View card = tagged(selector, "episode:1:1");
+        assertTrue(card.requestFocus());
+        key(card, KeyEvent.KEYCODE_DPAD_DOWN);
+        assertTrue(information.hasFocus());
+        key(information, KeyEvent.KEYCODE_DPAD_DOWN);
+        assertTrue(information.getScrollY() > 0);
+        assertTrue(information.getChildAt(0).getHeight() > information.getHeight());
+        for (int count = 0; count < 100 && information.hasFocus(); count++) key(information, KeyEvent.KEYCODE_DPAD_UP);
+        assertTrue(card.hasFocus());
+        key(card, KeyEvent.KEYCODE_DPAD_UP);
+        assertTrue(tagged(selector, "season:1").hasFocus());
     }
 
     private static void assertReadableCard() {

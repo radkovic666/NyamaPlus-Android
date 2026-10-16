@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.Context;
 import android.graphics.Color;
+import android.graphics.Bitmap;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -17,6 +18,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
@@ -70,6 +72,14 @@ public final class MoviePlayerActivity extends Activity {
     private String loadedPlayerUrl = "";
     private String selectedPlaybackHost = PLAYER_HOST;
     private View playbackError;
+    private View tvLoadingSurface;
+    private boolean tvForeground;
+    private boolean rendererRecoveryUsed;
+    private boolean rendererRecoveryPending;
+    private long tvSurfaceGeneration;
+    private long tvDocumentLoadGeneration = -1;
+    private Bitmap tvDefaultVideoPoster;
+    private Runnable pendingTvDocumentLoad;
     private TvPlayerProgressBridge episodeProgress;
     private final Runnable clearCloseArm = () -> closeArmed = false;
     private final Runnable hideControls = () -> setControlsVisible(false, false);
@@ -103,6 +113,21 @@ public final class MoviePlayerActivity extends Activity {
         webView.setFocusable(true);
         webView.setFocusableInTouchMode(true);
         webView.requestFocus();
+
+        if (tvMode) {
+            TextView loading = new TextView(this);
+            loading.setBackgroundColor(Color.BLACK);
+            loading.setTextColor(0xFFB8BDC5);
+            loading.setTextSize(18);
+            loading.setGravity(Gravity.CENTER);
+            loading.setText(tvText("Зареждане…", "Loading…"));
+            loading.setFocusable(false);
+            loading.setClickable(false);
+            loading.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            tvLoadingSurface = loading;
+            root.addView(loading, new FrameLayout.LayoutParams(-1, -1));
+            tvSurfaceGeneration++;
+        }
 
         fullscreenContainer = new FrameLayout(this);
         fullscreenContainer.setBackgroundColor(Color.BLACK);
@@ -205,7 +230,29 @@ public final class MoviePlayerActivity extends Activity {
             }
         }
 
+        final WebView configuredView = view;
         view.setWebViewClient(new WebViewClient() {
+            @Override public void onPageStarted(WebView v, String url, Bitmap favicon) {
+                super.onPageStarted(v, url, favicon);
+                if (tvMode && v == webView && isSelectedMainDocument(url))
+                    Log.d(TAG, "TV initialization document_started");
+            }
+
+            @Override public void onPageCommitVisible(WebView v, String url) {
+                super.onPageCommitVisible(v, url);
+                if (tvMode && v == webView && isSelectedMainDocument(url)) {
+                    Log.d(TAG, "TV initialization document_committed");
+                    awaitTvVisualState(v);
+                }
+            }
+
+            @Override public boolean onRenderProcessGone(WebView v, RenderProcessGoneDetail detail) {
+                if (!tvMode) return super.onRenderProcessGone(v, detail);
+                if (v != webView) return true; // An already retired TV surface cannot affect its replacement.
+                handleTvRendererLoss(v);
+                return true;
+            }
+
             @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest request) {
                 if (request == null || request.getUrl() == null) return true;
                 if (!request.isForMainFrame()) return false;
@@ -236,21 +283,41 @@ public final class MoviePlayerActivity extends Activity {
 
             @Override public void onPageFinished(WebView v, String url) {
                 super.onPageFinished(v, url);
-                if (tvMode && v != webView) return;
+                if (tvMode) {
+                    if (v != webView) return;
+                    if (!isSelectedMainDocument(url)) {
+                        // A completed same-provider redirect to a restriction/error route is a
+                        // different document, not the selected episode. Do not mask it forever.
+                        if (url != null && isAllowedMainFrame(Uri.parse(url)))
+                            showPlaybackError(tvText("Източникът не отвори избраното видео. Опитайте отново.",
+                                    "The source did not open the selected video. Try again."));
+                        return;
+                    }
+                }
                 hardenEmbedPage();
                 if (tvMode) {
-                    Uri location = Uri.parse(url == null ? "" : url);
-                    Log.d(TAG, "player main-frame host=" + safe(location.getHost()));
+                    // A finished outer wrapper is not evidence that its cross-origin media is ready.
+                    Log.d(TAG, "TV initialization document_finished");
+                    awaitTvVisualState(v);
                     suppressTvEdgeFocus();
                     installTvPlaybackAssist();
                     if (episodeProgress != null) episodeProgress.installListener(url);
-                    main.postDelayed(MoviePlayerActivity.this::installTvPlaybackAssist, 900L);
-                    main.postDelayed(MoviePlayerActivity.this::installTvPlaybackAssist, 2200L);
+                    main.postDelayed(() -> { if (v == webView) installTvPlaybackAssist(); }, 900L);
+                    main.postDelayed(() -> { if (v == webView) installTvPlaybackAssist(); }, 2200L);
                 }
             }
         });
 
         view.setWebChromeClient(new WebChromeClient() {
+            @Override public Bitmap getDefaultVideoPoster() {
+                if (!tvMode) return super.getDefaultVideoPoster();
+                if (tvDefaultVideoPoster == null) {
+                    tvDefaultVideoPoster = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
+                    tvDefaultVideoPoster.eraseColor(Color.BLACK);
+                }
+                return tvDefaultVideoPoster;
+            }
+
             @Override public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, android.os.Message resultMsg) {
                 return false;
             }
@@ -260,6 +327,7 @@ public final class MoviePlayerActivity extends Activity {
             }
 
             @Override public void onShowCustomView(View view, CustomViewCallback callback) {
+                if (tvMode && configuredView != webView) { callback.onCustomViewHidden(); return; }
                 if (customView != null) { callback.onCustomViewHidden(); return; }
                 customView = view;
                 customViewCallback = callback;
@@ -271,12 +339,15 @@ public final class MoviePlayerActivity extends Activity {
                 fullscreenContainer.removeAllViews();
                 fullscreenContainer.addView(view, new FrameLayout.LayoutParams(-1, -1));
                 fullscreenContainer.setVisibility(View.VISIBLE);
+                if (tvMode) view.post(() -> markTvSurfaceVisible(configuredView));
                 view.requestFocus();
                 setControlsVisible(false, false);
                 immersive();
             }
 
-            @Override public void onHideCustomView() { hideCustomView(); }
+            @Override public void onHideCustomView() {
+                if (!tvMode || configuredView == webView) hideCustomView();
+            }
         });
     }
 
@@ -353,17 +424,124 @@ public final class MoviePlayerActivity extends Activity {
                 loadedPlayerUrl = PLAYER_BASE + "tv/" + Uri.encode(id);
             }
             selectedPlaybackHost = Uri.parse(loadedPlayerUrl).getHost();
-            if ("series".equals(type) && selection && TvPlaybackSource.HOST.equals(selectedPlaybackHost)) {
-                // Receive only the documented events for this exact TV episode. No generic series,
-                // movie, phone or unsupported WebView tracking path is installed.
-                episodeProgress = TvPlayerProgressBridge.attach(webView, new TvEpisodeProgressStore(this), id,
-                        getIntent().getIntExtra("season", -1), getIntent().getIntExtra("episode", -1));
-            }
-            webView.loadUrl(loadedPlayerUrl);
+            startSelectedTvDocument();
         } catch (IllegalArgumentException invalidIdentity) {
             showPlaybackError(tvText("Избраният епизод или идентификатор не е валиден. Изберете епизода отново.",
                     "The selected episode or title identity is invalid. Select the episode again."));
         }
+    }
+
+    /** Load only after the new TV surface is attached and sized; phone timing stays unchanged. */
+    private void startSelectedTvDocument() {
+        final WebView target = webView;
+        final long generation = tvSurfaceGeneration;
+        final String selectedUrl = loadedPlayerUrl;
+        if (target == null || selectedUrl.isEmpty()) return;
+        if ("series".equals(type) && TvPlaybackSource.HOST.equals(selectedPlaybackHost)) {
+            episodeProgress = TvPlayerProgressBridge.attach(target, new TvEpisodeProgressStore(this), id,
+                    getIntent().getIntExtra("season", -1), getIntent().getIntExtra("episode", -1));
+        }
+        Runnable load = () -> {
+            if (target != webView || generation != tvSurfaceGeneration || tvDocumentLoadGeneration == generation
+                    || playbackFailed || leavingPlayback) return;
+            if (!tvForeground || !target.isAttachedToWindow() || target.getWidth() <= 0 || target.getHeight() <= 0) return;
+            pendingTvDocumentLoad = null;
+            tvDocumentLoadGeneration = generation;
+            // pauseTimers() is global: a replacement within the same resumed Activity otherwise
+            // never receives another Activity.onResume(), leaving provider scripts suspended.
+            target.onResume();
+            target.resumeTimers();
+            Log.d(TAG, "TV initialization document_load recovery=" + (rendererRecoveryUsed ? 1 : 0));
+            target.loadUrl(selectedUrl);
+        };
+        pendingTvDocumentLoad = load;
+        if (target.isAttachedToWindow() && target.getWidth() > 0 && target.getHeight() > 0) {
+            target.post(load);
+        } else {
+            target.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+                @Override public void onLayoutChange(View v, int left, int top, int right, int bottom,
+                        int oldLeft, int oldTop, int oldRight, int oldBottom) {
+                    if (target != webView || generation != tvSurfaceGeneration) {
+                        target.removeOnLayoutChangeListener(this);
+                    } else if (target.isAttachedToWindow() && right > left && bottom > top) {
+                        target.removeOnLayoutChangeListener(this);
+                        target.post(load);
+                    }
+                }
+            });
+        }
+    }
+
+    private boolean isSelectedMainDocument(String url) {
+        if (url == null || loadedPlayerUrl.isEmpty()) return false;
+        Uri actual = Uri.parse(url);
+        Uri expected = Uri.parse(loadedPlayerUrl);
+        return "https".equals(actual.getScheme()) && actual.getUserInfo() == null
+                && actual.getPort() == -1 && selectedPlaybackHost.equals(actual.getHost())
+                && expected.getPath().equals(actual.getPath());
+    }
+
+    private void awaitTvVisualState(WebView target) {
+        if (target != webView || playbackFailed || leavingPlayback) return;
+        final long generation = tvSurfaceGeneration;
+        // This checks WebView render submission, never pixel brightness, elapsed loading time or
+        // a cross-origin document's DOM. It does not claim the provider's media has started.
+        try {
+            target.postVisualStateCallback(generation, new WebView.VisualStateCallback() {
+                @Override public void onComplete(long requestId) {
+                    if (requestId == tvSurfaceGeneration) markTvSurfaceVisible(target);
+                }
+            });
+        } catch (RuntimeException | LinkageError unsupportedRenderCallback) {
+            // Some old vendor WebViews cannot provide this acknowledgement. Their valid
+            // document-commit/finish signal still exposes the provider instead of a permanent mask.
+            Log.w(TAG, "TV initialization visual_callback_unavailable");
+            markTvSurfaceVisible(target);
+        }
+    }
+
+    private void markTvSurfaceVisible(WebView target) {
+        if (target != webView || playbackFailed || leavingPlayback) return;
+        if (tvLoadingSurface != null && tvLoadingSurface.getVisibility() != View.GONE) {
+            tvLoadingSurface.setVisibility(View.GONE);
+            Log.d(TAG, "TV initialization surface_presented");
+        }
+    }
+
+    private void handleTvRendererLoss(WebView failed) {
+        Log.w(TAG, "TV initialization renderer_gone recovery=" + (rendererRecoveryUsed ? 1 : 0));
+        if (episodeProgress != null) {
+            episodeProgress.close();
+            episodeProgress = null;
+        }
+        pendingTvDocumentLoad = null;
+        // Android requires discarding a dead renderer. Do not run JavaScript, stopLoading(),
+        // about:blank navigation or pauseTimers() against its unusable WebView.
+        webView = null;
+        // Its fullscreen callback also belongs to the dead renderer; detach without calling it.
+        customView = null;
+        customViewCallback = null;
+        fullscreenContainer.removeAllViews();
+        fullscreenContainer.setVisibility(View.GONE);
+        ViewParentSafe.remove(failed);
+        failed.destroy();
+        if (leavingPlayback || isFinishing() || isDestroyed()) return;
+        if (rendererRecoveryUsed) {
+            showPlaybackError(tvText("Видео плейърът не можа да се стартира. Опитайте отново.",
+                    "The video player could not start. Try again."));
+            return;
+        }
+        rendererRecoveryUsed = true;
+        rendererRecoveryPending = true;
+        if (tvForeground) main.post(this::recoverTvRenderer);
+    }
+
+    private void recoverTvRenderer() {
+        if (!rendererRecoveryPending || !tvForeground || leavingPlayback || isFinishing() || isDestroyed()) return;
+        rendererRecoveryPending = false;
+        Log.d(TAG, "TV initialization renderer_recreate");
+        setContentView(buildUi());
+        startSelectedTvDocument(); // Reuse the immutable selected URL, including episode and subtitles.
     }
 
     private boolean isPlaybackDocument(WebResourceRequest request) {
@@ -382,6 +560,8 @@ public final class MoviePlayerActivity extends Activity {
     private void showPlaybackError(String explanation) {
         if (!tvMode || isFinishing() || isDestroyed() || leavingPlayback || playbackFailed) return;
         playbackFailed = true;
+        rendererRecoveryPending = false;
+        Log.w(TAG, "TV initialization failed_with_retry");
         releaseMovieWebView();
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
@@ -401,7 +581,8 @@ public final class MoviePlayerActivity extends Activity {
             playbackFailed = false;
             playbackError = null;
             setContentView(buildUi());
-            loadPlayer(); // The identical selected title/episode only; no provider or episode fallback.
+            if (loadedPlayerUrl.isEmpty()) loadPlayer();
+            else startSelectedTvDocument(); // Same immutable title/episode, never a provider fallback.
         });
         panel.addView(retry, new LinearLayout.LayoutParams(dp(400), dp(60)));
         Button back = new Button(this);
@@ -842,6 +1023,7 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     @Override protected void onPause() {
+        if (tvMode) tvForeground = false;
         if (episodeProgress != null) episodeProgress.pause();
         if (webView != null) {
             webView.onPause();
@@ -853,12 +1035,15 @@ public final class MoviePlayerActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         if (isFinishing() || !ActivationAccess.require(this)) return;
+        if (tvMode) tvForeground = true;
         if (episodeProgress != null) episodeProgress.resume();
         immersive();
         if (webView != null) {
             webView.onResume();
             webView.resumeTimers();
         }
+        if (tvMode && rendererRecoveryPending) recoverTvRenderer();
+        else if (tvMode && pendingTvDocumentLoad != null && webView != null) webView.post(pendingTvDocumentLoad);
     }
 
     @SuppressWarnings("deprecation")
@@ -895,6 +1080,7 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     private void releaseMovieWebView() {
+        if (tvMode) pendingTvDocumentLoad = null;
         if (episodeProgress != null) {
             episodeProgress.close();
             episodeProgress = null;

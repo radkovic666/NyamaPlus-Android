@@ -5,6 +5,7 @@ import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.Drawable;
 import android.text.Html;
 import android.text.TextUtils;
 import android.view.Gravity;
@@ -75,8 +76,10 @@ final class TvEpisodeCard extends FrameLayout {
         flagParams.setMargins(dp(8), dp(13), dp(13), 0);
         addView(flag, flagParams);
         setContentDescription(numbering + ". " + episode.title + (description.isEmpty() ? "" : ". " + description));
-        setEnabled(episode.eligibleForPlayback());
-        setAlpha(isEnabled() ? 1f : .62f);
+        // Metadata with an unknown air date remains readable with a remote. Playback is
+        // still guarded by the selector, and the Watch action remains unavailable.
+        setClickable(episode.eligibleForPlayback());
+        setAlpha(episode.eligibleForPlayback() ? 1f : .62f);
         updateStyle(false);
     }
 
@@ -95,13 +98,19 @@ final class TvEpisodeCard extends FrameLayout {
     void setStill(Bitmap bitmap) { still.setImageBitmap(bitmap); }
     void clearStill() { still.setImageDrawable(null); }
     boolean hasStill() { return still.getDrawable() != null; }
+    Drawable stillDrawable() {
+        Drawable drawable = still.getDrawable();
+        // Share the bounded bitmap, while each ImageView keeps independent drawable bounds.
+        return drawable == null || drawable.getConstantState() == null ? drawable
+                : drawable.getConstantState().newDrawable(getResources()).mutate();
+    }
 
     void updateWatchStatus(TvEpisodeProgressStore.Snapshot progress) {
         boolean watched = progress != null && progress.watched;
         boolean underway = progress != null && progress.inProgress;
         if (!watched && !underway) { flag.setVisibility(GONE); return; }
         flag.setText(watched ? (bulgarian ? "✓ Гледан" : "✓ Watched")
-                : (bulgarian ? "▶ В процес" : "▶ In progress"));
+                : (bulgarian ? "▶ Започнат" : "▶ Started"));
         GradientDrawable background = new GradientDrawable();
         background.setCornerRadius(dp(5));
         background.setColor(watched ? accent : 0xF020262E);

@@ -19,6 +19,7 @@ import android.widget.TextView;
 
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -44,6 +45,7 @@ final class TvSeriesSelectionView extends LinearLayout {
     private final List<TvEpisodeCard> episodeCards = new ArrayList<>();
     private final List<TvSeriesMetadata.Episode> visibleEpisodes = new ArrayList<>();
     private LinearLayout episodeRows;
+    private TvEpisodeInformationView episodeInformation;
     private TvSeriesMetadata.Episode selectedEpisode;
     private int selectedSeason = -1;
     private boolean metadataPresent;
@@ -100,6 +102,7 @@ final class TvSeriesSelectionView extends LinearLayout {
         seasonButtons.clear();
         episodeCards.clear();
         visibleEpisodes.clear();
+        episodeInformation = null;
         removeAllViews();
         addView(label(tr("Епизодите не могат да бъдат заредени. Използвайте „Гледай сега“.",
                 "Episode details could not be loaded. Use Watch now."), 16, 0xFFE0E6EE));
@@ -116,6 +119,7 @@ final class TvSeriesSelectionView extends LinearLayout {
         seasonButtons.clear();
         episodeCards.clear();
         visibleEpisodes.clear();
+        episodeInformation = null;
         removeAllViews();
         for (TvSeriesMetadata.Season season : metadata.seasons) {
             if (season == null || season.number < 0) continue;
@@ -125,6 +129,9 @@ final class TvSeriesSelectionView extends LinearLayout {
             }
             if (hasVisibleEpisode) seasons.add(season);
         }
+        // Both application languages use chronological left-to-right television navigation.
+        // Numbered specials retain their separate position after the normal seasons.
+        seasons.sort(Comparator.comparingInt(season -> season.number == 0 ? Integer.MAX_VALUE : season.number));
         TextView heading = label(tr("Сезони", "Seasons"), 21, Color.WHITE);
         heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         addView(heading);
@@ -162,7 +169,7 @@ final class TvSeriesSelectionView extends LinearLayout {
             });
             LayoutParams lp = new LayoutParams(-2, dp(50));
             lp.setMargins(dp(4), 0, dp(4), 0);
-            seasonRow.addView(button, bulgarian ? 0 : -1, lp);
+            seasonRow.addView(button, lp);
             seasonButtons.add(button);
         }
         wireHorizontal(seasonButtons);
@@ -177,6 +184,19 @@ final class TvSeriesSelectionView extends LinearLayout {
         episodeRows.setPadding(dp(4), dp(6), dp(4), dp(6));
         episodeScroll.addView(episodeRows, new HorizontalScrollView.LayoutParams(-2, -2));
         addView(episodeScroll, new LayoutParams(-1, -2));
+        episodeInformation = new TvEpisodeInformationView(getContext(), bulgarian, new TvEpisodeInformationView.Navigation() {
+            @Override public void returnToEpisode() { focusSelectedEpisode(); }
+            @Override public void adjacentEpisode(int keyCode) {
+                TvEpisodeCard current = selectedEpisodeCard();
+                if (current != null) {
+                    current.requestFocus();
+                    horizontalKey(enabledEpisodeCards(), current, keyCode);
+                }
+            }
+        });
+        LayoutParams informationParams = new LayoutParams(-1, episodeInformation.preferredHeight());
+        informationParams.topMargin = dp(8);
+        addView(episodeInformation, informationParams);
 
         int rememberedSeason = preferences.getInt(imdbId + ":season", -1);
         int initialSeason = seasons.get(0).number;
@@ -184,7 +204,6 @@ final class TvSeriesSelectionView extends LinearLayout {
             if (season.number == rememberedSeason) { initialSeason = rememberedSeason; break; }
         }
         chooseSeason(initialSeason, false);
-        // Right-to-left Bulgarian rows start at the real first season/episode, on the right.
         seasonScroll.post(() -> reveal(seasonButton(selectedSeason)));
     }
 
@@ -194,6 +213,7 @@ final class TvSeriesSelectionView extends LinearLayout {
         scroll.setHorizontalScrollBarEnabled(false);
         scroll.setFocusable(false);
         scroll.setSmoothScrollingEnabled(true);
+        scroll.setClipToPadding(false);
         // Visual order is explicit, so physical LEFT/RIGHT keep their normal screen meaning.
         scroll.setLayoutDirection(LAYOUT_DIRECTION_LTR);
         return scroll;
@@ -231,8 +251,11 @@ final class TvSeriesSelectionView extends LinearLayout {
         for (TvSeriesMetadata.Episode episode : selected.episodes) {
             if (!visible(episode) || episode.season != number) continue;
             visibleEpisodes.add(episode);
-            if (episode.eligibleForPlayback() && (selectedEpisode == null
-                    || (rememberedSeason == number && rememberedEpisode == episode.number))) selectedEpisode = episode;
+        }
+        visibleEpisodes.sort(Comparator.comparingInt(episode -> episode.number));
+        for (TvSeriesMetadata.Episode episode : visibleEpisodes) {
+            if (selectedEpisode == null
+                    || (rememberedSeason == number && rememberedEpisode == episode.number)) selectedEpisode = episode;
         }
         for (TvSeriesMetadata.Episode episode : visibleEpisodes) {
             TvEpisodeCard card = new TvEpisodeCard(getContext(), episode, bulgarian);
@@ -242,9 +265,12 @@ final class TvSeriesSelectionView extends LinearLayout {
                 selectEpisode(episode);
                 listener.onPlay(episode);
             });
+            // Installing a click listener enables clicking; retain focus-only unknown metadata.
+            card.setClickable(episode.eligibleForPlayback());
             card.setOnFocusChangeListener((v, focused) -> {
-                if (focused && episode.eligibleForPlayback()) {
+                if (focused) {
                     selectEpisode(episode);
+                    showEpisodeInformation(episode, card);
                     listener.onEpisodeFocused(episode);
                     reveal(card);
                 }
@@ -252,22 +278,32 @@ final class TvSeriesSelectionView extends LinearLayout {
             });
             card.setOnHoverListener((v, event) -> {
                 // Genuine pointer hover only; never generate pointer events or alter playback.
-                if (event.getActionMasked() == MotionEvent.ACTION_HOVER_ENTER) listener.onEpisodeFocused(episode);
-                if (event.getActionMasked() == MotionEvent.ACTION_HOVER_EXIT && !card.hasFocus())
+                if (event.getActionMasked() == MotionEvent.ACTION_HOVER_ENTER) {
+                    showEpisodeInformation(episode, card);
+                    listener.onEpisodeFocused(episode);
+                }
+                if (event.getActionMasked() == MotionEvent.ACTION_HOVER_EXIT && !card.hasFocus()) {
+                    showEpisodeInformation(selectedEpisode, selectedEpisodeCard());
                     listener.onEpisodeFocused(selectedEpisode);
+                }
                 return false;
             });
             card.setOnKeyListener((v, keyCode, event) -> {
                 if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
                 if (keyCode == KeyEvent.KEYCODE_DPAD_UP) { focusSelectedSeason(); return true; }
-                if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) return true;
+                if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                    if (episodeInformation != null) episodeInformation.requestFocus();
+                    return true;
+                }
                 return horizontalKey(enabledEpisodeCards(), card, keyCode);
             });
             LayoutParams lp = new LayoutParams(card.preferredWidth(), card.preferredHeight());
             lp.setMargins(dp(4), 0, dp(8), 0);
-            episodeRows.addView(card, bulgarian ? 0 : -1, lp);
+            episodeRows.addView(card, lp);
             episodeCards.add(card);
         }
+        showEpisodeInformation(selectedEpisode != null ? selectedEpisode
+                : visibleEpisodes.isEmpty() ? null : visibleEpisodes.get(0), selectedEpisodeCard());
         saveSelection();
         refreshStates();
         refreshWatchProgress();
@@ -285,7 +321,11 @@ final class TvSeriesSelectionView extends LinearLayout {
         saveSelection();
         refreshStates();
         updateFocusOrder();
-        listener.onSelectionChanged(episode, true);
+        listener.onSelectionChanged(selectedEpisode(), true);
+    }
+
+    private void showEpisodeInformation(TvSeriesMetadata.Episode episode, TvEpisodeCard card) {
+        if (episodeInformation != null) episodeInformation.bind(episode, card == null ? null : card.stillDrawable());
     }
 
     void refreshWatchProgress() {
@@ -298,12 +338,14 @@ final class TvSeriesSelectionView extends LinearLayout {
     @Override protected void onAttachedToWindow() {
         super.onAttachedToWindow();
         getViewTreeObserver().addOnScrollChangedListener(visibleStills);
+        showEpisodeInformation(selectedEpisode, selectedEpisodeCard());
         post(this::loadVisibleStills);
     }
 
     @Override protected void onDetachedFromWindow() {
         if (getViewTreeObserver().isAlive()) getViewTreeObserver().removeOnScrollChangedListener(visibleStills);
         cancelStills();
+        if (episodeInformation != null) episodeInformation.bind(null, null);
         if (stillLoader != null) { stillLoader.close(); stillLoader = null; }
         super.onDetachedFromWindow();
     }
@@ -321,7 +363,8 @@ final class TvSeriesSelectionView extends LinearLayout {
         final int generation = stillGeneration;
         for (int i = 0; i < episodeCards.size(); i++) {
             TvEpisodeCard card = episodeCards.get(i);
-            String url = visibleEpisodes.get(i).stillUrl;
+            TvSeriesMetadata.Episode episode = visibleEpisodes.get(i);
+            String url = episode.stillUrl;
             if (!card.getLocalVisibleRect(visible)) {
                 card.clearStill();
                 requestedStills.remove(card);
@@ -337,6 +380,7 @@ final class TvSeriesSelectionView extends LinearLayout {
                     return;
                 }
                 card.setStill(bitmap);
+                if (episodeInformation != null) episodeInformation.setStill(episode, card.stillDrawable());
             });
         }
     }
@@ -383,15 +427,16 @@ final class TvSeriesSelectionView extends LinearLayout {
         wireHorizontal(enabled);
         for (TvEpisodeCard card : enabled) {
             card.setNextFocusUpId(selectedButton.getId());
-            card.setNextFocusDownId(card.getId());
+            card.setNextFocusDownId(episodeInformation == null ? card.getId() : episodeInformation.getId());
         }
+        if (episodeInformation != null && selectedCard != null) episodeInformation.setNextFocusUpId(selectedCard.getId());
     }
 
     private <T extends View> void wireHorizontal(List<T> chronological) {
         for (int i = 0; i < chronological.size(); i++) {
             View current = chronological.get(i);
-            int left = Math.max(0, Math.min(chronological.size() - 1, i + (bulgarian ? 1 : -1)));
-            int right = Math.max(0, Math.min(chronological.size() - 1, i + (bulgarian ? -1 : 1)));
+            int left = Math.max(0, i - 1);
+            int right = Math.min(chronological.size() - 1, i + 1);
             current.setNextFocusLeftId(chronological.get(left).getId());
             current.setNextFocusRightId(chronological.get(right).getId());
         }
@@ -400,7 +445,7 @@ final class TvSeriesSelectionView extends LinearLayout {
     private <T extends View> boolean horizontalKey(List<T> chronological, View current, int keyCode) {
         if (keyCode != KeyEvent.KEYCODE_DPAD_LEFT && keyCode != KeyEvent.KEYCODE_DPAD_RIGHT) return false;
         int index = chronological.indexOf(current);
-        int direction = keyCode == KeyEvent.KEYCODE_DPAD_LEFT ? (bulgarian ? 1 : -1) : (bulgarian ? -1 : 1);
+        int direction = keyCode == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1;
         int next = index + direction;
         if (index >= 0 && next >= 0 && next < chronological.size()) {
             View target = chronological.get(next);
@@ -411,8 +456,21 @@ final class TvSeriesSelectionView extends LinearLayout {
     }
 
     private void reveal(View view) {
-        if (view == null) return;
-        view.requestRectangleOnScreen(new Rect(0, 0, view.getWidth(), view.getHeight()), false);
+        if (view == null || view.getParent() == null) return;
+        if (view.getWidth() == 0 || view.isLayoutRequested()) {
+            // Newly selected seasons create cards before their first layout; a zero rectangle
+            // otherwise leaves the focused card only partly visible at the old scroll offset.
+            view.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+                @Override public void onLayoutChange(View target, int left, int top, int right, int bottom,
+                                                     int oldLeft, int oldTop, int oldRight, int oldBottom) {
+                    target.removeOnLayoutChangeListener(this);
+                    if (target.getParent() != null) reveal(target);
+                }
+            });
+            return;
+        }
+        int inset = dp(6);
+        view.requestRectangleOnScreen(new Rect(-inset, 0, view.getWidth() + inset, view.getHeight()), true);
     }
 
     private Button seasonButton(int number) {

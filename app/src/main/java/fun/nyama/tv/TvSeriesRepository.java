@@ -183,7 +183,8 @@ public final class TvSeriesRepository {
 
     private static TvSeriesMetadata.Episode episode(JSONObject row, int season, int number, long now) {
         String title = cleanText(firstText(row, "name", "title", "Title"));
-        String summary = cleanText(firstText(row, "summary", "description", "Plot", "overview"));
+        String rawSummary = firstText(row, "summary", "description", "Plot", "overview");
+        String summary = cleanText(rawSummary);
         int duration = firstNumber(row, false, "runtime", "duration", "durationMinutes");
         JSONObject image = row.optJSONObject("image");
         String still = image == null ? firstText(row, "still", "stillUrl", "image")
@@ -193,7 +194,8 @@ public final class TvSeriesRepository {
         long air = parseDate(firstText(row, "airstamp", "airStamp", "air_datetime"));
         if (air < 0) air = parseDate(firstText(row, "airdate", "air_date", "released", "Released"));
         return new TvSeriesMetadata.Episode(season, number, title, duration, summary,
-                safeImageUrl(still), safeImageUrl(original), air, now);
+                safeImageUrl(still), safeImageUrl(original), air, now,
+                TvEpisodeText.plainText(rawSummary), originalAirDate(row));
     }
 
     private static void addEpisode(TreeMap<Integer, TreeMap<Integer, TvSeriesMetadata.Episode>> rows,
@@ -280,6 +282,7 @@ public final class TvSeriesRepository {
                             .put("name", item.title).put("runtime", item.durationMinutes)
                             .put("summary", item.summary).put("stillUrl", item.stillUrl)
                             .put("originalStillUrl", item.originalStillUrl)
+                            .put("fullSummary", item.fullSummary).put("airDate", item.airDate)
                             .put("airStampMs", item.airStampMs));
             root.put("episodes", episodes);
             byte[] bytes = root.toString().getBytes(StandardCharsets.UTF_8);
@@ -307,12 +310,13 @@ public final class TvSeriesRepository {
             if (!source.equals(TVMAZE_SOURCE) && !source.equals("Pukanki.Fun")) return null;
             JSONArray episodes = root.optJSONArray("episodes");
             if (episodes == null || episodes.length() > MAX_EPISODES) return null;
-            boolean legacyArtwork = false;
+            boolean legacyMetadata = false;
             TreeMap<Integer, TreeMap<Integer, TvSeriesMetadata.Episode>> grouped = new TreeMap<>();
             for (int i = 0; i < episodes.length(); i++) {
                 JSONObject row = episodes.optJSONObject(i);
                 if (row == null) continue;
-                if (!row.has("originalStillUrl")) legacyArtwork = true;
+                if (!row.has("originalStillUrl") || !row.has("fullSummary") || !row.has("airDate"))
+                    legacyMetadata = true;
                 int season = nonnegativeInt(row.opt("season"));
                 int number = positiveInt(row.opt("number"));
                 if (season < 0 || number < 1) continue;
@@ -320,17 +324,19 @@ public final class TvSeriesRepository {
                         row.optInt("runtime", -1), row.optString("summary"),
                         safeImageUrl(row.optString("stillUrl")),
                         safeImageUrl(row.optString("originalStillUrl", row.optString("stillUrl"))),
-                        row.optLong("airStampMs", -1), now), now);
+                        row.optLong("airStampMs", -1), now,
+                        row.optString("fullSummary", row.optString("summary")),
+                        verifiedCalendarDate(row.optString("airDate"))), now);
             }
             List<TvSeriesMetadata.Season> seasons = grouped(grouped);
             if (seasons.isEmpty()) return null;
             String sourceUrl = source.equals("Pukanki.Fun") ? "https://pukanki.fun" : root.optString("sourceUrl");
             if (!sourceUrl.matches("https://www\\.tvmaze\\.com/shows/[0-9]+")
                     && !sourceUrl.equals("https://pukanki.fun")) return null;
-            // Refresh an old thumbnail-only TVmaze record once to obtain original artwork. It stays
-            // usable as stale metadata if offline; identities, episode records and TTL stay intact.
+            // Refresh legacy TVmaze records once for original artwork and complete source details.
+            // Offline records remain usable; identities, episode records and TTL stay intact.
             CacheEntry entry = new CacheEntry(new TvSeriesMetadata(imdb, source, sourceUrl, seasons), saved,
-                    legacyArtwork && TVMAZE_SOURCE.equals(source));
+                    legacyMetadata && TVMAZE_SOURCE.equals(source));
             memory.put(imdb, entry);
             return entry;
         } catch (Exception invalidCache) { return null; }
@@ -389,6 +395,32 @@ public final class TvSeriesRepository {
                     && (url.getPort() == -1 || url.getPort() == 443)) return url.toExternalForm();
         } catch (Exception invalid) { /* Unverified image addresses are optional metadata. */ }
         return "";
+    }
+
+    private static String originalAirDate(JSONObject row) {
+        for (String key : new String[]{"airdate", "air_date", "released", "Released"}) {
+            String date = verifiedCalendarDate(row.optString(key));
+            if (!date.isEmpty()) return date;
+        }
+        return "";
+    }
+
+    private static String verifiedCalendarDate(String text) {
+        if (text == null) return "";
+        String value = text.trim();
+        String pattern;
+        if (value.matches("[0-9]{4}-[0-9]{2}-[0-9]{2}")) pattern = "yyyy-MM-dd";
+        else if (value.matches("[0-9]{2} [A-Za-z]{3} [0-9]{4}")) pattern = "dd MMM yyyy";
+        else return "";
+        SimpleDateFormat parser = new SimpleDateFormat(pattern, Locale.US);
+        parser.setTimeZone(TimeZone.getTimeZone("UTC"));
+        parser.setLenient(false);
+        ParsePosition position = new ParsePosition(0);
+        Date parsed = parser.parse(value, position);
+        if (parsed == null || position.getIndex() != value.length()) return "";
+        SimpleDateFormat display = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
+        display.setTimeZone(TimeZone.getTimeZone("UTC"));
+        return display.format(parsed);
     }
 
     private static long parseDate(String text) {

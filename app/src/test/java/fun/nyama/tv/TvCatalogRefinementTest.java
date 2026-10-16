@@ -3,6 +3,7 @@ package fun.nyama.tv;
 import android.app.Application;
 import android.content.Intent;
 import android.graphics.Bitmap;
+import android.graphics.drawable.ColorDrawable;
 import android.os.Looper;
 import android.util.LruCache;
 import android.view.InputDevice;
@@ -204,7 +205,7 @@ public class TvCatalogRefinementTest {
         assertEquals("keep movie query", activity.getSharedPreferences("nyama_plus_catalog_state", 0)
                 .getString("movies:query", ""));
         assertEquals("title", activity.getSharedPreferences("nyama_plus_catalog_state", 0).getString("movies:sort", ""));
-        assertNull(get("cinematicBackground")); assertEquals(0, io.jobs.size());
+        assertNotNull(get("cinematicBackground")); assertEquals(0, io.jobs.size());
         reset();
         assertEquals(4, get("total")); assertEquals(0, io.jobs.size());
     }
@@ -296,16 +297,7 @@ public class TvCatalogRefinementTest {
 
     @Test public void movieSelectionAndRecycledHoverChooseExactArtworkAndPassItToDetail() throws Exception {
         catalog("movies", false);
-        assertTrue(root instanceof FrameLayout);
-        assertEquals(2, ((FrameLayout) root).getChildCount());
-        List<CatalogItem> all = titles(2); adapterItems(all); layout();
-        TvCinematicBackground background = (TvCinematicBackground) get("cinematicBackground");
-        grid.getOnItemSelectedListener().onItemSelected(grid, null, 1, 1);
-        assertEquals(PukankiApi.posterUrl(activity, all.get(1).id), background.currentRequestedUrl());
-        View reused = grid.getAdapter().getView(1, grid.getAdapter().getView(0, null, grid), grid);
-        MotionEvent hover = MotionEvent.obtain(0, 0, MotionEvent.ACTION_HOVER_ENTER, 10, 10, 0);
-        hover.setSource(InputDevice.SOURCE_MOUSE); reused.dispatchGenericMotionEvent(hover); hover.recycle();
-        assertEquals(PukankiApi.posterUrl(activity, all.get(1).id), background.currentRequestedUrl());
+        List<CatalogItem> all = assertFocusedAndHoveredArtwork();
         Method open = CatalogActivity.class.getDeclaredMethod("openDetail", CatalogItem.class);
         open.setAccessible(true); open.invoke(activity, all.get(1));
         Intent detail = Shadows.shadowOf(activity).getNextStartedActivity();
@@ -314,8 +306,41 @@ public class TvCatalogRefinementTest {
         assertEquals(TitleDetailActivity.class.getName(), detail.getComponent().getClassName());
     }
 
+    @Test public void seriesSelectionAndRecycledHoverReuseMoviesArtworkAndForeground() throws Exception {
+        catalog("series", false);
+        assertFocusedAndHoveredArtwork();
+        // The new layer remains visual only; no detail/player activity or catalogue load is started.
+        assertEquals(0, io.jobs.size());
+        assertNull(Shadows.shadowOf(activity).getNextStartedActivity());
+    }
+
+    private List<CatalogItem> assertFocusedAndHoveredArtwork() throws Exception {
+        assertTrue(root instanceof FrameLayout);
+        assertEquals(2, ((FrameLayout) root).getChildCount());
+        LinearLayout shell = (LinearLayout) ((FrameLayout) root).getChildAt(1);
+        assertEquals(0x770A0C0F, ((ColorDrawable) shell.getChildAt(1).getBackground()).getColor());
+        List<CatalogItem> all = titles(2); adapterItems(all); layout();
+        TvCinematicBackground background = (TvCinematicBackground) get("cinematicBackground");
+        grid.getOnItemSelectedListener().onItemSelected(grid, null, 1, 1);
+        assertEquals(PukankiApi.posterUrl(activity, all.get(1).id), background.currentRequestedUrl());
+        View reused = grid.getAdapter().getView(1, grid.getAdapter().getView(0, null, grid), grid);
+        MotionEvent hover = MotionEvent.obtain(0, 0, MotionEvent.ACTION_HOVER_ENTER, 10, 10, 0);
+        hover.setSource(InputDevice.SOURCE_MOUSE); reused.dispatchGenericMotionEvent(hover); hover.recycle();
+        assertEquals(PukankiApi.posterUrl(activity, all.get(1).id), background.currentRequestedUrl());
+        return all;
+    }
+
     @Test public void phoneHasOriginalShellAndSearchBehaviorWithoutTvArtworkOrReset() throws Exception {
         catalog("movies", true);
+        assertOriginalPhoneBehavior();
+    }
+
+    @Test public void phoneSeriesHasOriginalShellAndSearchBehaviorWithoutTvArtworkOrReset() throws Exception {
+        catalog("series", true);
+        assertOriginalPhoneBehavior();
+    }
+
+    private void assertOriginalPhoneBehavior() throws Exception {
         assertTrue(root instanceof LinearLayout); assertNull(get("cinematicBackground"));
         assertNull(get("searchClearButton"));
         search().setText("retain mobile query"); genres().add("Drama"); set("favoritesOnly", true); set("sortMode", "rating");

@@ -44,6 +44,10 @@ public final class TvSeriesMetadata {
         public final String title;
         public final int durationMinutes;
         public final String summary;
+        /** Complete plain-text description with readable source paragraph breaks. */
+        public final String fullSummary;
+        /** Verified source calendar date (yyyy-MM-dd), or empty when it was not supplied. */
+        public final String airDate;
         public final String stillUrl;
         /** Original-size artwork is separate from the compact episode-thumbnail source. */
         public final String originalStillUrl;
@@ -58,11 +62,20 @@ public final class TvSeriesMetadata {
 
         public Episode(int season, int number, String title, int durationMinutes, String summary,
                        String stillUrl, String originalStillUrl, long airStampMs, long snapshotNowMs) {
+            this(season, number, title, durationMinutes, summary, stillUrl, originalStillUrl,
+                    airStampMs, snapshotNowMs, summary, "");
+        }
+
+        public Episode(int season, int number, String title, int durationMinutes, String summary,
+                       String stillUrl, String originalStillUrl, long airStampMs, long snapshotNowMs,
+                       String fullSummary, String airDate) {
             this.season = season;
             this.number = number;
             this.title = text(title);
             this.durationMinutes = durationMinutes > 0 ? durationMinutes : -1;
             this.summary = text(summary);
+            this.fullSummary = text(fullSummary);
+            this.airDate = text(airDate);
             this.stillUrl = text(stillUrl);
             this.originalStillUrl = text(originalStillUrl);
             this.airStampMs = airStampMs;
