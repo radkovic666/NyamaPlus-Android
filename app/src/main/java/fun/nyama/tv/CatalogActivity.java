@@ -90,8 +90,10 @@ public final class CatalogActivity extends Activity {
     private final ArrayList<CatalogItem> tvInitialVisiblePage = new ArrayList<>();
     private boolean tvCatalogReady;
     private int tvWarmGeneration = -1;
-    private int tvDataGeneration;
-    private int tvSearchGeneration;
+    private volatile int tvDataGeneration;
+    private volatile int tvSearchGeneration;
+    private int tvPageGeneration;
+    private TvCinematicBackground cinematicBackground;
     private String tvDataKey = "";
     private boolean focusFirstAfterPageChange;
 
@@ -140,6 +142,9 @@ public final class CatalogActivity extends Activity {
         main.removeCallbacks(liveSearch);
         io.shutdownNow();
         if (sidebarAnimator != null) sidebarAnimator.cancel();
+        tvDataGeneration++;
+        tvSearchGeneration++;
+        if (cinematicBackground != null) cinematicBackground.release();
         super.onDestroy();
     }
 
@@ -220,7 +225,7 @@ public final class CatalogActivity extends Activity {
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(0xD90A0C0F);
+        root.setBackgroundColor(!phone && "movies".equals(section) ? 0x770A0C0F : 0xD90A0C0F);
         root.setPadding(dp(phone ? 10 : 16), dp(phone ? 8 : 10), dp(phone ? 10 : 16), dp(8));
         shell.addView(root, new LinearLayout.LayoutParams(0, -1, 1f));
 
@@ -257,7 +262,8 @@ public final class CatalogActivity extends Activity {
         search.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
-                if (searchClearButton != null) searchClearButton.setVisibility(s.length() == 0 ? View.GONE : View.VISIBLE);
+                if (searchClearButton != null) searchClearButton.setVisibility(phone && s.length() == 0 ? View.GONE : View.VISIBLE);
+                if (!phone) tvSearchGeneration++;
                 main.removeCallbacks(liveSearch);
                 main.postDelayed(liveSearch, phone ? 320L : 120L);
             }
@@ -287,15 +293,8 @@ public final class CatalogActivity extends Activity {
             searchClearButton.setClickable(true);
             searchClearButton.setBackground(panelBackground(0x00151A20, 0x002A3139, 0));
             searchClearButton.setContentDescription(getString(R.string.clear_search));
-            searchClearButton.setVisibility(search.length() == 0 ? View.GONE : View.VISIBLE);
-            searchClearButton.setOnClickListener(v -> {
-                search.setText("");
-                main.removeCallbacks(liveSearch);
-                page = 1;
-                restorePosition = 0;
-                search.requestFocus();
-                if (phone) loadPage(); else handleSearchChanged();
-            });
+            searchClearButton.setVisibility(View.VISIBLE);
+            searchClearButton.setOnClickListener(v -> resetTvCatalog());
             searchClearButton.setOnFocusChangeListener((v, focused) -> {
                 searchClearButton.setTextColor(focused ? Color.WHITE : 0xFFD7DDE5);
                 searchClearButton.setBackground(panelBackground(
@@ -376,6 +375,7 @@ public final class CatalogActivity extends Activity {
                     updateTvCardHighlights();
                     if (view != null) updateTvCardAppearance(view);
                     previous = view;
+                    showMovieArtwork(adapter.getItem(position));
                     return;
                 }
                 if (previous != null && previous != view) {
@@ -419,7 +419,41 @@ public final class CatalogActivity extends Activity {
         if (!phone) {
             grid.post(() -> { if (grid.getCount() > 0) grid.requestFocus(); else search.requestFocus(); });
         }
+        if (!phone && "movies".equals(section)) {
+            // Artwork is a visual layer only: browsing must never acquire audio focus or touch TV playback.
+            FrameLayout cinematicShell = new FrameLayout(this);
+            cinematicBackground = new TvCinematicBackground(this);
+            cinematicShell.addView(cinematicBackground, new FrameLayout.LayoutParams(-1, -1));
+            cinematicShell.addView(shell, new FrameLayout.LayoutParams(-1, -1));
+            return cinematicShell;
+        }
         return shell;
+    }
+
+    private void showMovieArtwork(CatalogItem item) {
+        if (cinematicBackground == null || config.isPhoneMode() || !"movies".equals(section)) return;
+        if (item == null || item.id.isEmpty()) cinematicBackground.showFallback();
+        else cinematicBackground.show(PukankiApi.posterUrl(this, item.id), true);
+    }
+
+    /** TV's X resets the current VOD section, without touching the TV playlist or phone search. */
+    private void resetTvCatalog() {
+        if (config.isPhoneMode()) return;
+        // Invalidate local search results even if a worker has already queued its UI callback.
+        tvSearchGeneration++;
+        main.removeCallbacks(liveSearch);
+        search.setText("");
+        main.removeCallbacks(liveSearch);
+        restoredQuery = "";
+        selectedGenres.clear();
+        favoritesOnly = false;
+        sortMode = "reviews";
+        page = 1;
+        restorePosition = 0;
+        focusFirstAfterPageChange = true;
+        updateFilterIndicator();
+        savePersistentState();
+        loadTvPage();
     }
 
     private void updateTvCardHighlights() {
@@ -684,28 +718,33 @@ public final class CatalogActivity extends Activity {
             loadPage();
             return;
         }
-        // TV search is local. Never show the loading spinner and never refetch catalogue JSON
-        // simply because the user typed another character.
+        final int searchGeneration = ++tvSearchGeneration;
+        final int dataGeneration = tvDataGeneration;
+        final String query = currentQuery();
+        // TV search is local. A complete validated catalogue needs no network round trip.
         if (tvCatalogReady) {
-            applyTvLocalPage(tvVisibleCatalog, currentQuery());
+            applyTvLocalPage(tvVisibleCatalog, query);
             return;
         }
         List<CatalogItem> rawSnapshot;
         synchronized (tvRawCatalog) { rawSnapshot = new ArrayList<>(tvRawCatalog); }
-        if (!rawSnapshot.isEmpty()) {
-            if (currentQuery().isEmpty()) return;
-            List<CatalogItem> matches = PukankiApi.filterLocal(rawSnapshot, currentQuery());
-            final int generation = ++tvSearchGeneration;
+        if (!rawSnapshot.isEmpty() && !query.isEmpty()) {
+            List<CatalogItem> matches = PukankiApi.filterLocal(rawSnapshot, query);
             io.execute(() -> {
+                if (!isTvRequestCurrent(dataGeneration) || searchGeneration != tvSearchGeneration) return;
                 List<CatalogItem> visible = PukankiApi.validateTvPostersFast(this, matches);
-                if (generation != tvSearchGeneration || isFinishing()) return;
-                runOnUiThread(() -> applyTvLocalPage(visible, ""));
+                runOnUiThread(() -> {
+                    if (!isTvRequestCurrent(dataGeneration) || searchGeneration != tvSearchGeneration) return;
+                    applyTvLocalPage(visible, "");
+                });
             });
             return;
         }
-        // Raw catalogue is still warming: filter the stable first page rather than repeatedly
-        // filtering an already-filtered adapter when the user types/backspaces.
-        applyTvLocalPage(tvInitialVisiblePage.isEmpty() ? adapter.snapshot() : tvInitialVisiblePage, currentQuery());
+        // Clearing a search during warm-up must restore the stable first page immediately,
+        // rather than retaining an old filtered/empty adapter until the full poster sweep finishes.
+        if (!tvInitialVisiblePage.isEmpty()) applyTvLocalPage(tvInitialVisiblePage, query);
+        else if (!rawSnapshot.isEmpty()) loadTvPage();
+        else applyTvLocalPage(adapter.snapshot(), query);
     }
 
     private String currentQuery() {
@@ -742,40 +781,71 @@ public final class CatalogActivity extends Activity {
         });
     }
 
+    /** Immutable state prevents an old filter request from being cached under new filter values. */
+    private static final class TvCatalogRequest {
+        final String section;
+        final List<String> genres;
+        final String sort;
+        final boolean favoritesOnly;
+        final String favoriteIds;
+        final int page;
+        final String key;
+
+        TvCatalogRequest(String section, List<String> genres, String sort, boolean favoritesOnly,
+                         String favoriteIds, int page) {
+            this.section = section;
+            this.genres = new ArrayList<>(genres);
+            this.sort = sort;
+            this.favoritesOnly = favoritesOnly;
+            this.favoriteIds = favoriteIds;
+            this.page = page;
+            StringBuilder keyBuilder = new StringBuilder(section).append('|').append(sort).append('|')
+                    .append(favoritesOnly).append('|').append(favoriteIds);
+            for (String genre : this.genres) keyBuilder.append('|').append(genre);
+            key = keyBuilder.toString();
+        }
+    }
+
+    private boolean isTvRequestCurrent(int generation) {
+        return generation == tvDataGeneration && !isFinishing() && !isDestroyed();
+    }
+
     private void loadTvPage() {
-        final List<String> genres = new ArrayList<>(selectedGenres);
-        final String favIds = favorites.csv();
-        StringBuilder keyBuilder = new StringBuilder(section).append('|').append(sortMode).append('|')
-                .append(favoritesOnly).append('|').append(favIds);
-        for (String g : genres) keyBuilder.append('|').append(g);
-        String newDataKey = keyBuilder.toString();
-        if (!newDataKey.equals(tvDataKey)) {
-            tvDataKey = newDataKey;
-            tvRawCatalog.clear();
+        final TvCatalogRequest request = new TvCatalogRequest(section, selectedGenres, sortMode,
+                favoritesOnly, favorites.csv(), page);
+        final boolean dataChanged = !request.key.equals(tvDataKey);
+        if (dataChanged) {
+            tvDataKey = request.key;
+            synchronized (tvRawCatalog) { tvRawCatalog.clear(); }
             tvVisibleCatalog.clear();
             tvInitialVisiblePage.clear();
             tvCatalogReady = false;
             tvDataGeneration++;
+            tvSearchGeneration++;
         }
         final int dataGeneration = tvDataGeneration;
+        final int pageGeneration = ++tvPageGeneration;
 
-        List<CatalogItem> cached = PukankiApi.getCachedVisibleTvCatalog(this, section, genres, sortMode, favoritesOnly, favIds);
+        if (tvCatalogReady) {
+            applyTvLocalPage(tvVisibleCatalog, currentQuery());
+            return;
+        }
+        List<CatalogItem> cached = PukankiApi.getCachedVisibleTvCatalog(this, request.section,
+                request.genres, request.sort, request.favoritesOnly, request.favoriteIds);
         if (cached != null && !cached.isEmpty()) {
             tvVisibleCatalog.clear();
             tvVisibleCatalog.addAll(cached);
             tvCatalogReady = true;
-            loading.setVisibility(View.GONE);
             applyTvLocalPage(tvVisibleCatalog, currentQuery());
-            warmTvRawOnly(genres, favIds, dataGeneration);
             return;
         }
 
-        List<CatalogItem> rawCached = PukankiApi.getCachedRawTvCatalog(this, section, genres, sortMode, favoritesOnly, favIds);
+        final List<CatalogItem> rawCached = PukankiApi.getCachedRawTvCatalog(this, request.section,
+                request.genres, request.sort, request.favoritesOnly, request.favoriteIds);
         if (rawCached != null && !rawCached.isEmpty()) {
             synchronized (tvRawCatalog) { tvRawCatalog.clear(); tvRawCatalog.addAll(rawCached); }
         }
-
-        tvCatalogReady = false;
+        if (dataChanged) adapter.setItems(new ArrayList<>());
         if (adapter.getCount() == 0) {
             loading.setVisibility(View.VISIBLE);
             status.setText(R.string.loading);
@@ -785,80 +855,84 @@ public final class CatalogActivity extends Activity {
         prev.setEnabled(false);
         next.setEnabled(false);
 
-        // First paint validates only a small page instead of blocking on every poster in the catalogue.
-        // If raw JSON is already cached, even this step avoids a catalogue network request.
+        // First paint validates one page. Cached raw JSON avoids a catalogue network request.
         io.execute(() -> {
             try {
+                if (!isTvRequestCurrent(dataGeneration)) return;
                 CatalogPage first;
                 if (rawCached != null && !rawCached.isEmpty()) {
                     int rawTotal = rawCached.size();
                     int rawPages = Math.max(1, (rawTotal + PAGE_SIZE - 1) / PAGE_SIZE);
-                    int safePage = Math.max(1, Math.min(page, rawPages));
+                    int safePage = Math.max(1, Math.min(request.page, rawPages));
                     int start = Math.min(rawTotal, (safePage - 1) * PAGE_SIZE);
                     int end = Math.min(rawTotal, start + PAGE_SIZE);
                     List<CatalogItem> visible = PukankiApi.validateTvPostersFast(this,
                             new ArrayList<>(rawCached.subList(start, end)));
                     first = new CatalogPage(visible, rawTotal, safePage, rawPages);
                 } else {
-                    first = PukankiApi.fetchTvFastPage(this, section, page, PAGE_SIZE, genres, sortMode, favoritesOnly, favIds);
+                    first = PukankiApi.fetchTvFastPage(this, request.section, request.page, PAGE_SIZE,
+                            request.genres, request.sort, request.favoritesOnly, request.favoriteIds);
                 }
-                if (dataGeneration != tvDataGeneration || isFinishing()) return;
                 runOnUiThread(() -> {
-                    if (dataGeneration != tvDataGeneration) return;
+                    if (!isTvRequestCurrent(dataGeneration) || pageGeneration != tvPageGeneration
+                            || tvCatalogReady) return;
                     tvInitialVisiblePage.clear();
                     tvInitialVisiblePage.addAll(first.items);
-                    loading.setVisibility(View.GONE);
                     if (currentQuery().isEmpty()) applyPage(first);
                     else applyTvLocalPage(first.items, currentQuery());
                 });
             } catch (Exception e) {
-                if (dataGeneration != tvDataGeneration || isFinishing()) return;
-                runOnUiThread(() -> { if (adapter.getCount() == 0) showLoadFailure(e); });
+                runOnUiThread(() -> {
+                    if (!isTvRequestCurrent(dataGeneration) || pageGeneration != tvPageGeneration
+                            || tvCatalogReady) return;
+                    if (adapter.getCount() == 0) showLoadFailure(e);
+                    else loading.setVisibility(View.GONE);
+                });
             }
         });
-        warmTvCatalogue(genres, favIds, dataGeneration);
+        warmTvCatalogue(request, dataGeneration);
     }
 
-    private void warmTvRawOnly(List<String> genres, String favIds, int generation) {
-        if (!tvRawCatalog.isEmpty()) return;
-        io.execute(() -> {
-            try {
-                List<CatalogItem> raw = PukankiApi.fetchTvRawCatalog(this, section, genres, sortMode, favoritesOnly, favIds);
-                if (generation != tvDataGeneration) return;
-                synchronized (tvRawCatalog) { tvRawCatalog.clear(); tvRawCatalog.addAll(raw); }
-                main.post(liveSearch);
-            } catch (Exception ignored) {}
-        });
-    }
-
-    private void warmTvCatalogue(List<String> genres, String favIds, int generation) {
+    private void warmTvCatalogue(TvCatalogRequest request, int generation) {
         if (tvWarmGeneration == generation) return;
         tvWarmGeneration = generation;
         io.execute(() -> {
             try {
-                List<CatalogItem> raw = PukankiApi.fetchTvRawCatalog(this, section, genres, sortMode, favoritesOnly, favIds);
-                if (generation != tvDataGeneration || isFinishing()) return;
-                synchronized (tvRawCatalog) { tvRawCatalog.clear(); tvRawCatalog.addAll(raw); }
+                if (!isTvRequestCurrent(generation)) return;
+                List<CatalogItem> raw = PukankiApi.fetchTvRawCatalog(this, request.section,
+                        request.genres, request.sort, request.favoritesOnly, request.favoriteIds);
+                if (!isTvRequestCurrent(generation)) return;
+                main.post(() -> {
+                    if (!isTvRequestCurrent(generation)) return;
+                    synchronized (tvRawCatalog) { tvRawCatalog.clear(); tvRawCatalog.addAll(raw); }
+                    if (!currentQuery().isEmpty()) handleSearchChanged();
+                });
 
-                main.post(liveSearch);
-
-                List<CatalogItem> visible = "series".equals(section)
+                List<CatalogItem> visible = "series".equals(request.section)
                         ? PukankiApi.validateTvSeriesPosters(this, raw)
                         : PukankiApi.validateTvPosters(this, raw);
-                if (generation != tvDataGeneration || isFinishing()) return;
-                PukankiApi.cacheVisibleTvCatalog(this, section, genres, sortMode, favoritesOnly, favIds, visible);
+                if (!isTvRequestCurrent(generation)) return;
+                PukankiApi.cacheVisibleTvCatalog(this, request.section, request.genres,
+                        request.sort, request.favoritesOnly, request.favoriteIds, visible);
                 runOnUiThread(() -> {
+                    if (!isTvRequestCurrent(generation)) return;
+                    // A transient enrichment failure must not erase an already verified usable page.
+                    if (visible.isEmpty() && !tvInitialVisiblePage.isEmpty()) {
+                        loading.setVisibility(View.GONE);
+                        return;
+                    }
                     tvVisibleCatalog.clear();
                     tvVisibleCatalog.addAll(visible);
                     tvCatalogReady = true;
-                    loading.setVisibility(View.GONE);
                     applyTvLocalPage(tvVisibleCatalog, currentQuery());
                 });
-            } catch (Exception ignored) {
-                // Keep the already usable first page on screen. Poster/network enrichment must never
-                // put the TV catalogue back into an indefinite Loading state.
-            } finally {
-                // Generation changes naturally supersede older warm-up work.
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (!isTvRequestCurrent(generation)) return;
+                    tvWarmGeneration = -1; // A later reset/retry can restart an interrupted warm-up.
+                    if (adapter.getCount() == 0) showLoadFailure(e);
+                    else loading.setVisibility(View.GONE);
+                });
             }
         });
     }
@@ -896,6 +970,7 @@ public final class CatalogActivity extends Activity {
         updateFilterIndicator();
         if (focusFirstAfterPageChange && !config.isPhoneMode() && !result.items.isEmpty()) {
             focusFirstAfterPageChange = false;
+            firstGridFocus = false;
             restorePosition = -1;
             grid.setSelection(0);
             grid.post(() -> {
@@ -921,6 +996,10 @@ public final class CatalogActivity extends Activity {
         i.putExtra("originalTitle", item.originalTitle); i.putExtra("year", item.year); i.putExtra("endYear", item.endYear);
         i.putExtra("runtime", item.runtime); i.putExtra("genres", item.genres); i.putExtra("rating", item.rating);
         i.putExtra("votes", item.votes); i.putExtra("seasons", item.seasons); i.putExtra("episodeCount", item.episodeCount);
+        if (!config.isPhoneMode() && "movies".equals(section) && !item.id.isEmpty()) {
+            i.putExtra("tv_artwork_url", PukankiApi.posterUrl(this, item.id));
+            i.putExtra("tv_artwork_portrait", true);
+        }
         startActivity(i);
     }
 
@@ -1069,6 +1148,9 @@ public final class CatalogActivity extends Activity {
                             || action == MotionEvent.ACTION_HOVER_EXIT) {
                         ((Holder) v.getTag()).hovered = action != MotionEvent.ACTION_HOVER_EXIT;
                         updateTvCardAppearance(v);
+                        if (action != MotionEvent.ACTION_HOVER_EXIT) {
+                            showMovieArtwork(adapter.getItem(((Holder) v.getTag()).position));
+                        }
                     }
                     return false;
                 });

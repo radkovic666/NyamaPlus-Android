@@ -79,7 +79,7 @@ public final class TvSeriesRepository {
         }
         CacheEntry cached = memory.get(identity);
         if (cached == null) cached = readCache(identity, nowMillis);
-        if (cached != null && age(nowMillis, cached.savedAt) < CACHE_TTL_MS) return cached.data;
+        if (cached != null && !cached.needsArtworkRefresh && age(nowMillis, cached.savedAt) < CACHE_TTL_MS) return cached.data;
         try {
             TvSeriesMetadata loaded = fetchTvmaze(identity, nowMillis);
             remember(identity, loaded, nowMillis);
@@ -188,10 +188,12 @@ public final class TvSeriesRepository {
         JSONObject image = row.optJSONObject("image");
         String still = image == null ? firstText(row, "still", "stillUrl", "image")
                 : firstText(image, "medium", "original");
+        String original = image == null ? firstText(row, "originalStillUrl", "still", "stillUrl", "image")
+                : firstText(image, "original", "medium");
         long air = parseDate(firstText(row, "airstamp", "airStamp", "air_datetime"));
         if (air < 0) air = parseDate(firstText(row, "airdate", "air_date", "released", "Released"));
         return new TvSeriesMetadata.Episode(season, number, title, duration, summary,
-                safeImageUrl(still), air, now);
+                safeImageUrl(still), safeImageUrl(original), air, now);
     }
 
     private static void addEpisode(TreeMap<Integer, TreeMap<Integer, TvSeriesMetadata.Episode>> rows,
@@ -277,6 +279,7 @@ public final class TvSeriesRepository {
                     episodes.put(new JSONObject().put("season", item.season).put("number", item.number)
                             .put("name", item.title).put("runtime", item.durationMinutes)
                             .put("summary", item.summary).put("stillUrl", item.stillUrl)
+                            .put("originalStillUrl", item.originalStillUrl)
                             .put("airStampMs", item.airStampMs));
             root.put("episodes", episodes);
             byte[] bytes = root.toString().getBytes(StandardCharsets.UTF_8);
@@ -304,23 +307,30 @@ public final class TvSeriesRepository {
             if (!source.equals(TVMAZE_SOURCE) && !source.equals("Pukanki.Fun")) return null;
             JSONArray episodes = root.optJSONArray("episodes");
             if (episodes == null || episodes.length() > MAX_EPISODES) return null;
+            boolean legacyArtwork = false;
             TreeMap<Integer, TreeMap<Integer, TvSeriesMetadata.Episode>> grouped = new TreeMap<>();
             for (int i = 0; i < episodes.length(); i++) {
                 JSONObject row = episodes.optJSONObject(i);
                 if (row == null) continue;
+                if (!row.has("originalStillUrl")) legacyArtwork = true;
                 int season = nonnegativeInt(row.opt("season"));
                 int number = positiveInt(row.opt("number"));
                 if (season < 0 || number < 1) continue;
                 addEpisode(grouped, new TvSeriesMetadata.Episode(season, number, row.optString("name"),
                         row.optInt("runtime", -1), row.optString("summary"),
-                        safeImageUrl(row.optString("stillUrl")), row.optLong("airStampMs", -1), now), now);
+                        safeImageUrl(row.optString("stillUrl")),
+                        safeImageUrl(row.optString("originalStillUrl", row.optString("stillUrl"))),
+                        row.optLong("airStampMs", -1), now), now);
             }
             List<TvSeriesMetadata.Season> seasons = grouped(grouped);
             if (seasons.isEmpty()) return null;
             String sourceUrl = source.equals("Pukanki.Fun") ? "https://pukanki.fun" : root.optString("sourceUrl");
             if (!sourceUrl.matches("https://www\\.tvmaze\\.com/shows/[0-9]+")
                     && !sourceUrl.equals("https://pukanki.fun")) return null;
-            CacheEntry entry = new CacheEntry(new TvSeriesMetadata(imdb, source, sourceUrl, seasons), saved);
+            // Refresh an old thumbnail-only TVmaze record once to obtain original artwork. It stays
+            // usable as stale metadata if offline; identities, episode records and TTL stay intact.
+            CacheEntry entry = new CacheEntry(new TvSeriesMetadata(imdb, source, sourceUrl, seasons), saved,
+                    legacyArtwork && TVMAZE_SOURCE.equals(source));
             memory.put(imdb, entry);
             return entry;
         } catch (Exception invalidCache) { return null; }
@@ -458,7 +468,11 @@ public final class TvSeriesRepository {
     private static final class CacheEntry {
         final TvSeriesMetadata data;
         final long savedAt;
-        CacheEntry(TvSeriesMetadata data, long savedAt) { this.data = data; this.savedAt = savedAt; }
+        final boolean needsArtworkRefresh;
+        CacheEntry(TvSeriesMetadata data, long savedAt) { this(data, savedAt, false); }
+        CacheEntry(TvSeriesMetadata data, long savedAt, boolean needsArtworkRefresh) {
+            this.data = data; this.savedAt = savedAt; this.needsArtworkRefresh = needsArtworkRefresh;
+        }
     }
 
     private static final class SystemClock implements Clock {

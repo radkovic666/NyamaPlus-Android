@@ -39,6 +39,54 @@ public class TvSeriesRepositoryTest {
         repository = new TvSeriesRepository(cache, transport, clock);
     }
 
+    @Test public void originalArtworkStaysSeparateFromThumbnailsAndSurvivesDiskCache() throws Exception {
+        enqueueShow("tt0944947", 82);
+        transport.json("[{\"number\":1}]");
+        JSONObject row = episode(1, 1, "Winter Is Coming", "2011-04-17");
+        row.getJSONObject("image").put("original", "https://static.tvmaze.com/original.jpg");
+        transport.json(new JSONArray().put(row).toString());
+        TvSeriesMetadata metadata = repository.load("tt0944947", null, NOW);
+        TvSeriesMetadata.Episode episode = metadata.seasons.get(0).episodes.get(0);
+        assertEquals("https://static.tvmaze.com/still.jpg", episode.stillUrl);
+        assertEquals("https://static.tvmaze.com/original.jpg", episode.originalStillUrl);
+        TvSeriesRepository restarted = new TvSeriesRepository(cache, new FakeTransport(), clock);
+        assertEquals(episode.originalStillUrl, restarted.load("tt0944947", null, NOW + 1000)
+                .seasons.get(0).episodes.get(0).originalStillUrl);
+    }
+
+    @Test public void olderMetadataCacheWithoutOriginalFieldRemainsReadable() throws Exception {
+        enqueueShow("tt0944947", 82);
+        transport.json("[{\"number\":1}]");
+        transport.json(new JSONArray().put(episode(1, 1, "Winter Is Coming", "2011-04-17")).toString());
+        repository.load("tt0944947", null, NOW);
+        File stored = new File(cache, "tt0944947.json");
+        JSONObject root = new JSONObject(new String(java.nio.file.Files.readAllBytes(stored.toPath()), java.nio.charset.StandardCharsets.UTF_8));
+        root.getJSONArray("episodes").getJSONObject(0).remove("originalStillUrl");
+        java.nio.file.Files.write(stored.toPath(), root.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        TvSeriesMetadata.Episode old = new TvSeriesRepository(cache, new FakeTransport(), clock)
+                .load("tt0944947", null, NOW + 1000).seasons.get(0).episodes.get(0);
+        assertEquals(old.stillUrl, old.originalStillUrl);
+    }
+
+    @Test public void legacyThumbnailOnlyCacheRefreshesOriginalArtworkOnceWhenOnline() throws Exception {
+        enqueueSingleSeason(); repository.load("tt0944947", null, NOW);
+        File stored = new File(cache, "tt0944947.json");
+        JSONObject root = new JSONObject(new String(java.nio.file.Files.readAllBytes(stored.toPath()), java.nio.charset.StandardCharsets.UTF_8));
+        root.getJSONArray("episodes").getJSONObject(0).remove("originalStillUrl");
+        java.nio.file.Files.write(stored.toPath(), root.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        FakeTransport upgrade = new FakeTransport();
+        upgrade.json(new JSONObject().put("id", 82).put("externals", new JSONObject().put("imdb", "tt0944947")).toString());
+        upgrade.json("[{\"number\":1}]");
+        JSONObject row = episode(1, 1, "Pilot", "2011-04-17");
+        row.getJSONObject("image").put("original", "https://static.tvmaze.com/original.jpg");
+        upgrade.json(new JSONArray().put(row).toString());
+        TvSeriesRepository restarted = new TvSeriesRepository(cache, upgrade, clock);
+        assertEquals("https://static.tvmaze.com/original.jpg", restarted.load("tt0944947", null, NOW + 1000)
+                .seasons.get(0).episodes.get(0).originalStillUrl);
+        restarted.load("tt0944947", null, NOW + 2000);
+        assertEquals(3, upgrade.addresses.size());
+    }
+
     @Test public void multiSeasonRowsRetainRealEpisodeNumbersAndDescriptions() throws Exception {
         enqueueShow("tt0944947", 82);
         transport.json("[{\"number\":1},{\"number\":2}]");

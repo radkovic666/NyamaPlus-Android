@@ -253,6 +253,20 @@ public final class SettingsActivity extends Activity {
         adminCard.addView(admin, adminParams);
         addSection(root, getString(R.string.admin_section), adminCard);
 
+        if (!phone) {
+            boolean english = Config.LANG_EN.equals(config.language());
+            LinearLayout information = card();
+            information.addView(description(english ? "Series metadata: TVmaze · CC BY-SA"
+                    : "Метаданни за сериали: TVmaze · CC BY-SA"));
+            Button source = professionalButton("TVmaze ↗");
+            source.setOnClickListener(v -> openInformationLink("https://www.tvmaze.com"));
+            information.addView(source, new LinearLayout.LayoutParams(-1, dp(52)));
+            Button license = professionalButton("CC BY-SA ↗");
+            license.setOnClickListener(v -> openInformationLink("https://creativecommons.org/licenses/by-sa/4.0/"));
+            information.addView(license, new LinearLayout.LayoutParams(-1, dp(52)));
+            addSection(root, english ? "Information" : "Информация", information);
+        }
+
         Button close = professionalButton(getString(R.string.close));
         close.setOnClickListener(v -> {
             suppressNextUserLeaveHint = true;
@@ -264,6 +278,16 @@ public final class SettingsActivity extends Activity {
 
         autostart.requestFocus();
         return scroll;
+    }
+
+    private void openInformationLink(String url) {
+        suppressNextUserLeaveHint = true;
+        try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))); }
+        catch (android.content.ActivityNotFoundException missingBrowser) {
+            suppressNextUserLeaveHint = false;
+            Toast.makeText(this, Config.LANG_EN.equals(config.language())
+                    ? "No browser installed" : "Няма инсталиран браузър", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void updateDataUsage() {

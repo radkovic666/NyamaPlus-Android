@@ -45,18 +45,26 @@ public final class TvSeriesMetadata {
         public final int durationMinutes;
         public final String summary;
         public final String stillUrl;
+        /** Original-size artwork is separate from the compact episode-thumbnail source. */
+        public final String originalStillUrl;
         /** -1 means that the source supplied no verifiable air date. */
         public final long airStampMs;
         private final long snapshotNowMs;
 
         public Episode(int season, int number, String title, int durationMinutes, String summary,
                        String stillUrl, long airStampMs, long snapshotNowMs) {
+            this(season, number, title, durationMinutes, summary, stillUrl, stillUrl, airStampMs, snapshotNowMs);
+        }
+
+        public Episode(int season, int number, String title, int durationMinutes, String summary,
+                       String stillUrl, String originalStillUrl, long airStampMs, long snapshotNowMs) {
             this.season = season;
             this.number = number;
             this.title = text(title);
             this.durationMinutes = durationMinutes > 0 ? durationMinutes : -1;
             this.summary = text(summary);
             this.stillUrl = text(stillUrl);
+            this.originalStillUrl = text(originalStillUrl);
             this.airStampMs = airStampMs;
             this.snapshotNowMs = snapshotNowMs;
         }

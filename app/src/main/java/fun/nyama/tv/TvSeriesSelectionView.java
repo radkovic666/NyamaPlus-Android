@@ -5,54 +5,52 @@ import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.Typeface;
-import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.GradientDrawable;
-import android.text.Html;
-import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewTreeObserver;
 import android.widget.Button;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
-import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.net.URI;
 import java.util.ArrayList;
-import java.util.List;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
-/** Small native TV-only selector. Metadata describes episodes, never provider availability. */
+/** TV-only horizontal selector. Metadata describes episodes, never provider availability. */
 final class TvSeriesSelectionView extends LinearLayout {
     interface Listener {
         void onSelectionChanged(TvSeriesMetadata.Episode episode, boolean metadataPresent);
         void onPlay(TvSeriesMetadata.Episode episode);
         void onSource(String url);
+        default void onEpisodeFocused(TvSeriesMetadata.Episode episode) { }
     }
 
     private final String imdbId;
     private final Listener listener;
     private final SharedPreferences preferences;
+    private final TvEpisodeProgressStore progressStore;
     private final boolean bulgarian;
     private final int accent;
     private final boolean rememberedSelection;
     private final List<TvSeriesMetadata.Season> seasons = new ArrayList<>();
     private final List<Button> seasonButtons = new ArrayList<>();
-    private final List<Button> episodeButtons = new ArrayList<>();
+    private final List<TvEpisodeCard> episodeCards = new ArrayList<>();
     private final List<TvSeriesMetadata.Episode> visibleEpisodes = new ArrayList<>();
     private LinearLayout episodeRows;
     private TvSeriesMetadata.Episode selectedEpisode;
     private int selectedSeason = -1;
     private boolean metadataPresent;
     private View above;
-    private Button sourceButton;
     private TvEpisodeStillLoader stillLoader;
     private int stillGeneration;
-    private final Set<Button> requestedStills = new HashSet<>();
+    private final Set<TvEpisodeCard> requestedStills = new HashSet<>();
     private final ViewTreeObserver.OnScrollChangedListener visibleStills = this::loadVisibleStills;
 
     TvSeriesSelectionView(Context context, String imdbId, Listener listener) {
@@ -60,6 +58,7 @@ final class TvSeriesSelectionView extends LinearLayout {
         this.imdbId = imdbId;
         this.listener = listener;
         preferences = context.getSharedPreferences("nyama_tv_series_selection", Context.MODE_PRIVATE);
+        progressStore = new TvEpisodeProgressStore(context);
         rememberedSelection = preferences.contains(imdbId + ":season");
         bulgarian = Config.LANG_BG.equals(new Config(context).language());
         accent = UiTheme.accent(context);
@@ -87,7 +86,7 @@ final class TvSeriesSelectionView extends LinearLayout {
         ProgressBar progress = new ProgressBar(getContext());
         UiTheme.tintProgress(getContext(), progress);
         row.addView(progress, new LayoutParams(dp(22), dp(22)));
-        TextView label = label(tr("Зареждане на епизодите…", "Loading episodes…"), 14, 0xFFB9C1CA);
+        TextView label = label(tr("Зареждане на епизодите…", "Loading episodes…"), 16, 0xFFE0E6EE);
         label.setPadding(dp(10), 0, 0, 0);
         row.addView(label);
         addView(row);
@@ -99,11 +98,11 @@ final class TvSeriesSelectionView extends LinearLayout {
         selectedEpisode = null;
         seasons.clear();
         seasonButtons.clear();
-        episodeButtons.clear();
-        sourceButton = null;
+        episodeCards.clear();
+        visibleEpisodes.clear();
         removeAllViews();
         addView(label(tr("Епизодите не могат да бъдат заредени. Използвайте „Гледай сега“.",
-                "Episode details could not be loaded. Use Watch now."), 14, 0xFFB9C1CA));
+                "Episode details could not be loaded. Use Watch now."), 16, 0xFFE0E6EE));
         listener.onSelectionChanged(null, false);
     }
 
@@ -115,8 +114,8 @@ final class TvSeriesSelectionView extends LinearLayout {
         selectedSeason = -1;
         seasons.clear();
         seasonButtons.clear();
-        episodeButtons.clear();
-        sourceButton = null;
+        episodeCards.clear();
+        visibleEpisodes.clear();
         removeAllViews();
         for (TvSeriesMetadata.Season season : metadata.seasons) {
             if (season == null || season.number < 0) continue;
@@ -126,64 +125,58 @@ final class TvSeriesSelectionView extends LinearLayout {
             }
             if (hasVisibleEpisode) seasons.add(season);
         }
-        TextView heading = label(tr("Сезони и епизоди", "Seasons and episodes"), 19, Color.WHITE);
+        TextView heading = label(tr("Сезони", "Seasons"), 21, Color.WHITE);
         heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         addView(heading);
         TextView note = label(tr("Наличността при доставчика не е потвърдена.",
-                "Provider availability is not confirmed."), 13, 0xFFB9C1CA);
-        note.setPadding(0, dp(5), 0, dp(10));
+                "Provider availability is not confirmed."), 13, 0xFFE0E6EE);
+        note.setPadding(0, dp(4), 0, dp(8));
         addView(note);
-        if (metadata.stale) addView(label(tr("Запазени метаданни", "Cached episode details"), 12, 0xFFB9C1CA));
+        if (metadata.stale) addView(label(tr("Запазени метаданни", "Cached episode details"), 13, 0xFFE0E6EE));
         if (seasons.isEmpty()) {
-            addView(label(tr("Няма потвърдени излъчени епизоди.", "No confirmed aired episodes."), 14, 0xFFB9C1CA));
-            addSource(metadata);
+            addView(label(tr("Няма потвърдени излъчени епизоди.", "No confirmed aired episodes."), 16, 0xFFE0E6EE));
             listener.onSelectionChanged(null, true);
             return;
         }
 
-        HorizontalScrollView seasonScroll = new HorizontalScrollView(getContext());
-        seasonScroll.setHorizontalScrollBarEnabled(false);
-        seasonScroll.setFocusable(false);
-        LinearLayout seasonRow = new LinearLayout(getContext());
-        seasonRow.setPadding(dp(3), dp(4), dp(3), dp(4));
+        HorizontalScrollView seasonScroll = horizontalScroll("season-scroll");
+        LinearLayout seasonRow = horizontalRow();
+        seasonRow.setTag("season-row");
         seasonScroll.addView(seasonRow, new HorizontalScrollView.LayoutParams(-2, -2));
         addView(seasonScroll, new LayoutParams(-1, -2));
         for (TvSeriesMetadata.Season season : seasons) {
             Button button = button(seasonName(season.number));
             button.setTag("season:" + season.number);
-            button.setOnClickListener(v -> chooseSeason(season.number, true));
+            button.setOnClickListener(v -> chooseSeason(season.number, false));
             button.setOnKeyListener((v, keyCode, event) -> {
                 if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
                 if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
                     chooseSeason(season.number, true);
                     return true;
                 }
-                if (keyCode == KeyEvent.KEYCODE_DPAD_UP && above != null) return above.requestFocus();
-                return false;
+                if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+                    if (above != null) above.requestFocus();
+                    return true;
+                }
+                return horizontalKey(seasonButtons, button, keyCode);
             });
-            LayoutParams lp = new LayoutParams(-2, dp(46));
-            lp.setMargins(0, 0, dp(8), 0);
-            seasonRow.addView(button, lp);
+            LayoutParams lp = new LayoutParams(-2, dp(50));
+            lp.setMargins(dp(4), 0, dp(4), 0);
+            seasonRow.addView(button, bulgarian ? 0 : -1, lp);
             seasonButtons.add(button);
         }
-        for (int i = 0; i < seasonButtons.size(); i++) {
-            Button button = seasonButtons.get(i);
-            button.setNextFocusLeftId(seasonButtons.get(Math.max(0, i - 1)).getId());
-            button.setNextFocusRightId(seasonButtons.get(Math.min(seasonButtons.size() - 1, i + 1)).getId());
-        }
+        wireHorizontal(seasonButtons);
 
-        ScrollView episodeScroll = new ScrollView(getContext());
-        episodeScroll.setFillViewport(false);
-        episodeScroll.setFocusable(false);
-        episodeScroll.setNestedScrollingEnabled(true);
-        episodeRows = new LinearLayout(getContext());
-        episodeRows.setOrientation(VERTICAL);
-        episodeRows.setPadding(dp(3), dp(5), dp(3), dp(5));
-        episodeScroll.addView(episodeRows, new ScrollView.LayoutParams(-1, -2));
-        LayoutParams episodesLayout = new LayoutParams(-1, dp(266));
-        episodesLayout.topMargin = dp(7);
-        addView(episodeScroll, episodesLayout);
-        addSource(metadata);
+        TextView episodesHeading = label(tr("Епизоди", "Episodes"), 20, Color.WHITE);
+        episodesHeading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        episodesHeading.setPadding(0, dp(10), 0, dp(3));
+        addView(episodesHeading);
+        HorizontalScrollView episodeScroll = horizontalScroll("episode-scroll");
+        episodeRows = horizontalRow();
+        episodeRows.setTag("episode-row");
+        episodeRows.setPadding(dp(4), dp(6), dp(4), dp(6));
+        episodeScroll.addView(episodeRows, new HorizontalScrollView.LayoutParams(-2, -2));
+        addView(episodeScroll, new LayoutParams(-1, -2));
 
         int rememberedSeason = preferences.getInt(imdbId + ":season", -1);
         int initialSeason = seasons.get(0).number;
@@ -191,15 +184,39 @@ final class TvSeriesSelectionView extends LinearLayout {
             if (season.number == rememberedSeason) { initialSeason = rememberedSeason; break; }
         }
         chooseSeason(initialSeason, false);
+        // Right-to-left Bulgarian rows start at the real first season/episode, on the right.
+        seasonScroll.post(() -> reveal(seasonButton(selectedSeason)));
+    }
+
+    private HorizontalScrollView horizontalScroll(String tag) {
+        HorizontalScrollView scroll = new HorizontalScrollView(getContext());
+        scroll.setTag(tag);
+        scroll.setHorizontalScrollBarEnabled(false);
+        scroll.setFocusable(false);
+        scroll.setSmoothScrollingEnabled(true);
+        // Visual order is explicit, so physical LEFT/RIGHT keep their normal screen meaning.
+        scroll.setLayoutDirection(LAYOUT_DIRECTION_LTR);
+        return scroll;
+    }
+
+    private LinearLayout horizontalRow() {
+        LinearLayout row = new LinearLayout(getContext());
+        row.setOrientation(HORIZONTAL);
+        row.setLayoutDirection(LAYOUT_DIRECTION_LTR);
+        row.setPadding(dp(3), dp(4), dp(3), dp(4));
+        return row;
     }
 
     private boolean visible(TvSeriesMetadata.Episode episode) {
-        // A missing air date is explicitly unconfirmed. Scheduled future episodes are omitted.
         return episode != null && episode.number > 0 && episode.season >= 0
                 && (episode.airStampMs < 0 || episode.eligibleForPlayback());
     }
 
     private void chooseSeason(int number, boolean focusEpisodes) {
+        if (selectedSeason == number && !episodeCards.isEmpty()) {
+            if (focusEpisodes && !focusSelectedEpisode()) focusSelectedSeason();
+            return;
+        }
         TvSeriesMetadata.Season selected = null;
         for (TvSeriesMetadata.Season season : seasons) if (season.number == number) { selected = season; break; }
         if (selected == null) return;
@@ -209,7 +226,7 @@ final class TvSeriesSelectionView extends LinearLayout {
         selectedSeason = number;
         selectedEpisode = null;
         visibleEpisodes.clear();
-        episodeButtons.clear();
+        episodeCards.clear();
         episodeRows.removeAllViews();
         for (TvSeriesMetadata.Episode episode : selected.episodes) {
             if (!visible(episode) || episode.season != number) continue;
@@ -218,52 +235,64 @@ final class TvSeriesSelectionView extends LinearLayout {
                     || (rememberedSeason == number && rememberedEpisode == episode.number))) selectedEpisode = episode;
         }
         for (TvSeriesMetadata.Episode episode : visibleEpisodes) {
-            String caption = tr("Епизод ", "Episode ") + episode.number;
-            if (!episode.title.isEmpty()) caption += " · " + episode.title;
-            if (episode.durationMinutes > 0) caption += "  ·  " + episode.durationMinutes + tr(" мин", " min");
-            String summary = Html.fromHtml(episode.summary, Html.FROM_HTML_MODE_LEGACY).toString().trim();
-            if (!summary.isEmpty()) caption += "\n" + summary;
-            if (!episode.eligibleForPlayback()) caption += "\n" + tr("Датата на излъчване не е потвърдена", "Air date is unconfirmed");
-            Button row = button(caption);
-            row.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-            row.setMaxLines(4);
-            row.setEllipsize(TextUtils.TruncateAt.END);
-            row.setTag("episode:" + number + ":" + episode.number);
-            row.setEnabled(episode.eligibleForPlayback());
-            row.setAlpha(row.isEnabled() ? 1f : 0.6f);
-            row.setPadding(dp(14), dp(11), dp(14), dp(11));
-            row.setOnClickListener(v -> {
+            TvEpisodeCard card = new TvEpisodeCard(getContext(), episode, bulgarian);
+            card.setTag("episode:" + number + ":" + episode.number);
+            card.setOnClickListener(v -> {
                 if (!episode.eligibleForPlayback()) return;
                 selectEpisode(episode);
                 listener.onPlay(episode);
             });
-            row.setOnFocusChangeListener((v, focused) -> {
-                if (focused && episode.eligibleForPlayback()) selectEpisode(episode);
+            card.setOnFocusChangeListener((v, focused) -> {
+                if (focused && episode.eligibleForPlayback()) {
+                    selectEpisode(episode);
+                    listener.onEpisodeFocused(episode);
+                    reveal(card);
+                }
                 refreshStates();
             });
-            row.setOnKeyListener((v, keyCode, event) -> {
-                if (event.getAction() == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_DPAD_UP
-                        && row == firstEnabledEpisode()) return focusSelectedSeason();
+            card.setOnHoverListener((v, event) -> {
+                // Genuine pointer hover only; never generate pointer events or alter playback.
+                if (event.getActionMasked() == MotionEvent.ACTION_HOVER_ENTER) listener.onEpisodeFocused(episode);
+                if (event.getActionMasked() == MotionEvent.ACTION_HOVER_EXIT && !card.hasFocus())
+                    listener.onEpisodeFocused(selectedEpisode);
                 return false;
             });
-            LayoutParams lp = new LayoutParams(-1, -2);
-            lp.bottomMargin = dp(7);
-            episodeRows.addView(row, lp);
-            episodeButtons.add(row);
+            card.setOnKeyListener((v, keyCode, event) -> {
+                if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+                if (keyCode == KeyEvent.KEYCODE_DPAD_UP) { focusSelectedSeason(); return true; }
+                if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) return true;
+                return horizontalKey(enabledEpisodeCards(), card, keyCode);
+            });
+            LayoutParams lp = new LayoutParams(card.preferredWidth(), card.preferredHeight());
+            lp.setMargins(dp(4), 0, dp(8), 0);
+            episodeRows.addView(card, bulgarian ? 0 : -1, lp);
+            episodeCards.add(card);
         }
         saveSelection();
         refreshStates();
+        refreshWatchProgress();
         updateFocusOrder();
         listener.onSelectionChanged(selectedEpisode(), true);
-        if (focusEpisodes) focusSelectedEpisode();
-        post(this::loadVisibleStills);
+        if (focusEpisodes && !focusSelectedEpisode()) focusSelectedSeason();
+        post(() -> {
+            if (!episodeCards.isEmpty()) reveal(selectedEpisodeCard());
+            loadVisibleStills();
+        });
     }
 
     private void selectEpisode(TvSeriesMetadata.Episode episode) {
         selectedEpisode = episode;
         saveSelection();
         refreshStates();
+        updateFocusOrder();
         listener.onSelectionChanged(episode, true);
+    }
+
+    void refreshWatchProgress() {
+        for (int i = 0; i < episodeCards.size(); i++) {
+            TvSeriesMetadata.Episode episode = visibleEpisodes.get(i);
+            episodeCards.get(i).updateWatchStatus(progressStore.get(imdbId, episode.season, episode.number));
+        }
     }
 
     @Override protected void onAttachedToWindow() {
@@ -282,6 +311,7 @@ final class TvSeriesSelectionView extends LinearLayout {
     private void cancelStills() {
         stillGeneration++;
         requestedStills.clear();
+        for (TvEpisodeCard card : episodeCards) card.clearStill();
         if (stillLoader != null) stillLoader.cancelAll();
     }
 
@@ -289,34 +319,24 @@ final class TvSeriesSelectionView extends LinearLayout {
         if (!isAttachedToWindow() || !isShown()) return;
         Rect visible = new Rect();
         final int generation = stillGeneration;
-        for (int i = 0; i < episodeButtons.size(); i++) {
-            Button row = episodeButtons.get(i);
+        for (int i = 0; i < episodeCards.size(); i++) {
+            TvEpisodeCard card = episodeCards.get(i);
             String url = visibleEpisodes.get(i).stillUrl;
-            if (!row.getLocalVisibleRect(visible)) {
-                if (row.getCompoundDrawablesRelative()[0] != null) {
-                    row.setCompoundDrawablesRelative(null, null, null, null);
-                    requestedStills.remove(row);
-                }
+            if (!card.getLocalVisibleRect(visible)) {
+                card.clearStill();
+                requestedStills.remove(card);
                 continue;
             }
-            if (url.isEmpty() || requestedStills.contains(row)) continue;
-            requestedStills.add(row);
+            if (url.isEmpty() || requestedStills.contains(card)) continue;
+            requestedStills.add(card);
             if (stillLoader == null) stillLoader = new TvEpisodeStillLoader();
             stillLoader.load(url, bitmap -> {
-                if (generation != stillGeneration || !isAttachedToWindow() || row.getParent() != episodeRows) return;
-                if (!isShown() || !row.getLocalVisibleRect(new Rect())) {
-                    requestedStills.remove(row);
+                if (generation != stillGeneration || !isAttachedToWindow() || card.getParent() != episodeRows) return;
+                if (!isShown() || !card.getLocalVisibleRect(new Rect())) {
+                    requestedStills.remove(card);
                     return;
                 }
-                BitmapDrawable drawable = new BitmapDrawable(getResources(), bitmap);
-                int width = dp(96);
-                int height = Math.min(dp(64), Math.max(dp(1), width * bitmap.getHeight() / Math.max(1, bitmap.getWidth())));
-                if (width * bitmap.getHeight() / Math.max(1, bitmap.getWidth()) > height) {
-                    width = Math.max(dp(1), height * bitmap.getWidth() / Math.max(1, bitmap.getHeight()));
-                }
-                drawable.setBounds(0, 0, width, height);
-                row.setCompoundDrawablePadding(dp(12));
-                row.setCompoundDrawablesRelative(drawable, null, null, null);
+                card.setStill(bitmap);
             });
         }
     }
@@ -329,51 +349,83 @@ final class TvSeriesSelectionView extends LinearLayout {
 
     boolean restoreSelectionFocus() { return focusSelectedEpisode() || focusSelectedSeason(); }
 
-    private boolean focusSelectedEpisode() {
-        if (selectedEpisode == null) return false;
-        for (int i = 0; i < visibleEpisodes.size(); i++) {
-            if (visibleEpisodes.get(i).number == selectedEpisode.number) {
-                Button button = episodeButtons.get(i);
-                boolean focused = button.requestFocus();
-                if (focused) button.requestRectangleOnScreen(new android.graphics.Rect(0, 0, button.getWidth(), button.getHeight()));
-                return focused;
-            }
+    private TvEpisodeCard selectedEpisodeCard() {
+        if (selectedEpisode != null) for (int i = 0; i < visibleEpisodes.size(); i++) {
+            if (visibleEpisodes.get(i).number == selectedEpisode.number) return episodeCards.get(i);
         }
-        return false;
-    }
-
-    private Button firstEnabledEpisode() {
-        for (Button button : episodeButtons) if (button.isEnabled()) return button;
         return null;
     }
 
+    private boolean focusSelectedEpisode() {
+        TvEpisodeCard card = selectedEpisodeCard();
+        if (card == null) return false;
+        boolean focused = card.requestFocus();
+        if (focused) reveal(card);
+        return focused;
+    }
+
+    private List<TvEpisodeCard> enabledEpisodeCards() {
+        List<TvEpisodeCard> enabled = new ArrayList<>();
+        for (TvEpisodeCard card : episodeCards) if (card.isEnabled()) enabled.add(card);
+        return enabled;
+    }
+
     private void updateFocusOrder() {
-        Button seasonButton = null;
-        for (int i = 0; i < seasons.size(); i++) {
-            if (seasons.get(i).number == selectedSeason) seasonButton = seasonButtons.get(i);
-        }
-        if (seasonButton == null) return;
+        Button selectedButton = seasonButton(selectedSeason);
+        if (selectedButton == null) return;
         if (above != null) {
-            above.setNextFocusDownId(seasonButton.getId());
+            above.setNextFocusDownId(selectedButton.getId());
             for (Button button : seasonButtons) button.setNextFocusUpId(above.getId());
         }
-        List<Button> enabled = new ArrayList<>();
-        for (Button button : episodeButtons) if (button.isEnabled()) enabled.add(button);
-        for (int i = 0; i < enabled.size(); i++) {
-            Button button = enabled.get(i);
-            button.setNextFocusUpId(i == 0 ? seasonButton.getId() : enabled.get(i - 1).getId());
-            button.setNextFocusDownId(i + 1 < enabled.size() ? enabled.get(i + 1).getId()
-                    : sourceButton != null ? sourceButton.getId() : button.getId());
-            button.setNextFocusLeftId(button.getId());
-            button.setNextFocusRightId(button.getId());
+        TvEpisodeCard selectedCard = selectedEpisodeCard();
+        for (Button button : seasonButtons) button.setNextFocusDownId(selectedCard == null ? button.getId() : selectedCard.getId());
+        List<TvEpisodeCard> enabled = enabledEpisodeCards();
+        wireHorizontal(enabled);
+        for (TvEpisodeCard card : enabled) {
+            card.setNextFocusUpId(selectedButton.getId());
+            card.setNextFocusDownId(card.getId());
         }
-        if (sourceButton != null) sourceButton.setNextFocusUpId(enabled.isEmpty() ? seasonButton.getId()
-                : enabled.get(enabled.size() - 1).getId());
+    }
+
+    private <T extends View> void wireHorizontal(List<T> chronological) {
+        for (int i = 0; i < chronological.size(); i++) {
+            View current = chronological.get(i);
+            int left = Math.max(0, Math.min(chronological.size() - 1, i + (bulgarian ? 1 : -1)));
+            int right = Math.max(0, Math.min(chronological.size() - 1, i + (bulgarian ? -1 : 1)));
+            current.setNextFocusLeftId(chronological.get(left).getId());
+            current.setNextFocusRightId(chronological.get(right).getId());
+        }
+    }
+
+    private <T extends View> boolean horizontalKey(List<T> chronological, View current, int keyCode) {
+        if (keyCode != KeyEvent.KEYCODE_DPAD_LEFT && keyCode != KeyEvent.KEYCODE_DPAD_RIGHT) return false;
+        int index = chronological.indexOf(current);
+        int direction = keyCode == KeyEvent.KEYCODE_DPAD_LEFT ? (bulgarian ? 1 : -1) : (bulgarian ? -1 : 1);
+        int next = index + direction;
+        if (index >= 0 && next >= 0 && next < chronological.size()) {
+            View target = chronological.get(next);
+            target.requestFocus();
+            reveal(target);
+        }
+        return true;
+    }
+
+    private void reveal(View view) {
+        if (view == null) return;
+        view.requestRectangleOnScreen(new Rect(0, 0, view.getWidth(), view.getHeight()), false);
+    }
+
+    private Button seasonButton(int number) {
+        for (int i = 0; i < seasons.size(); i++) if (seasons.get(i).number == number) return seasonButtons.get(i);
+        return null;
     }
 
     private boolean focusSelectedSeason() {
-        for (int i = 0; i < seasons.size(); i++) if (seasons.get(i).number == selectedSeason) return seasonButtons.get(i).requestFocus();
-        return false;
+        Button button = seasonButton(selectedSeason);
+        if (button == null) return false;
+        boolean focused = button.requestFocus();
+        if (focused) reveal(button);
+        return focused;
     }
 
     private String seasonName(int number) {
@@ -387,26 +439,12 @@ final class TvSeriesSelectionView extends LinearLayout {
             button.setText((selected ? "✓ " : "") + seasonName(seasons.get(i).number));
             style(button, selected);
         }
-        for (int i = 0; i < episodeButtons.size(); i++) {
-            style(episodeButtons.get(i), selectedEpisode != null && visibleEpisodes.get(i).number == selectedEpisode.number);
+        for (int i = 0; i < episodeCards.size(); i++) {
+            episodeCards.get(i).updateStyle(selectedEpisode != null && visibleEpisodes.get(i).number == selectedEpisode.number);
         }
     }
 
-    private void addSource(TvSeriesMetadata metadata) {
-        String sourceUrl = safeSourceUrl(metadata.sourceUrl);
-        if (!sourceUrl.isEmpty()) {
-            Button source = button(tr("Метаданни: TVmaze · CC BY-SA ↗", "Metadata: TVmaze · CC BY-SA ↗"));
-            sourceButton = source;
-            source.setTextSize(UiTheme.sp(getContext(), 12));
-            source.setOnClickListener(v -> listener.onSource(sourceUrl));
-            LayoutParams lp = new LayoutParams(-2, dp(42));
-            lp.topMargin = dp(8);
-            addView(source, lp);
-        } else if (!metadata.source.isEmpty()) {
-            addView(label(tr("Метаданни: ", "Metadata: ") + metadata.source, 12, 0xFFB9C1CA));
-        }
-    }
-
+    /** Retained validation helper; attribution is now in the existing About area, outside selector focus. */
     static String safeSourceUrl(String value) {
         try {
             URI uri = new URI(value);
@@ -423,15 +461,15 @@ final class TvSeriesSelectionView extends LinearLayout {
         button.setId(View.generateViewId());
         button.setText(caption);
         button.setAllCaps(false);
-        button.setTextSize(UiTheme.sp(getContext(), 14));
+        button.setTextSize(UiTheme.sp(getContext(), 17));
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        button.setPadding(dp(15), 0, dp(15), 0);
-        button.setMinHeight(dp(44));
-        button.setMinimumHeight(dp(44));
+        button.setPadding(dp(18), 0, dp(18), 0);
+        button.setMinHeight(dp(48));
+        button.setMinimumHeight(dp(48));
         button.setFocusable(true);
         button.setOnFocusChangeListener((view, focused) -> {
             refreshStates();
-            if (!seasonButtons.contains(button) && !episodeButtons.contains(button)) style(button, false);
+            if (focused) reveal(button);
         });
         style(button, false);
         return button;
@@ -440,9 +478,9 @@ final class TvSeriesSelectionView extends LinearLayout {
     private void style(Button button, boolean selected) {
         boolean highlighted = selected || button.hasFocus();
         GradientDrawable background = new GradientDrawable();
-        background.setColor(highlighted ? accent : 0xFF20262E);
+        background.setColor(highlighted ? accent : 0xEB20262E);
         background.setCornerRadius(dp(9));
-        background.setStroke(dp(button.hasFocus() ? 3 : 1), button.hasFocus() ? Color.WHITE : highlighted ? accent : 0xFF414C58);
+        background.setStroke(dp(button.hasFocus() ? 3 : 1), button.hasFocus() ? Color.WHITE : highlighted ? accent : 0xFF677485);
         button.setBackground(background);
         button.setTextColor(highlighted ? UiTheme.contrastingTextColor(accent) : Color.WHITE);
     }

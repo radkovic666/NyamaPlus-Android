@@ -70,6 +70,7 @@ public final class MoviePlayerActivity extends Activity {
     private String loadedPlayerUrl = "";
     private String selectedPlaybackHost = PLAYER_HOST;
     private View playbackError;
+    private TvPlayerProgressBridge episodeProgress;
     private final Runnable clearCloseArm = () -> closeArmed = false;
     private final Runnable hideControls = () -> setControlsVisible(false, false);
 
@@ -242,6 +243,7 @@ public final class MoviePlayerActivity extends Activity {
                     Log.d(TAG, "player main-frame host=" + safe(location.getHost()));
                     suppressTvEdgeFocus();
                     installTvPlaybackAssist();
+                    if (episodeProgress != null) episodeProgress.installListener(url);
                     main.postDelayed(MoviePlayerActivity.this::installTvPlaybackAssist, 900L);
                     main.postDelayed(MoviePlayerActivity.this::installTvPlaybackAssist, 2200L);
                 }
@@ -351,6 +353,12 @@ public final class MoviePlayerActivity extends Activity {
                 loadedPlayerUrl = PLAYER_BASE + "tv/" + Uri.encode(id);
             }
             selectedPlaybackHost = Uri.parse(loadedPlayerUrl).getHost();
+            if ("series".equals(type) && selection && TvPlaybackSource.HOST.equals(selectedPlaybackHost)) {
+                // Receive only the documented events for this exact TV episode. No generic series,
+                // movie, phone or unsupported WebView tracking path is installed.
+                episodeProgress = TvPlayerProgressBridge.attach(webView, new TvEpisodeProgressStore(this), id,
+                        getIntent().getIntExtra("season", -1), getIntent().getIntExtra("episode", -1));
+            }
             webView.loadUrl(loadedPlayerUrl);
         } catch (IllegalArgumentException invalidIdentity) {
             showPlaybackError(tvText("Избраният епизод или идентификатор не е валиден. Изберете епизода отново.",
@@ -532,6 +540,7 @@ public final class MoviePlayerActivity extends Activity {
 
     private void seekTvPlayback(int seconds) {
         if (!tvMode || webView == null) return;
+        if (episodeProgress != null) episodeProgress.breakContinuity();
         final WebView requestedView = webView;
         String js = "(function(){try{" +
                 "function docs(d,a){a.push(d);var f=d.querySelectorAll('iframe');for(var i=0;i<f.length;i++){try{if(f[i].contentDocument)docs(f[i].contentDocument,a);}catch(e){}}return a;}" +
@@ -833,6 +842,7 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     @Override protected void onPause() {
+        if (episodeProgress != null) episodeProgress.pause();
         if (webView != null) {
             webView.onPause();
             webView.pauseTimers();
@@ -843,6 +853,7 @@ public final class MoviePlayerActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         if (isFinishing() || !ActivationAccess.require(this)) return;
+        if (episodeProgress != null) episodeProgress.resume();
         immersive();
         if (webView != null) {
             webView.onResume();
@@ -865,6 +876,9 @@ public final class MoviePlayerActivity extends Activity {
             clearBackArm();
             releaseMovieWebView();
             resumeTvWhenClosing = false;
+            // Browsing artwork remains visual-only: restore the existing live stream only after
+            // VOD has been destroyed, without opening or recreating MainActivity.
+            MainActivity.resumePlaybackAfterOnDemand();
             finish(); // Existing series detail Activity and its selected episode remain in place.
         } else returnToLiveTv();
     }
@@ -881,6 +895,10 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     private void releaseMovieWebView() {
+        if (episodeProgress != null) {
+            episodeProgress.close();
+            episodeProgress = null;
+        }
         hideCustomView();
         if (webView != null) {
             webView.stopLoading();
