@@ -5,11 +5,16 @@ import java.net.URI;
 
 /** Server entitlement is independent of permanent device authentication. */
 final class ActivationResponse {
+    final String authorizationDeviceId, authorizationToken;
     final boolean active;
     final SubscriptionInfo subscription;
     final String playlist, epg, pukanki, payment, username, clientNumber;
 
-    ActivationResponse(JSONObject body) throws Exception {
+    ActivationResponse(JSONObject body) throws Exception { this(body, "", ""); }
+
+    ActivationResponse(JSONObject body, String deviceId, String token) throws Exception {
+        authorizationDeviceId = deviceId;
+        authorizationToken = token;
         if (!body.optBoolean("ok")) throw new ActivationApi.Failure(body.optString("error", "server_unavailable"), 0);
         subscription = SubscriptionInfo.from(body, 0L);
         String status = body.optString("access_status");

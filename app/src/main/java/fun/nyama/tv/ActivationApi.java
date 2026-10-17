@@ -23,7 +23,7 @@ final class ActivationApi {
     }
 
     JSONObject post(String action, JSONObject body, String token) throws Exception {
-        if (!action.matches("request-code|verify-code|config|revoke|pair-start|pair-status")) throw new IllegalArgumentException();
+        if (!action.matches("request-code|verify-code|config|device-link|revoke|pair-start|pair-status")) throw new IllegalArgumentException();
         HttpsURLConnection connection = (HttpsURLConnection) new URL(
                 "https://nyama.fun/api/activation.php?action=" + action).openConnection();
         synchronized (this) {

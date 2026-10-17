@@ -68,11 +68,27 @@ public class ActivationControllerTest {
             assertEquals("config", action); assertEquals(TOKEN, token); assertFalse(body.has("code"));
             return active();
         }, storage);
-        assertTrue(controller.verify("challenge", "012345").active);
+        ActivationResponse verified = controller.verify("challenge", "012345");
+        assertTrue(verified.active);
+        assertEquals(ID, verified.authorizationDeviceId);
+        assertEquals(TOKEN, verified.authorizationToken);
         for (int i = 0; i < 3; i++) assertTrue(new ActivationController((a, b, t) -> {
             assertEquals("config", a); assertEquals(ID, b.getString("device_id")); assertEquals(TOKEN, t); return active();
         }, storage).config().active);
         assertEquals(TOKEN, storage.token); assertEquals(1, storage.saves); assertEquals(0, storage.clears);
+    }
+
+    @Test public void configResponseRetainsOnlyTheCredentialsActuallyAuthorized() throws Exception {
+        Memory storage = new Memory(); storage.token = TOKEN;
+        String newer = repeat('c');
+        ActivationResponse response = new ActivationController((a, b, t) -> {
+            storage.token = newer; // Another enrollment wins while the old request is in flight.
+            return active();
+        }, storage).config();
+        assertEquals(ID, response.authorizationDeviceId);
+        assertEquals(TOKEN, response.authorizationToken);
+        assertEquals(newer, storage.token);
+        assertEquals(0, storage.saves); assertEquals(0, storage.clears);
     }
 
     @Test public void expiredNewDeviceReceivesTokenWithoutPlaybackThenSameTokenRestoresAccess() throws Exception {

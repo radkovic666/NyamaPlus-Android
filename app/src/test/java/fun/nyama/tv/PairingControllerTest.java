@@ -85,6 +85,8 @@ public class PairingControllerTest {
         PairingSession session = new PairingSession(ID, start(), 0);
         PairingResult result = controller.pollPairing(session); assertEquals(0, credentials.saves);
         ActivationResponse response = controller.completePairing(session, result);
+        assertEquals(ID, response.authorizationDeviceId);
+        assertEquals(TOKEN, response.authorizationToken);
         assertTrue(response.active); assertEquals(TOKEN, credentials.token); assertEquals(1, credentials.saves);
     }
 

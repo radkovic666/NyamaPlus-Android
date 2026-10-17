@@ -36,6 +36,7 @@ public final class PlaylistRepository {
 
         replace(candidate, cache);
         config.setPlaylistLastRefresh(System.currentTimeMillis());
+        DeviceLinking.playlistRefreshed();
         return channels;
     }
 

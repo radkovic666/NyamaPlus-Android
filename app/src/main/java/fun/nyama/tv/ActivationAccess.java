@@ -61,15 +61,16 @@ final class ActivationAccess implements Application.ActivityLifecycleCallbacks {
         authorized = false;
         pendingRenewal = null;
         Config config = new Config(context);
-        if (!config.saveActivation(response)) return false;
+        if (!config.saveActivation(response)) { DeviceLinking.denied(); return false; }
         subscription = response.subscription.observedAt(android.os.SystemClock.elapsedRealtime());
-        if (!response.active) return true;
+        if (!response.active) { DeviceLinking.denied(); return true; }
         authorizedAt = android.os.SystemClock.elapsedRealtime();
         authorized = true;
+        DeviceLinking.authorized(context, response);
         return true;
     }
 
-    static void deny() { authorized = false; pendingRenewal = null; }
+    static void deny() { authorized = false; pendingRenewal = null; DeviceLinking.denied(); }
 
     static SubscriptionInfo subscription() { return subscription; }
 

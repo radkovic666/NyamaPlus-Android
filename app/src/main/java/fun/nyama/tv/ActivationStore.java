@@ -80,6 +80,15 @@ final class ActivationStore implements ActivationController.Credentials {
         } catch (Exception error) { if (out != null) file.failWrite(out); throw error; }
     }
 
+    /** Optional linkage checks existing secure state without the ID's create-if-missing path. */
+    boolean matchesAuthorization(String id, String token) throws Exception {
+        synchronized (LOCK) {
+            JSONObject record = read();
+            return token.equals(record.optString("activation_token"))
+                    && id.equals(record.optString("device_id"));
+        }
+    }
+
     @Override public String deviceId() throws Exception {
         synchronized (LOCK) {
             JSONObject record = read();
