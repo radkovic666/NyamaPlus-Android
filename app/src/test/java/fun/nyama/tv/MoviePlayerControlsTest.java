@@ -46,6 +46,7 @@ import java.io.ByteArrayInputStream;
 import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -77,7 +78,7 @@ public class MoviePlayerControlsTest {
         activities.clear();
     }
 
-    /** Models the real provider's superclass layout delegation, absent from Robolectric's proxy. */
+    /** Models the real provider's superclass layout/focus delegation, absent from the stub proxy. */
     @Implements(WebView.class)
     public static class PlayerLayoutWebViewShadow extends ShadowWebView {
         @RealObject private WebView target;
@@ -92,6 +93,11 @@ public class MoviePlayerControlsTest {
             Shadow.directlyOn(target, View.class, "onMeasure",
                     ReflectionHelpers.ClassParameter.from(int.class, width),
                     ReflectionHelpers.ClassParameter.from(int.class, height));
+        }
+        @Implementation public boolean requestFocus(int direction, android.graphics.Rect rectangle) {
+            return Shadow.directlyOn(target, View.class, "requestFocus",
+                    ReflectionHelpers.ClassParameter.from(int.class, direction),
+                    ReflectionHelpers.ClassParameter.from(android.graphics.Rect.class, rectangle));
         }
     }
 
@@ -240,7 +246,9 @@ public class MoviePlayerControlsTest {
         final List<KeyEvent> keys = new ArrayList<>();
         RecordingWebView(Context context) { super(context); }
         @Override public void evaluateJavascript(String script, ValueCallback<String> callback) {
-            if (callback != null) callback.onReceiveValue("\"0\"");
+            if (callback != null) callback.onReceiveValue(script.contains("__nyamaTvSeek")
+                    ? "\"{\\\"state\\\":\\\"inaccessible\\\"}\""
+                    : script.contains("document.activeElement===best") ? "\"1\"" : "\"0\"");
         }
         @Override public boolean dispatchKeyEvent(KeyEvent event) {
             keys.add(event);
@@ -337,7 +345,7 @@ public class MoviePlayerControlsTest {
         assertTrue(recording.keys.isEmpty());
     }
 
-    @Test public void twoDistinctBackPressesReleaseMovieBeforeReturningToExistingLiveTv() throws Exception {
+    @Test public void originlessMovieExitReleasesVideoAndReturnsToMoviesWithoutOpeningLiveTv() throws Exception {
         MoviePlayerActivity activity = open(false, "movies").get();
         WebView movie = web(activity);
         press(activity, KeyEvent.KEYCODE_BACK);
@@ -347,12 +355,12 @@ public class MoviePlayerControlsTest {
         advanceBetweenBackPresses();
         press(activity, KeyEvent.KEYCODE_BACK);
         assertTrue(activity.isFinishing());
-        assertNull("Movie WebView must be released before launching Live TV", web(activity));
+        assertNull("Movie WebView must be released before returning to the catalogue", web(activity));
         assertTrue(Shadows.shadowOf(movie).wasDestroyCalled());
         Intent returned = Shadows.shadowOf(activity).getNextStartedActivity();
         assertNotNull(returned);
-        assertEquals(MainActivity.class.getName(), returned.getComponent().getClassName());
-        assertTrue(returned.getBooleanExtra(MainActivity.EXTRA_RETURN_FROM_ON_DEMAND, false));
+        assertEquals(CatalogActivity.class.getName(), returned.getComponent().getClassName());
+        assertEquals("movies", returned.getStringExtra(CatalogActivity.EXTRA_SECTION));
         assertEquals(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP,
                 returned.getFlags() & (Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP));
         assertNull(Shadows.shadowOf(activity).getNextStartedActivity());
@@ -893,6 +901,211 @@ public class MoviePlayerControlsTest {
         target.presentFrame();
         assertEquals(View.GONE, loadingSurface(activity).getVisibility());
         assertNoTvPlaybackBar(activity);
+    }
+
+    /** JavaScript replies are deliberately held while more physical remote presses arrive. */
+    private static final class ControlledSeekWebView extends WebView {
+        final ArrayDeque<ValueCallback<String>> seeks = new ArrayDeque<>(), focus = new ArrayDeque<>();
+        final List<String> scripts = new ArrayList<>();
+        final List<KeyEvent> keys = new ArrayList<>();
+        int focusCalls, loads;
+        boolean automaticFocus = true;
+        boolean rejectProbe, rejectFocus;
+        int failAfterNativeKeys;
+        ControlledSeekWebView(Context context) { super(context); }
+        @Override public void loadUrl(String url) { loads++; super.loadUrl(url); }
+        @Override public void evaluateJavascript(String script, ValueCallback<String> callback) {
+            if (callback == null) return;
+            if (script.contains("__nyamaTvSeek")) {
+                if (rejectProbe) throw new IllegalStateException("Synthetic unavailable renderer");
+                scripts.add(script); seeks.add(callback);
+            }
+            else if (script.contains("document.activeElement===best")) {
+                if (rejectFocus) throw new IllegalStateException("Synthetic unavailable renderer");
+                focusCalls++;
+                if (automaticFocus) callback.onReceiveValue("\"1\"");
+                else focus.add(callback);
+            } else callback.onReceiveValue("\"0\"");
+        }
+        @Override public boolean dispatchKeyEvent(KeyEvent event) {
+            keys.add(event);
+            if (failAfterNativeKeys > 0 && keys.size() >= failAfterNativeKeys)
+                throw new IllegalStateException("Synthetic unavailable input surface");
+            return true;
+        }
+        void answer(String state, double position, double duration, boolean paused) throws Exception {
+            assertFalse("There must be an actual pending JavaScript probe", seeks.isEmpty());
+            String data = new org.json.JSONObject().put("state", state).put("position", position)
+                    .put("duration", duration).put("paused", paused).toString();
+            seeks.removeFirst().onReceiveValue(org.json.JSONObject.quote(data));
+        }
+    }
+
+    private static ControlledSeekWebView controlled(MoviePlayerActivity activity) throws Exception {
+        WebView old = web(activity);
+        String selected = url(activity);
+        ViewGroup parent = (ViewGroup) old.getParent();
+        ViewGroup.LayoutParams params = old.getLayoutParams();
+        int index = parent.indexOfChild(old);
+        TvPlayerProgressBridge bridge = (TvPlayerProgressBridge) field("episodeProgress").get(activity);
+        if (bridge != null) bridge.close();
+        field("episodeProgress").set(activity, null);
+        parent.removeView(old); old.destroy();
+        ControlledSeekWebView target = new ControlledSeekWebView(activity);
+        field("webView").set(activity, target);
+        ReflectionHelpers.callInstanceMethod(activity, "configureWebView",
+                ReflectionHelpers.ClassParameter.from(WebView.class, target));
+        parent.addView(target, index, params);
+        target.loadUrl(selected); target.requestFocus(); layoutPlayer(activity);
+        return target;
+    }
+
+    private static void rapidRight(MoviePlayerActivity activity, int count) {
+        for (int index = 0; index < count; index++) {
+            long now = SystemClock.uptimeMillis();
+            activity.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT, 0));
+            activity.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_RIGHT, 0));
+        }
+    }
+
+    @Test public void tenRapidMovieSeeksWaitForConfirmationAndKeepCumulativeDistanceWithoutReload() throws Exception {
+        MoviePlayerActivity activity = open(false, "movies").get();
+        ControlledSeekWebView target = controlled(activity);
+        String selected = url(activity);
+        rapidRight(activity, 10);
+        assertEquals(1, target.scripts.size()); assertEquals(1, target.seeks.size());
+        assertTrue(target.scripts.get(0).contains("p+(10)"));
+        target.answer("waiting", 40, 600, false);
+        assertEquals(1, target.scripts.size());
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(50));
+        assertEquals(2, target.scripts.size());
+        assertTrue(target.scripts.get(1).contains("if(s.before)"));
+        target.answer("settled", 40, 600, false); idle();
+        assertEquals(3, target.scripts.size());
+        assertTrue(target.scripts.get(2).contains("p+(90)"));
+        target.answer("settled", 130, 600, false); idle();
+        assertTrue(target.keys.isEmpty()); assertTrue(target.seeks.isEmpty());
+        assertEquals(1, target.loads); assertEquals(selected, url(activity));
+        assertFalse(flag(activity, "rendererRecoveryUsed"));
+    }
+
+    @Test public void rapidCrossOriginMovieAndEpisodeSeeksUseOneFocusAndExactlyOneKeyPairPerPress() throws Exception {
+        for (Intent intent : new Intent[]{title("movies", MOVIE), episode(2, 3)}) {
+            MoviePlayerActivity activity = open(false, intent).get();
+            ControlledSeekWebView target = controlled(activity);
+            String selected = url(activity);
+            rapidRight(activity, 10);
+            target.answer("inaccessible", 0, 1, false); idle();
+            assertEquals(1, target.scripts.size()); assertEquals(1, target.focusCalls);
+            assertEquals(20, target.keys.size());
+            for (int index = 0; index < 20; index++) {
+                assertEquals(KeyEvent.KEYCODE_DPAD_RIGHT, target.keys.get(index).getKeyCode());
+                assertEquals(index % 2 == 0 ? KeyEvent.ACTION_DOWN : KeyEvent.ACTION_UP,
+                        target.keys.get(index).getAction());
+            }
+            assertEquals(selected, url(activity)); assertEquals(1, target.loads);
+            assertFalse(flag(activity, "rendererRecoveryUsed"));
+        }
+    }
+
+    @Test public void delayedNativeFocusCannotDispatchAfterPauseAndNewBurstWorksAfterResume() throws Exception {
+        ActivityController<MoviePlayerActivity> lifecycle = open(false, episode(2, 3));
+        MoviePlayerActivity activity = lifecycle.get();
+        ControlledSeekWebView target = controlled(activity); target.automaticFocus = false;
+        rapidRight(activity, 5); target.answer("inaccessible", 0, 1, false);
+        assertEquals(1, target.focus.size());
+        lifecycle.pause();
+        target.focus.removeFirst().onReceiveValue("\"1\""); idle();
+        assertTrue(target.keys.isEmpty());
+        lifecycle.resume(); rapidRight(activity, 1);
+        target.answer("inaccessible", 0, 1, false);
+        target.focus.removeFirst().onReceiveValue("\"1\""); idle();
+        assertEquals(2, target.keys.size()); assertEquals(1, target.loads);
+    }
+
+    @Test public void unconfirmedDirectAssignmentNeverSendsNativeSeekOrReloadsThePlayer() throws Exception {
+        MoviePlayerActivity activity = open(false, "movies").get();
+        ControlledSeekWebView target = controlled(activity);
+        rapidRight(activity, 5); target.answer("failed", 0, 1, false); idle();
+        assertTrue(target.keys.isEmpty()); assertEquals(0, target.focusCalls);
+        assertEquals(1, target.loads); assertEquals(1, target.scripts.size());
+        assertFalse(flag(activity, "rendererRecoveryUsed"));
+        rapidRight(activity, 1);
+        assertEquals(2, target.scripts.size()); // Another explicit action can retry; no automatic replay.
+    }
+
+    @Test public void unconfirmedProviderFocusCannotTurnRapidSeekIntoOuterPageNavigation() throws Exception {
+        MoviePlayerActivity activity = open(false, "movies").get();
+        ControlledSeekWebView target = controlled(activity); target.automaticFocus = false;
+        String selected = url(activity);
+        rapidRight(activity, 5); target.answer("inaccessible", 0, 1, false);
+        target.focus.removeFirst().onReceiveValue("\"0\""); idle();
+        assertTrue(target.keys.isEmpty()); assertEquals(1, target.loads);
+        assertEquals(selected, url(activity)); assertSame(target, web(activity));
+    }
+
+    @Test public void rendererRecoveryUsesOnlyFreshConfirmedPositionAndKeepsEpisodeSubtitlesAndPausedState() throws Exception {
+        MoviePlayerActivity activity = open(false, episode(2, 3)).get();
+        ControlledSeekWebView target = controlled(activity);
+        rapidRight(activity, 1); target.answer("settled", 120.75, 600, true); idle();
+        WebViewClient client = Shadows.shadowOf(target).getWebViewClient();
+        assertTrue(client.onRenderProcessGone(target, null)); idle(); layoutPlayer(activity); idle();
+        Uri resumed = Uri.parse(url(activity));
+        assertEquals("/embed/tv/" + SERIES + "/2/3", resumed.getPath());
+        assertEquals("en", resumed.getQueryParameter("ds_lang"));
+        assertEquals("120", resumed.getQueryParameter("resumeAt"));
+        assertEquals("0", resumed.getQueryParameter("autoplay"));
+        assertTrue(Shadows.shadowOf(target).wasDestroyCalled());
+        assertNotSame(target, web(activity));
+        assertEquals(1, views(activity.findViewById(android.R.id.content)).stream()
+                .filter(view -> view instanceof WebView).count());
+        assertNull(Shadows.shadowOf(activity).getNextStartedActivity());
+    }
+
+    @Test public void stalePositionIsNotInventedWhenRendererRecoveryStarts() throws Exception {
+        MoviePlayerActivity activity = open(false, "movies").get();
+        ControlledSeekWebView target = controlled(activity);
+        rapidRight(activity, 1); target.answer("settled", 120, 600, false); idle();
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(16));
+        Shadows.shadowOf(target).getWebViewClient().onRenderProcessGone(target, null);
+        idle(); layoutPlayer(activity); idle();
+        assertNull(Uri.parse(url(activity)).getQueryParameter("resumeAt"));
+    }
+
+    @Test public void confirmedMovieExitReturnsResultWithoutStartingAnotherCatalogOrMainActivity() throws Exception {
+        MoviePlayerActivity activity = open(false, title("movies", MOVIE)
+                .putExtra(MoviePlayerActivity.EXTRA_RETURN_TO_CATALOG, true)).get();
+        WebView target = web(activity);
+        press(activity, KeyEvent.KEYCODE_BACK); advanceBetweenBackPresses(); press(activity, KeyEvent.KEYCODE_BACK);
+        assertTrue(activity.isFinishing()); assertNull(web(activity));
+        assertTrue(Shadows.shadowOf(target).wasDestroyCalled());
+        assertNull(Shadows.shadowOf(activity).getNextStartedActivity());
+        assertEquals(android.app.Activity.RESULT_OK, Shadows.shadowOf(activity).getResultCode());
+        assertTrue(Shadows.shadowOf(activity).getResultIntent()
+                .getBooleanExtra(MoviePlayerActivity.EXTRA_CONFIRMED_TV_EXIT, false));
+    }
+
+    @Test public void rendererRejectingTheSeekProbeDoesNotCrashOrBlindlySendNativeKeys() throws Exception {
+        MoviePlayerActivity activity = open(false, "movies").get();
+        ControlledSeekWebView target = controlled(activity); target.rejectProbe = true;
+        rapidRight(activity, 5); idle();
+        assertTrue(target.keys.isEmpty()); assertSame(target, web(activity));
+        assertEquals(1, target.loads); assertFalse(flag(activity, "rendererRecoveryUsed"));
+    }
+
+    @Test public void rendererRejectingFocusDoesNotCrashOrDispatchToUnverifiedOuterPage() throws Exception {
+        MoviePlayerActivity activity = open(false, episode(2, 3)).get();
+        ControlledSeekWebView target = controlled(activity); target.rejectFocus = true;
+        rapidRight(activity, 5); target.answer("inaccessible", 0, 1, false); idle();
+        assertTrue(target.keys.isEmpty()); assertSame(target, web(activity)); assertEquals(1, target.loads);
+    }
+
+    @Test public void partiallyDeliveredNativePairIsNotReplayedWhenTheSurfaceFails() throws Exception {
+        MoviePlayerActivity activity = open(false, "movies").get();
+        ControlledSeekWebView target = controlled(activity); target.failAfterNativeKeys = 1;
+        rapidRight(activity, 10); target.answer("inaccessible", 0, 1, false); idle();
+        assertEquals(1, target.keys.size()); assertSame(target, web(activity));
+        assertEquals(1, target.loads); assertFalse(flag(activity, "rendererRecoveryUsed"));
     }
 
 }

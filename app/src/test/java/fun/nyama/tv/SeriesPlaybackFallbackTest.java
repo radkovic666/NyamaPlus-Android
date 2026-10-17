@@ -49,7 +49,11 @@ public class SeriesPlaybackFallbackTest {
     }
 
     private TitleDetailActivity detail(boolean phone, String id, String title, boolean counts) throws Exception {
-        Intent intent = new Intent().putExtra("id", id).putExtra("type", "series").putExtra("title", title);
+        return detail(phone, "series", id, title, counts);
+    }
+
+    private TitleDetailActivity detail(boolean phone, String type, String id, String title, boolean counts) throws Exception {
+        Intent intent = new Intent().putExtra("id", id).putExtra("type", type).putExtra("title", title);
         if (counts) intent.putExtra("seasons", "8").putExtra("episodeCount", "73");
         // Build only the native screen: onCreate would initiate title-info HTTP requests.
         TitleDetailActivity activity = Robolectric.buildActivity(TitleDetailActivity.class, intent).get();
@@ -58,10 +62,11 @@ public class SeriesPlaybackFallbackTest {
         config.saveUrls("https://example.invalid/test-playlist.m3u", "https://example.invalid/test-epg.xml");
         config.setPin("123456");
         config.setDeviceMode(phone ? fun.nyama.tv.Config.MODE_PHONE : fun.nyama.tv.Config.MODE_TV);
+        config.setLanguage(fun.nyama.tv.Config.LANG_EN);
         field("config").set(activity, config);
         field("favorites").set(activity, new MovieFavorites(activity));
         field("id").set(activity, id);
-        field("section").set(activity, "series");
+        field("section").set(activity, type);
         field("title").set(activity, title);
         // Seed the existing in-memory poster cache so buildUi never starts a network request.
         posterCache().put(config.pukankiBaseUrl() + "|" + id,
@@ -128,31 +133,36 @@ public class SeriesPlaybackFallbackTest {
         TitleDetailActivity activity = detail(false, "tt0944947", "Game of Thrones", true);
         render(activity, new JSONObject());
         // Counts describe the catalogue title; they do not establish playable episode availability.
-        assertEquals(3, buttons(activity).size()); // Back, Watch, Favorite.
-        Intent intent = launch(activity);
-        assertFalse(intent.hasExtra("season"));
-        assertFalse(intent.hasExtra("episode"));
-        assertEquals("tt0944947", intent.getStringExtra("id"));
-        assertEquals("series", intent.getStringExtra("type"));
+        assertEquals(2, buttons(activity).size()); // Back and Favorite; no generic Watch fallback.
+        assertNull(field("watchButton").get(activity));
+        assertFalse(((TvSeriesSelectionView) field("seriesSelection").get(activity)).hasMetadata());
+        assertNull(Shadows.shadowOf(activity).getNextStartedActivity());
     }
 
-    @Test public void missingDetailsKeepWatchAvailableAndExactTitleIdentity() throws Exception {
+    @Test public void missingTvEpisodeDetailsOfferGuidanceAndKeepFavoritesWorkingWithoutWatch() throws Exception {
         TitleDetailActivity activity = detail(false, "tt0903747", "Breaking Bad", false);
         render(activity, new JSONObject());
         assertEquals(activity.getString(R.string.info_unavailable),
                 ((TextView) field("details").get(activity)).getText().toString());
-        assertTrue(watch(activity).isEnabled());
-        Intent intent = launch(activity);
-        assertEquals("tt0903747", intent.getStringExtra("id"));
-        assertEquals("series", intent.getStringExtra("type"));
-        assertEquals("Breaking Bad", intent.getStringExtra("title"));
+        TvSeriesSelectionView selector = (TvSeriesSelectionView) field("seriesSelection").get(activity);
+        selector.showUnavailable();
+        assertNull(field("watchButton").get(activity));
+        assertTrue(views(selector).stream().anyMatch(view -> view instanceof TextView
+                && ((TextView) view).getText().toString().contains("Reopen this series")));
+        Button favorite = (Button) field("favoriteButton").get(activity);
+        assertFalse(new MovieFavorites(activity).isFavorite("tt0903747"));
+        favorite.performClick();
+        assertTrue(new MovieFavorites(activity).isFavorite("tt0903747"));
+        favorite.performClick();
+        assertFalse(new MovieFavorites(activity).isFavorite("tt0903747"));
+        assertNull(Shadows.shadowOf(activity).getNextStartedActivity());
     }
 
     @Test public void unrelatedReturnedMetadataNeverChangesPlaybackTitleIdentity() throws Exception {
-        TitleDetailActivity first = detail(false, "tt0944947", "Game of Thrones", true);
+        TitleDetailActivity first = detail(true, "tt0944947", "Game of Thrones", true);
         render(first, new JSONObject().put("imdbID", "tt0903747").put("tmdbID", "1396")
                 .put("Type", "movie").put("Plot", "Unrelated metadata"));
-        TitleDetailActivity second = detail(false, "tt0903747", "Breaking Bad", false);
+        TitleDetailActivity second = detail(true, "tt0903747", "Breaking Bad", false);
         Intent firstIntent = launch(first);
         Intent secondIntent = launch(second);
         assertEquals("tt0944947", firstIntent.getStringExtra("id"));
@@ -189,5 +199,51 @@ public class SeriesPlaybackFallbackTest {
         assertEquals("tt0944947", intent.getStringExtra("id"));
         assertFalse(intent.hasExtra("season"));
         assertFalse(intent.hasExtra("episode"));
+        assertFalse(intent.hasExtra(MoviePlayerActivity.EXTRA_RETURN_TO_CATALOG));
+    }
+
+    @Test public void tvMovieRetainsWatchAndRequestsReturnThroughItsExistingDetail() throws Exception {
+        TitleDetailActivity activity = detail(false, "movies", "tt0111161", "A movie", false);
+        assertNull(field("seriesSelection").get(activity));
+        assertTrue(watch(activity).isEnabled());
+        watch(activity).performClick();
+        org.robolectric.shadows.ShadowActivity.IntentForResult request =
+                Shadows.shadowOf(activity).getNextStartedActivityForResult();
+        assertNotNull(request);
+        assertSame(request.intent, Shadows.shadowOf(activity).getNextStartedActivity());
+        assertEquals(MoviePlayerActivity.class.getName(), request.intent.getComponent().getClassName());
+        assertEquals("movies", request.intent.getStringExtra("origin_section"));
+        assertTrue(request.intent.getBooleanExtra(MoviePlayerActivity.EXTRA_RETURN_TO_CATALOG, false));
+        assertTrue(request.requestCode >= 0);
+        assertFalse(activity.isFinishing());
+        activity.onActivityResult(request.requestCode, android.app.Activity.RESULT_CANCELED, null);
+        assertFalse(activity.isFinishing());
+        activity.onActivityResult(request.requestCode, android.app.Activity.RESULT_OK,
+                new Intent().putExtra(MoviePlayerActivity.EXTRA_CONFIRMED_TV_EXIT, true));
+        assertTrue(activity.isFinishing());
+        assertNull(Shadows.shadowOf(activity).getNextStartedActivity());
+    }
+
+    @Test public void movieExitResultDoesNotFinishSeriesOrPhoneDetail() throws Exception {
+        TitleDetailActivity series = detail(false, "tt0903747", "Breaking Bad", false);
+        TitleDetailActivity phone = detail(true, "movies", "tt0111161", "A movie", false);
+        Field requestField = TitleDetailActivity.class.getDeclaredField("TV_MOVIE_PLAYBACK_REQUEST");
+        requestField.setAccessible(true);
+        int request = requestField.getInt(null);
+        Intent result = new Intent().putExtra(MoviePlayerActivity.EXTRA_CONFIRMED_TV_EXIT, true);
+        series.onActivityResult(request, android.app.Activity.RESULT_OK, result);
+        phone.onActivityResult(request, android.app.Activity.RESULT_OK, result);
+        assertFalse(series.isFinishing());
+        assertFalse(phone.isFinishing());
+        assertNull(Shadows.shadowOf(series).getNextStartedActivity());
+        assertNull(Shadows.shadowOf(phone).getNextStartedActivity());
+    }
+
+    @Test public void seriesDetailBackFinishesToItsExistingSeriesCatalogWithoutStartingAnotherActivity() throws Exception {
+        TitleDetailActivity activity = detail(false, "tt0903747", "Breaking Bad", false);
+        assertEquals("series", activity.getIntent().getStringExtra("type"));
+        for (Button button : buttons(activity)) if ("‹".contentEquals(button.getText())) button.performClick();
+        assertTrue(activity.isFinishing());
+        assertNull(Shadows.shadowOf(activity).getNextStartedActivity());
     }
 }

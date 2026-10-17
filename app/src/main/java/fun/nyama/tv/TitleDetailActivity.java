@@ -27,6 +27,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 public final class TitleDetailActivity extends Activity {
+    private static final int TV_MOVIE_PLAYBACK_REQUEST = 4701;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private Config config;
     private MovieFavorites favorites;
@@ -76,6 +77,16 @@ public final class TitleDetailActivity extends Activity {
         super.onSaveInstanceState(state);
     }
 
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == TV_MOVIE_PLAYBACK_REQUEST && resultCode == RESULT_OK
+                && config != null && !config.isPhoneMode() && "movies".equals(section)
+                && data != null && data.getBooleanExtra(MoviePlayerActivity.EXTRA_CONFIRMED_TV_EXIT, false)) {
+            // Reveal the original Movies catalogue, including its search, page and focused poster.
+            finish();
+        }
+    }
+
     @Override protected void onDestroy() {
         detailDestroyed = true;
         infoGeneration++;
@@ -87,6 +98,7 @@ public final class TitleDetailActivity extends Activity {
 
     private View buildUi() {
         boolean phone = config.isPhoneMode();
+        boolean tvSeries = !phone && "series".equals(section);
         int accent = UiTheme.accent(this);
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(phone ? 0xD6090B0E : Color.TRANSPARENT);
@@ -144,9 +156,9 @@ public final class TitleDetailActivity extends Activity {
 
         LinearLayout actions = horizontal();
         actions.setGravity(phone ? Gravity.CENTER_HORIZONTAL : Gravity.START | Gravity.CENTER_VERTICAL);
-        Button watch = primaryButton(getString(R.string.watch_now), phone ? 18 : 15, accent);
+        Button watch = tvSeries ? null : primaryButton(getString(R.string.watch_now), phone ? 18 : 15, accent);
         watchButton = watch;
-        watch.setOnClickListener(v -> openPlayer());
+        if (watch != null) watch.setOnClickListener(v -> openPlayer());
         favoriteButton = secondaryButton("", phone ? 17 : 14, accent);
         favoriteButton.setOnClickListener(v -> { favorites.toggle(id); updateFavoriteButton(); });
         updateFavoriteButton();
@@ -156,20 +168,17 @@ public final class TitleDetailActivity extends Activity {
             actions.addView(favoriteButton, fp);
         } else {
             // Android TV: deliberately compact buttons so the poster/info remains the focus.
-            actions.addView(watch, new LinearLayout.LayoutParams(dp(154), dp(44)));
-            LinearLayout.LayoutParams fp = new LinearLayout.LayoutParams(dp(184), dp(44)); fp.setMargins(dp(9),0,0,0);
+            if (watch != null) actions.addView(watch, new LinearLayout.LayoutParams(dp(154), dp(44)));
+            LinearLayout.LayoutParams fp = new LinearLayout.LayoutParams(dp(184), dp(44)); fp.setMargins(dp(tvSeries ? 0 : 9),0,0,0);
             actions.addView(favoriteButton, fp);
         }
         LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(-1, -2); ap.setMargins(0, dp(18), 0, dp(16));
         info.addView(actions, ap);
 
-        if (!phone && "series".equals(section)) {
+        if (tvSeries) {
             seriesSelection = new TvSeriesSelectionView(this, id, new TvSeriesSelectionView.Listener() {
                 @Override public void onSelectionChanged(TvSeriesMetadata.Episode episode, boolean metadataPresent) {
-                    watchButton.setEnabled(!metadataPresent || episode != null);
-                    watchButton.setAlpha(watchButton.isEnabled() ? 1f : 0.55f);
-                    watchButton.setContentDescription(episode == null ? getString(R.string.watch_now)
-                            : getString(R.string.watch_now) + " · S" + episode.season + " E" + episode.number);
+                    // Episode cards are the only Android TV series playback actions.
                 }
                 @Override public void onPlay(TvSeriesMetadata.Episode episode) { openEpisode(episode); }
                 @Override public void onSource(String url) { openMetadataSource(url); }
@@ -181,7 +190,7 @@ public final class TitleDetailActivity extends Activity {
                     else cinematicBackground.show(url, false);
                 }
             });
-            seriesSelection.setAbove(watch);
+            seriesSelection.setAbove(favoriteButton);
             info.addView(seriesSelection, new LinearLayout.LayoutParams(-1, -2));
         }
 
@@ -196,7 +205,8 @@ public final class TitleDetailActivity extends Activity {
         dp2.topMargin = dp(10);
         info.addView(details, dp2);
 
-        watch.requestFocus();
+        if (watch != null) watch.requestFocus();
+        else favoriteButton.requestFocus();
         if (phone) return scroll;
         FrameLayout screen = new FrameLayout(this);
         cinematicBackground = new TvCinematicBackground(this);
@@ -383,14 +393,19 @@ public final class TitleDetailActivity extends Activity {
     }
 
     private void openPlayer() {
-        if (seriesSelection != null && seriesSelection.hasMetadata()) {
+        if (!config.isPhoneMode() && "series".equals(section)) {
+            // No generic series route replaces a missing exact episode selection.
+            if (seriesSelection == null) return;
             TvSeriesMetadata.Episode episode = seriesSelection.selectedEpisode();
             if (episode != null) openEpisode(episode);
             return;
         }
         Intent i = new Intent(this, MoviePlayerActivity.class);
         i.putExtra("id", id); i.putExtra("type", section); i.putExtra("title", title);
-        startActivity(i);
+        if (!config.isPhoneMode()) {
+            i.putExtra(MoviePlayerActivity.EXTRA_RETURN_TO_CATALOG, true).putExtra("origin_section", section);
+            startActivityForResult(i, TV_MOVIE_PLAYBACK_REQUEST);
+        } else startActivity(i);
     }
 
     private void openEpisode(TvSeriesMetadata.Episode episode) {
@@ -402,7 +417,8 @@ public final class TitleDetailActivity extends Activity {
         startActivity(new Intent(this, MoviePlayerActivity.class)
                 .putExtra("id", id).putExtra("type", section).putExtra("title", title)
                 .putExtra("series_imdb_id", id).putExtra("season", episode.season)
-                .putExtra("episode", episode.number).putExtra("return_to_series", true));
+                .putExtra("episode", episode.number).putExtra("return_to_series", true)
+                .putExtra("origin_section", section));
     }
 
     private void openMetadataSource(String value) {

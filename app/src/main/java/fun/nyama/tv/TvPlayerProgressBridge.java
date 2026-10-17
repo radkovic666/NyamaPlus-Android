@@ -20,6 +20,7 @@ final class TvPlayerProgressBridge {
     static final String OBJECT_NAME = "__nyamaVerifiedEpisodeProgress";
     static final int MAX_EVENT_CHARS = 16_384;
     private static final long SAVE_INTERVAL_MS = 15_000L;
+    private static final long RECOVERY_POSITION_MAX_AGE_MS = 15_000L;
     private final WebView view;
     private final TvEpisodeProgressStore store;
     private final TvEpisodeProgressTracker tracker;
@@ -28,6 +29,8 @@ final class TvPlayerProgressBridge {
     private boolean installed;
     private boolean closed;
     private boolean paused;
+    private PositionSnapshot lastPosition;
+    private Boolean providerPaused;
 
     TvPlayerProgressBridge(WebView view, TvEpisodeProgressStore store, String imdb, int season, int episode) {
         this.view = view;
@@ -73,6 +76,11 @@ final class TvPlayerProgressBridge {
         if (closed || paused || !isMainFrame || !exactOrigin(origin, MAIN_ORIGIN)) return;
         Event event = parse(payload, tracker.imdb, tracker.season, tracker.episode);
         if (event == null || !tracker.accept(event, elapsedMs)) return;
+        if ("playing".equals(event.status)) providerPaused = false;
+        else if ("paused".equals(event.status) || "completed".equals(event.status)) providerPaused = true;
+        // Recovery may reuse only a recent measurement from the already verified exact episode.
+        // A seeked event updates position, but cannot establish a new play/pause state or coverage.
+        lastPosition = new PositionSnapshot(event.position, event.duration, elapsedMs, providerPaused);
         if ("paused".equals(event.status) || "completed".equals(event.status) || elapsedMs - lastSaveMs >= SAVE_INTERVAL_MS) {
             store.save(tracker);
             lastSaveMs = elapsedMs;
@@ -80,6 +88,13 @@ final class TvPlayerProgressBridge {
     }
 
     void breakContinuity() { tracker.breakContinuity(); }
+
+    /** Read before closing a failed surface; silence never proves a stalled player. */
+    PositionSnapshot recentPosition(long elapsedMs) {
+        if (closed || paused || lastPosition == null || elapsedMs < lastPosition.elapsedMs
+                || elapsedMs - lastPosition.elapsedMs > RECOVERY_POSITION_MAX_AGE_MS) return null;
+        return lastPosition;
+    }
 
     void resume() {
         if (closed) return;
@@ -90,6 +105,8 @@ final class TvPlayerProgressBridge {
     void pause() {
         if (closed) return;
         paused = true;
+        lastPosition = null;
+        providerPaused = null;
         tracker.breakContinuity();
         store.save(tracker);
         lastSaveMs = SystemClock.elapsedRealtime();
@@ -179,6 +196,21 @@ final class TvPlayerProgressBridge {
         Event(String imdb, int season, int episode, String status, double position, double duration) {
             this.imdb = imdb; this.season = season; this.episode = episode;
             this.status = status; this.position = position; this.duration = duration;
+        }
+    }
+
+    static final class PositionSnapshot {
+        final double position;
+        final double duration;
+        final long elapsedMs;
+        /** Null until a validated playing/paused/completed event establishes the state. */
+        final Boolean paused;
+
+        PositionSnapshot(double position, double duration, long elapsedMs, Boolean paused) {
+            this.position = position;
+            this.duration = duration;
+            this.elapsedMs = elapsedMs;
+            this.paused = paused;
         }
     }
 }

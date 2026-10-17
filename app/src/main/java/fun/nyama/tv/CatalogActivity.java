@@ -132,6 +132,28 @@ public final class CatalogActivity extends Activity {
         if (favoritesOnly) loadPage();
     }
 
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (config == null || config.isPhoneMode()) return;
+        String target = "series".equals(intent.getStringExtra(EXTRA_SECTION)) ? "series" : "movies";
+        if (!target.equals(section)) {
+            openSection(target);
+            return;
+        }
+        // CLEAR_TOP | SINGLE_TOP from TV movie playback reveals this same catalogue.
+        // Keep its live adapter, query, filters and page rather than fetching them again.
+        setIntent(intent);
+        if (grid != null && grid.getCount() > 0) {
+            final int position = Math.max(0, Math.min(grid.getCount() - 1,
+                    restorePosition >= 0 ? restorePosition : grid.getSelectedItemPosition()));
+            grid.post(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                grid.setSelection(position);
+                grid.requestFocus();
+            });
+        }
+    }
+
     @Override protected void onPause() {
         if (grid != null) savePersistentState();
         super.onPause();
@@ -226,12 +248,13 @@ public final class CatalogActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(!phone ? 0x770A0C0F : 0xD90A0C0F);
-        root.setPadding(dp(phone ? 10 : 16), dp(phone ? 8 : 10), dp(phone ? 10 : 16), dp(8));
+        root.setPadding(dp(phone ? 10 : 20), dp(phone ? 8 : 12), dp(phone ? 10 : 20), dp(8));
         shell.addView(root, new LinearLayout.LayoutParams(0, -1, 1f));
 
         LinearLayout header = horizontal();
         TextView title = text(section.equals("series") ? getString(R.string.home_series) : getString(R.string.home_movies),
-                phone ? 24 : 31, Color.WHITE, true);
+                phone ? 24 : 32, Color.WHITE, true);
+        if (!phone) title.setLetterSpacing(0.015f);
         header.addView(title, new LinearLayout.LayoutParams(0, dp(phone ? 46 : 48), 1f));
         root.addView(header, new LinearLayout.LayoutParams(-1, dp(phone ? 46 : 48)));
 
@@ -244,13 +267,15 @@ public final class CatalogActivity extends Activity {
         search.setHint(getString(section.equals("series") ? R.string.search_series : R.string.search_movies));
         search.setText(restoredQuery);
         search.setTextColor(Color.WHITE);
-        search.setHintTextColor(0xFF707A86);
+        search.setHintTextColor(phone ? 0xFF707A86 : 0xFF9DAABA);
         search.setTextSize(UiTheme.sp(this, phone ? 15 : 16));
         // TV reserves room for the clear-X which is visually inside the search field.
         search.setPadding(dp(14), 0, dp(phone ? 14 : 52), 0);
-        search.setBackground(panelBackground(0xDD151A20, 0xFF2A3139, 1));
+        search.setBackground(panelBackground(phone ? 0xDD151A20 : 0xE0141D29,
+                phone ? 0xFF2A3139 : 0xFF3B4859, 1));
         search.setOnFocusChangeListener((v, focused) -> {
-            search.setBackground(panelBackground(0xDD151A20, focused ? accent : 0xFF2A3139, focused ? 2 : 1));
+            search.setBackground(panelBackground(phone ? 0xDD151A20 : 0xE0141D29,
+                    focused ? accent : (phone ? 0xFF2A3139 : 0xFF3B4859), focused ? 2 : 1));
             if (focused && !phone) setCatalogSidebarExpanded(false, true);
         });
         search.setOnEditorActionListener((v, actionId, event) -> {
@@ -311,7 +336,8 @@ public final class CatalogActivity extends Activity {
         filterButton = new ImageButton(this);
         filterButton.setId(View.generateViewId());
         filterButton.setImageResource(R.drawable.ic_filter_list);
-        filterButton.setBackground(panelBackground(0xDD151A20, 0xFF2A3139, 1));
+        filterButton.setBackground(panelBackground(phone ? 0xDD151A20 : 0xE0141D29,
+                phone ? 0xFF2A3139 : 0xFF3B4859, 1));
         filterButton.setColorFilter(Color.WHITE);
         filterButton.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
         filterButton.setPadding(dp(12), dp(12), dp(12), dp(12));
@@ -320,8 +346,9 @@ public final class CatalogActivity extends Activity {
         filterButton.setContentDescription(getString(R.string.filters));
         filterButton.setOnClickListener(v -> showFilters());
         filterButton.setOnFocusChangeListener((v, focused) -> {
-            int fill = focused ? ((accent & 0x00FFFFFF) | 0x33000000) : 0xDD151A20;
-            filterButton.setBackground(panelBackground(fill, focused ? accent : 0xFF2A3139, focused ? 2 : 1));
+            int fill = focused ? ((accent & 0x00FFFFFF) | 0x33000000) : (phone ? 0xDD151A20 : 0xE0141D29);
+            filterButton.setBackground(panelBackground(fill,
+                    focused ? accent : (phone ? 0xFF2A3139 : 0xFF3B4859), focused ? 2 : 1));
             if (focused && !phone) setCatalogSidebarExpanded(false, true);
             updateFilterIndicator();
         });
@@ -341,7 +368,7 @@ public final class CatalogActivity extends Activity {
         root.addView(controls, controlsParams);
 
         LinearLayout statusRow = horizontal();
-        status = text(getString(R.string.loading), 12, 0xFF9CA6B1, false);
+        status = text(getString(R.string.loading), phone ? 12 : 13, phone ? 0xFF9CA6B1 : 0xFFC2CCDA, false);
         statusRow.addView(status, new LinearLayout.LayoutParams(0, dp(26), 1f));
         loading = new ProgressBar(this);
         loading.setIndeterminate(true);
@@ -353,9 +380,9 @@ public final class CatalogActivity extends Activity {
         if (!phone) catalogColumns = Math.min(6, Math.max(4, catalogColumns));
         if (phone && getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE) catalogColumns = Math.max(catalogColumns, 3);
         grid.setNumColumns(catalogColumns);
-        grid.setHorizontalSpacing(dp(phone ? 8 : 8));
-        grid.setVerticalSpacing(dp(phone ? 9 : 8));
-        grid.setPadding(dp(2), dp(4), dp(2), dp(6));
+        grid.setHorizontalSpacing(dp(phone ? 8 : 12));
+        grid.setVerticalSpacing(dp(phone ? 9 : 12));
+        grid.setPadding(dp(phone ? 2 : 8), dp(phone ? 4 : 8), dp(phone ? 2 : 8), dp(phone ? 6 : 10));
         grid.setClipToPadding(false);
         grid.setClipChildren(false);
         // TV cards draw their own exact accent background and contrasting focus outline.
@@ -474,8 +501,8 @@ public final class CatalogActivity extends Activity {
         h.meta.setTextColor(highlighted ? foreground : 0xFF9CA6B1);
         // Keep the poster image and its dark matte intact; focus is around the whole card.
         if (h.highlighted != highlighted) {
-            float scale = highlighted ? 1.035f : 1f;
-            card.animate().scaleX(scale).scaleY(scale).setDuration(110L).start();
+            float scale = highlighted ? 1.025f : 1f;
+            card.animate().scaleX(scale).scaleY(scale).setDuration(120L).start();
             card.setElevation(highlighted ? dp(10) : 0f);
             h.highlighted = highlighted;
         }
@@ -990,7 +1017,8 @@ public final class CatalogActivity extends Activity {
 
     private void openDetail(CatalogItem item) {
         if (item == null) return;
-        restorePosition = grid.getFirstVisiblePosition();
+        restorePosition = config.isPhoneMode() ? grid.getFirstVisiblePosition()
+                : Math.max(0, adapter.snapshot().indexOf(item));
         Intent i = new Intent(this, TitleDetailActivity.class);
         i.putExtra("id", item.id); i.putExtra("type", section); i.putExtra("title", item.title);
         i.putExtra("originalTitle", item.originalTitle); i.putExtra("year", item.year); i.putExtra("endYear", item.endYear);
@@ -1035,7 +1063,7 @@ public final class CatalogActivity extends Activity {
     private GradientDrawable panelBackground(int fill, int stroke, int strokeWidthDp) {
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(fill);
-        bg.setCornerRadius(dp(10));
+        bg.setCornerRadius(dp(config.isPhoneMode() ? 10 : 14));
         if (strokeWidthDp > 0) bg.setStroke(dp(strokeWidthDp), stroke);
         return bg;
     }
@@ -1107,6 +1135,12 @@ public final class CatalogActivity extends Activity {
 
     private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
 
+    private int tvPosterHeightDp() {
+        int screenHeightDp = Math.round(getResources().getDisplayMetrics().heightPixels
+                / getResources().getDisplayMetrics().density);
+        return screenHeightDp <= 480 ? 140 : screenHeightDp <= 600 ? 158 : 184;
+    }
+
     private final class CatalogAdapter extends BaseAdapter {
         private final Context context;
         private final List<CatalogItem> items = new ArrayList<>();
@@ -1123,24 +1157,38 @@ public final class CatalogActivity extends Activity {
                 boolean phone = config.isPhoneMode();
                 LinearLayout box = new LinearLayout(context);
                 box.setOrientation(LinearLayout.VERTICAL);
-                box.setPadding(dp(5), dp(5), dp(5), dp(7));
+                box.setPadding(dp(phone ? 5 : 7), dp(phone ? 5 : 7), dp(phone ? 5 : 7), dp(phone ? 7 : 9));
                 box.setBackground(panelBackground(0xFF11161C, 0xFF242C35, 1));
                 ImageView poster = new ImageView(context);
                 poster.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                poster.setBackgroundColor(0xFF11161C);
+                if (phone) poster.setBackgroundColor(0xFF11161C);
+                else {
+                    GradientDrawable matte = new GradientDrawable();
+                    matte.setColor(0xFF11161C);
+                    matte.setCornerRadius(dp(9));
+                    poster.setBackground(matte);
+                    poster.setClipToOutline(true);
+                }
                 // Phone keeps the 1.0.7 card. TV is deliberately poster + name + year only.
-                box.addView(poster, new LinearLayout.LayoutParams(-1, dp(phone ? 188 : 174)));
-                TextView title = text("", phone ? 13 : 14, Color.WHITE, true);
+                int posterHeightDp = phone ? 188 : tvPosterHeightDp();
+                box.addView(poster, new LinearLayout.LayoutParams(-1, dp(posterHeightDp)));
+                TextView title = text("", phone ? 13 : 15, Color.WHITE, true);
                 title.setMaxLines(2);
-                LinearLayout.LayoutParams t = new LinearLayout.LayoutParams(-1, dp(phone ? 44 : 42));
-                t.setMargins(dp(2), dp(4), dp(2), 0);
+                if (!phone) {
+                    title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                    title.setLineSpacing(0f, 1.06f);
+                }
+                LinearLayout.LayoutParams t = new LinearLayout.LayoutParams(-1, dp(phone ? 44 : 48));
+                t.setMargins(dp(phone ? 2 : 4), dp(phone ? 4 : 6), dp(phone ? 2 : 4), 0);
                 box.addView(title, t);
                 TextView meta = text("", phone ? 11 : 12, 0xFF9CA6B1, false);
                 meta.setGravity(Gravity.TOP);
                 meta.setLineSpacing(0f, 1.05f);
                 meta.setMaxLines(1);
-                box.addView(meta, new LinearLayout.LayoutParams(-1, dp(phone ? 23 : 24)));
-                box.setLayoutParams(new AbsListView.LayoutParams(-1, dp(phone ? 272 : 254)));
+                LinearLayout.LayoutParams metaLp = new LinearLayout.LayoutParams(-1, dp(phone ? 23 : 22));
+                if (!phone) metaLp.setMargins(dp(4), 0, dp(4), 0);
+                box.addView(meta, metaLp);
+                box.setLayoutParams(new AbsListView.LayoutParams(-1, dp(phone ? 272 : posterHeightDp + 92)));
                 h = new Holder(poster, title, meta); box.setTag(h); convertView = box;
                 if (!phone) box.setOnHoverListener((v, event) -> {
                     int action = event.getActionMasked();

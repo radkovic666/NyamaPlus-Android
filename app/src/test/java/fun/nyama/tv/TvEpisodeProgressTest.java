@@ -313,6 +313,68 @@ public class TvEpisodeProgressTest {
         bridge.close();
     }
 
+    @Test public void recoveryPositionRequiresRecentVerifiedEpisodeEvent() throws Exception {
+        TvPlayerProgressBridge bridge = new TvPlayerProgressBridge(null, store, IMDB, 2, 3);
+        Uri origin = Uri.parse(TvPlayerProgressBridge.MAIN_ORIGIN);
+        assertNull(bridge.recentPosition(1_000));
+        bridge.receive(payload("playing", 20, 100), origin, true, 1_000);
+        TvPlayerProgressBridge.PositionSnapshot position = bridge.recentPosition(1_000);
+        assertNotNull(position);
+        assertEquals(20, position.position, 0);
+        assertEquals(100, position.duration, 0);
+        assertEquals(1_000, position.elapsedMs);
+        assertEquals(Boolean.FALSE, position.paused);
+        assertNotNull(bridge.recentPosition(16_000));
+        assertNull(bridge.recentPosition(16_001));
+        assertNull(bridge.recentPosition(999));
+
+        // Untrusted or mismatched events cannot replace or refresh the prior measurement.
+        bridge.receive(payload("paused", 90, 100), origin, false, 2_000);
+        bridge.receive(payload("paused", 90, 100), Uri.parse(TvPlayerProgressBridge.FRAME_ORIGIN), true, 2_000);
+        bridge.receive(payload("paused", 90, 100).replace("\"episode\":3", "\"episode\":4"), origin, true, 2_000);
+        bridge.receive(payload("playing", "90", 100), origin, true, 2_000);
+        assertSame(position, bridge.recentPosition(2_000));
+        assertNull(bridge.recentPosition(16_001));
+        bridge.close();
+    }
+
+    @Test public void recoverySeekPositionDoesNotInventCoverageOrPlaybackState() throws Exception {
+        TvPlayerProgressBridge bridge = new TvPlayerProgressBridge(null, store, IMDB, 2, 3);
+        Uri origin = Uri.parse(TvPlayerProgressBridge.MAIN_ORIGIN);
+        bridge.receive(payload("seeked", 90, 100), origin, true, 1_000);
+        TvPlayerProgressBridge.PositionSnapshot seek = bridge.recentPosition(1_000);
+        assertNotNull(seek);
+        assertEquals(90, seek.position, 0);
+        assertNull(seek.paused);
+
+        bridge.receive(payload("paused", 90, 100), origin, true, 2_000);
+        assertEquals(Boolean.TRUE, bridge.recentPosition(2_000).paused);
+        bridge.receive(payload("seeked", 95, 100), origin, true, 3_000);
+        assertEquals(Boolean.TRUE, bridge.recentPosition(3_000).paused);
+        assertEquals(95, bridge.recentPosition(3_000).position, 0);
+        assertFalse(store.get(IMDB, 2, 3).inProgress);
+        assertFalse(store.get(IMDB, 2, 3).watched);
+        assertEquals(0, store.get(IMDB, 2, 3).watchedFraction, 0);
+        bridge.close();
+    }
+
+    @Test public void recoveryPositionExpiresAcrossActivityPauseAndClose() throws Exception {
+        TvPlayerProgressBridge bridge = new TvPlayerProgressBridge(null, store, IMDB, 2, 3);
+        Uri origin = Uri.parse(TvPlayerProgressBridge.MAIN_ORIGIN);
+        bridge.receive(payload("playing", 20, 100), origin, true, 1_000);
+        TvPlayerProgressBridge.PositionSnapshot immutable = bridge.recentPosition(1_000);
+        assertNotNull(immutable);
+        bridge.pause();
+        assertNull(bridge.recentPosition(1_000));
+        bridge.resume();
+        assertNull(bridge.recentPosition(1_000));
+        bridge.receive(payload("playing", 30, 100), origin, true, 2_000);
+        assertEquals(30, bridge.recentPosition(2_000).position, 0);
+        bridge.close();
+        assertNull(bridge.recentPosition(2_000));
+        assertEquals(20, immutable.position, 0); // Saved snapshots survive only in their caller.
+    }
+
     @Test public void storedIntervalCountIsBoundedWithoutCreditingGaps() {
         TvEpisodeProgressTracker tracker = tracker();
         List<TvEpisodeProgressTracker.Interval> fragmented = new ArrayList<>();

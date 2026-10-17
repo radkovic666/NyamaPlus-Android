@@ -45,7 +45,6 @@ final class TvSeriesSelectionView extends LinearLayout {
     private final List<TvEpisodeCard> episodeCards = new ArrayList<>();
     private final List<TvSeriesMetadata.Episode> visibleEpisodes = new ArrayList<>();
     private LinearLayout episodeRows;
-    private TvEpisodeInformationView episodeInformation;
     private TvSeriesMetadata.Episode selectedEpisode;
     private int selectedSeason = -1;
     private boolean metadataPresent;
@@ -102,10 +101,9 @@ final class TvSeriesSelectionView extends LinearLayout {
         seasonButtons.clear();
         episodeCards.clear();
         visibleEpisodes.clear();
-        episodeInformation = null;
         removeAllViews();
-        addView(label(tr("Епизодите не могат да бъдат заредени. Използвайте „Гледай сега“.",
-                "Episode details could not be loaded. Use Watch now."), 16, 0xFFE0E6EE));
+        addView(label(tr("Епизодите не могат да бъдат заредени. Отворете отново сериала, за да опитате пак.",
+                "Episode details could not be loaded. Reopen this series to try again."), 16, 0xFFE0E6EE));
         listener.onSelectionChanged(null, false);
     }
 
@@ -119,7 +117,6 @@ final class TvSeriesSelectionView extends LinearLayout {
         seasonButtons.clear();
         episodeCards.clear();
         visibleEpisodes.clear();
-        episodeInformation = null;
         removeAllViews();
         for (TvSeriesMetadata.Season season : metadata.seasons) {
             if (season == null || season.number < 0) continue;
@@ -168,7 +165,7 @@ final class TvSeriesSelectionView extends LinearLayout {
                 return horizontalKey(seasonButtons, button, keyCode);
             });
             LayoutParams lp = new LayoutParams(-2, dp(50));
-            lp.setMargins(dp(4), 0, dp(4), 0);
+            lp.setMargins(dp(4), dp(2), dp(8), dp(2));
             seasonRow.addView(button, lp);
             seasonButtons.add(button);
         }
@@ -184,20 +181,8 @@ final class TvSeriesSelectionView extends LinearLayout {
         episodeRows.setPadding(dp(4), dp(6), dp(4), dp(6));
         episodeScroll.addView(episodeRows, new HorizontalScrollView.LayoutParams(-2, -2));
         addView(episodeScroll, new LayoutParams(-1, -2));
-        episodeInformation = new TvEpisodeInformationView(getContext(), bulgarian, new TvEpisodeInformationView.Navigation() {
-            @Override public void returnToEpisode() { focusSelectedEpisode(); }
-            @Override public void adjacentEpisode(int keyCode) {
-                TvEpisodeCard current = selectedEpisodeCard();
-                if (current != null) {
-                    current.requestFocus();
-                    horizontalKey(enabledEpisodeCards(), current, keyCode);
-                }
-            }
-        });
-        LayoutParams informationParams = new LayoutParams(-1, episodeInformation.preferredHeight());
-        informationParams.topMargin = dp(8);
-        addView(episodeInformation, informationParams);
-
+        episodeScroll.addOnLayoutChangeListener((view, left, top, right, bottom,
+                oldLeft, oldTop, oldRight, oldBottom) -> fitEpisodeCards((HorizontalScrollView) view));
         int rememberedSeason = preferences.getInt(imdbId + ":season", -1);
         int initialSeason = seasons.get(0).number;
         for (TvSeriesMetadata.Season season : seasons) {
@@ -270,7 +255,6 @@ final class TvSeriesSelectionView extends LinearLayout {
             card.setOnFocusChangeListener((v, focused) -> {
                 if (focused) {
                     selectEpisode(episode);
-                    showEpisodeInformation(episode, card);
                     listener.onEpisodeFocused(episode);
                     reveal(card);
                 }
@@ -279,31 +263,31 @@ final class TvSeriesSelectionView extends LinearLayout {
             card.setOnHoverListener((v, event) -> {
                 // Genuine pointer hover only; never generate pointer events or alter playback.
                 if (event.getActionMasked() == MotionEvent.ACTION_HOVER_ENTER) {
-                    showEpisodeInformation(episode, card);
                     listener.onEpisodeFocused(episode);
                 }
                 if (event.getActionMasked() == MotionEvent.ACTION_HOVER_EXIT && !card.hasFocus()) {
-                    showEpisodeInformation(selectedEpisode, selectedEpisodeCard());
                     listener.onEpisodeFocused(selectedEpisode);
                 }
                 return false;
             });
             card.setOnKeyListener((v, keyCode, event) -> {
                 if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
-                if (keyCode == KeyEvent.KEYCODE_DPAD_UP) { focusSelectedSeason(); return true; }
+                if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+                    if (event.isLongPress() || !card.scrollInformation(-1)) focusSelectedSeason();
+                    return true;
+                }
                 if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
-                    if (episodeInformation != null) episodeInformation.requestFocus();
+                    card.scrollInformation(1);
                     return true;
                 }
                 return horizontalKey(enabledEpisodeCards(), card, keyCode);
             });
             LayoutParams lp = new LayoutParams(card.preferredWidth(), card.preferredHeight());
-            lp.setMargins(dp(4), 0, dp(8), 0);
+            lp.setMargins(dp(4), 0, dp(12), 0);
             episodeRows.addView(card, lp);
             episodeCards.add(card);
         }
-        showEpisodeInformation(selectedEpisode != null ? selectedEpisode
-                : visibleEpisodes.isEmpty() ? null : visibleEpisodes.get(0), selectedEpisodeCard());
+        fitEpisodeCards((HorizontalScrollView) episodeRows.getParent());
         saveSelection();
         refreshStates();
         refreshWatchProgress();
@@ -324,8 +308,21 @@ final class TvSeriesSelectionView extends LinearLayout {
         listener.onSelectionChanged(selectedEpisode(), true);
     }
 
-    private void showEpisodeInformation(TvSeriesMetadata.Episode episode, TvEpisodeCard card) {
-        if (episodeInformation != null) episodeInformation.bind(episode, card == null ? null : card.stillDrawable());
+    private void fitEpisodeCards(HorizontalScrollView viewport) {
+        if (viewport.getWidth() <= 0) return;
+        int available = Math.max(1, viewport.getWidth() - viewport.getPaddingLeft()
+                - viewport.getPaddingRight() - dp(32));
+        boolean resized = false;
+        for (TvEpisodeCard card : episodeCards) {
+            LayoutParams params = (LayoutParams) card.getLayoutParams();
+            int width = Math.min(card.preferredWidth(), available);
+            if (params.width != width) {
+                params.width = width;
+                card.setLayoutParams(params);
+                resized = true;
+            }
+        }
+        if (resized) viewport.post(() -> reveal(selectedEpisodeCard()));
     }
 
     void refreshWatchProgress() {
@@ -338,14 +335,12 @@ final class TvSeriesSelectionView extends LinearLayout {
     @Override protected void onAttachedToWindow() {
         super.onAttachedToWindow();
         getViewTreeObserver().addOnScrollChangedListener(visibleStills);
-        showEpisodeInformation(selectedEpisode, selectedEpisodeCard());
         post(this::loadVisibleStills);
     }
 
     @Override protected void onDetachedFromWindow() {
         if (getViewTreeObserver().isAlive()) getViewTreeObserver().removeOnScrollChangedListener(visibleStills);
         cancelStills();
-        if (episodeInformation != null) episodeInformation.bind(null, null);
         if (stillLoader != null) { stillLoader.close(); stillLoader = null; }
         super.onDetachedFromWindow();
     }
@@ -380,7 +375,6 @@ final class TvSeriesSelectionView extends LinearLayout {
                     return;
                 }
                 card.setStill(bitmap);
-                if (episodeInformation != null) episodeInformation.setStill(episode, card.stillDrawable());
             });
         }
     }
@@ -427,9 +421,8 @@ final class TvSeriesSelectionView extends LinearLayout {
         wireHorizontal(enabled);
         for (TvEpisodeCard card : enabled) {
             card.setNextFocusUpId(selectedButton.getId());
-            card.setNextFocusDownId(episodeInformation == null ? card.getId() : episodeInformation.getId());
+            card.setNextFocusDownId(card.getId());
         }
-        if (episodeInformation != null && selectedCard != null) episodeInformation.setNextFocusUpId(selectedCard.getId());
     }
 
     private <T extends View> void wireHorizontal(List<T> chronological) {
@@ -537,7 +530,7 @@ final class TvSeriesSelectionView extends LinearLayout {
         boolean highlighted = selected || button.hasFocus();
         GradientDrawable background = new GradientDrawable();
         background.setColor(highlighted ? accent : 0xEB20262E);
-        background.setCornerRadius(dp(9));
+        background.setCornerRadius(dp(12));
         background.setStroke(dp(button.hasFocus() ? 3 : 1), button.hasFocus() ? Color.WHITE : highlighted ? accent : 0xFF677485);
         button.setBackground(background);
         button.setTextColor(highlighted ? UiTheme.contrastingTextColor(accent) : Color.WHITE);

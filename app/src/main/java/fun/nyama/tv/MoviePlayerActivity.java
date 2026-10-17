@@ -33,6 +33,10 @@ import android.widget.Toast;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.json.JSONException;
+import org.json.JSONObject;
+import org.json.JSONTokener;
+
 /**
  * Internal Movies/Series player wrapper.
  *
@@ -40,12 +44,16 @@ import java.util.List;
  * controls, touch handling and session state retain their existing behavior.
  */
 public final class MoviePlayerActivity extends Activity {
+    static final String EXTRA_RETURN_TO_CATALOG = "return_to_catalog";
+    static final String EXTRA_CONFIRMED_TV_EXIT = "confirmed_tv_exit";
     private static final String TAG = "NyamaPlayer";
     private static final String PLAYER_HOST = "streamimdb.ru";
     private static final String PLAYER_BASE = "https://streamimdb.ru/embed/";
     private static final long BACK_CONFIRM_MS = 2500L;
     private static final long BACK_DUPLICATE_GUARD_MS = 250L;
     private static final long CONTROLS_HIDE_MS = 5000L;
+    private static final long SEEK_PROBE_MS = 50L;
+    private static final long SEEK_CONFIRM_LIMIT_MS = 15_000L;
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private final List<Button> controlButtons = new ArrayList<>();
@@ -81,6 +89,17 @@ public final class MoviePlayerActivity extends Activity {
     private Bitmap tvDefaultVideoPoster;
     private Runnable pendingTvDocumentLoad;
     private TvPlayerProgressBridge episodeProgress;
+    private TvSeekQueue tvSeekQueue;
+    private WebView tvSeekView;
+    private Runnable pendingSeekProbe;
+    private long tvSeekOperation;
+    private double tvLastDirectPosition = Double.NaN;
+    private double tvLastDirectDuration = Double.NaN;
+    private long tvLastDirectPositionAt = -1L;
+    private double tvRecoveryPosition = Double.NaN;
+    private Boolean tvLastDirectPaused;
+    private Boolean tvRecoveryPaused;
+    private View tvNativeSeekFocusedTarget;
     private final Runnable clearCloseArm = () -> closeArmed = false;
     private final Runnable hideControls = () -> setControlsVisible(false, false);
 
@@ -435,7 +454,7 @@ public final class MoviePlayerActivity extends Activity {
     private void startSelectedTvDocument() {
         final WebView target = webView;
         final long generation = tvSurfaceGeneration;
-        final String selectedUrl = loadedPlayerUrl;
+        final String selectedUrl = tvRecoveryUrl();
         if (target == null || selectedUrl.isEmpty()) return;
         if ("series".equals(type) && TvPlaybackSource.HOST.equals(selectedPlaybackHost)) {
             episodeProgress = TvPlayerProgressBridge.attach(target, new TvEpisodeProgressStore(this), id,
@@ -470,6 +489,20 @@ public final class MoviePlayerActivity extends Activity {
                 }
             });
         }
+    }
+
+    private String tvRecoveryUrl() {
+        if (!TvPlaybackSource.HOST.equals(selectedPlaybackHost)
+                || !Double.isFinite(tvRecoveryPosition) || tvRecoveryPosition <= 0) return loadedPlayerUrl;
+        Uri selected = Uri.parse(loadedPlayerUrl);
+        Uri.Builder resumed = selected.buildUpon().clearQuery();
+        for (String name : selected.getQueryParameterNames()) {
+            if ("resumeAt".equals(name)) continue;
+            if (Boolean.TRUE.equals(tvRecoveryPaused) && "autoplay".equals(name)) continue;
+            for (String value : selected.getQueryParameters(name)) resumed.appendQueryParameter(name, value);
+        }
+        if (Boolean.TRUE.equals(tvRecoveryPaused)) resumed.appendQueryParameter("autoplay", "0");
+        return resumed.appendQueryParameter("resumeAt", Long.toString((long) Math.floor(tvRecoveryPosition))).build().toString();
     }
 
     private boolean isSelectedMainDocument(String url) {
@@ -510,6 +543,20 @@ public final class MoviePlayerActivity extends Activity {
 
     private void handleTvRendererLoss(WebView failed) {
         Log.w(TAG, "TV initialization renderer_gone recovery=" + (rendererRecoveryUsed ? 1 : 0));
+        closeTvSeekQueue();
+        long now = android.os.SystemClock.elapsedRealtime();
+        TvPlayerProgressBridge.PositionSnapshot providerPosition = episodeProgress == null ? null : episodeProgress.recentPosition(now);
+        if (providerPosition != null) {
+            tvRecoveryPosition = providerPosition.position;
+            tvRecoveryPaused = providerPosition.paused;
+        } else if (now >= tvLastDirectPositionAt && now - tvLastDirectPositionAt <= SEEK_CONFIRM_LIMIT_MS
+                && TvEpisodeProgressTracker.validMeasurement(tvLastDirectPosition, tvLastDirectDuration)) {
+            tvRecoveryPosition = tvLastDirectPosition;
+            tvRecoveryPaused = tvLastDirectPaused;
+        } else {
+            tvRecoveryPosition = Double.NaN;
+            tvRecoveryPaused = null;
+        }
         if (episodeProgress != null) {
             episodeProgress.close();
             episodeProgress = null;
@@ -720,39 +767,158 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     private void seekTvPlayback(int seconds) {
-        if (!tvMode || webView == null) return;
+        if (!tvMode || !tvForeground || webView == null || playbackFailed || leavingPlayback) return;
         if (episodeProgress != null) episodeProgress.breakContinuity();
-        final WebView requestedView = webView;
-        String js = "(function(){try{" +
-                "function docs(d,a){a.push(d);var f=d.querySelectorAll('iframe');for(var i=0;i<f.length;i++){try{if(f[i].contentDocument)docs(f[i].contentDocument,a);}catch(e){}}return a;}" +
-                "var ds=docs(document,[]),best=null,area=-1;for(var j=0;j<ds.length;j++){var vs=ds[j].querySelectorAll('video');for(var k=0;k<vs.length;k++){var v=vs[k],r=v.getBoundingClientRect(),a=Math.max(0,r.width)*Math.max(0,r.height);if(a>area){area=a;best=v;}}}" +
-                "if(!best)return '0';var d=isFinite(best.duration)?best.duration:1e15;best.currentTime=Math.max(0,Math.min(d,(best.currentTime||0)+(" + seconds + ")));return '1';" +
-                "}catch(e){return '0';}})();";
-        webView.evaluateJavascript(js, result -> {
-            if (requestedView != webView || playbackFailed || leavingPlayback) return;
-            if (result == null || !result.contains("1")) {
-                // Let the provider handle its own keyboard shortcut when the media element lives
-                // inside an inaccessible/cross-origin frame.
-                sendNativeKeyToPlayer(seconds < 0 ? KeyEvent.KEYCODE_DPAD_LEFT : KeyEvent.KEYCODE_DPAD_RIGHT);
+        if (tvSeekQueue == null || tvSeekView != webView) {
+            closeTvSeekQueue();
+            final WebView target = webView;
+            tvSeekView = target;
+            tvSeekQueue = new TvSeekQueue(new TvSeekQueue.Transport() {
+                @Override public void direct(int delta, TvSeekQueue.Completion completion) {
+                    long operation = ++tvSeekOperation;
+                    evaluateTvSeek(target, operation, delta, false, android.os.SystemClock.elapsedRealtime(), completion);
+                }
+                @Override public void nativeStep(int delta, Runnable completion) {
+                    if (target != webView || !tvForeground || playbackFailed || leavingPlayback) return;
+                    sendNativeKeyToPlayer(delta < 0 ? KeyEvent.KEYCODE_DPAD_LEFT : KeyEvent.KEYCODE_DPAD_RIGHT, completion);
+                }
+                @Override public void post(Runnable task) { main.post(task); }
+                @Override public void idle() { tvNativeSeekFocusedTarget = null; }
+                @Override public void unavailable() {
+                    if (target != webView || !tvForeground || playbackFailed || leavingPlayback) return;
+                    Log.w(TAG, "TV seek not_confirmed; playback_kept");
+                    Toast.makeText(MoviePlayerActivity.this, R.string.player_control_unavailable, Toast.LENGTH_SHORT).show();
+                }
+            });
+        }
+        tvSeekQueue.request(seconds);
+    }
+
+    private void evaluateTvSeek(WebView target, long operation, int delta, boolean polling,
+            long startedAt, TvSeekQueue.Completion completion) {
+        if (!activeTvSeek(target, operation)) return;
+        String js = tvSeekScript(operation, delta, polling);
+        android.webkit.ValueCallback<String> callback = result -> {
+            if (!activeTvSeek(target, operation)) return;
+            JSONObject response = seekResponse(result);
+            String state = response == null ? "failed" : response.optString("state");
+            if ("settled".equals(state)) {
+                double position = response.optDouble("position", Double.NaN);
+                double duration = response.optDouble("duration", Double.NaN);
+                if (!(response.opt("position") instanceof Number) || !(response.opt("duration") instanceof Number)
+                        || !TvEpisodeProgressTracker.validMeasurement(position, duration)) {
+                    completion.complete(TvSeekQueue.Result.UNAVAILABLE);
+                    return;
+                }
+                tvLastDirectPosition = position;
+                tvLastDirectDuration = duration;
+                tvLastDirectPositionAt = android.os.SystemClock.elapsedRealtime();
+                tvLastDirectPaused = response.opt("paused") instanceof Boolean ? response.optBoolean("paused") : null;
+                completion.complete(TvSeekQueue.Result.DIRECT);
+            } else if ("inaccessible".equals(state) && !polling) {
+                // Only the absence of an accessible video may choose the existing native path.
+                // A failed, pending or ambiguous currentTime assignment never sends a second seek.
+                completion.complete(TvSeekQueue.Result.INACCESSIBLE);
+            } else if ("waiting".equals(state)
+                    && android.os.SystemClock.elapsedRealtime() - startedAt < SEEK_CONFIRM_LIMIT_MS) {
+                pendingSeekProbe = () -> {
+                    pendingSeekProbe = null;
+                    evaluateTvSeek(target, operation, delta, true, startedAt, completion);
+                };
+                // Probe the legitimate HTMLMediaElement.seeking/readback signal. This is not a
+                // fixed delay before accepted seeks, nor a reason to reload a stalled provider.
+                main.postDelayed(pendingSeekProbe, SEEK_PROBE_MS);
+            } else {
+                completion.complete(TvSeekQueue.Result.UNAVAILABLE);
             }
-        });
+        };
+        try { target.evaluateJavascript(js, callback); }
+        catch (RuntimeException unavailableSurface) {
+            if (activeTvSeek(target, operation)) completion.complete(TvSeekQueue.Result.UNAVAILABLE);
+        }
+    }
+
+    private boolean activeTvSeek(WebView target, long operation) {
+        return target == webView && target == tvSeekView && operation == tvSeekOperation
+                && tvForeground && !playbackFailed && !leavingPlayback;
+    }
+
+    private static JSONObject seekResponse(String result) {
+        if (result == null) return null;
+        try {
+            Object decoded = new JSONTokener(result).nextValue();
+            if (decoded instanceof String) decoded = new JSONTokener((String) decoded).nextValue();
+            return decoded instanceof JSONObject ? (JSONObject) decoded : null;
+        } catch (JSONException | RuntimeException invalid) { return null; }
+    }
+
+    /** Accesses only this document and same-origin frames; protected iframe DOM remains opaque. */
+    private String tvSeekScript(long operation, int delta, boolean polling) {
+        return "(function(){try{var token=" + operation + ",s=window.__nyamaTvSeek;"
+                + "function out(state,v){return JSON.stringify({state:state,position:v?Number(v.currentTime):null,duration:v?Number(v.duration):null,paused:v?!!v.paused:null});}"
+                + "function assign(v){var p=Number(v.currentTime),d=Number(v.duration);"
+                + "if(v.readyState<1||!isFinite(p)||!isFinite(d)||d<=0)return out('unready');"
+                + "if(v.seeking){window.__nyamaTvSeek={token:token,video:v,before:true};return out('waiting');}"
+                + "if(!v.seekable||!v.seekable.length)return out('unready');"
+                + "var wanted=Math.max(0,Math.min(d,p+(" + delta + "))),target=NaN,distance=Infinity;"
+                + "for(var i=0;i<v.seekable.length;i++){var lo=v.seekable.start(i),hi=Math.min(d,v.seekable.end(i));"
+                + "if(!isFinite(lo)||!isFinite(hi)||hi<lo)continue;var candidate=Math.max(lo,Math.min(hi,wanted));"
+                + "if(Math.abs(candidate-wanted)<distance){distance=Math.abs(candidate-wanted);target=candidate;}}"
+                + "if(!isFinite(target))return out('unready');"
+                + "s={token:token,video:v,target:target,before:false};window.__nyamaTvSeek=s;v.currentTime=target;"
+                + "var actual=Number(v.currentTime);if(!isFinite(actual))return out('failed');"
+                + "if(v.seeking)return out('waiting');"
+                + "return Math.abs(actual-target)<=2?out('settled',v):out('failed');}"
+                + (polling
+                ? "if(!s||s.token!==token||!s.video||!s.video.ownerDocument||!s.video.ownerDocument.documentElement.contains(s.video))return out('failed');"
+                    + "if(s.before)return assign(s.video);if(s.video.seeking)return out('waiting');"
+                    + "return Math.abs(Number(s.video.currentTime)-s.target)<=2?out('settled',s.video):out('failed');"
+                : accessibleVideoScript() + "if(!best||area<=0)return out('inaccessible');return assign(best);")
+                + "}catch(e){return JSON.stringify({state:'failed'});}})();";
+    }
+
+    private void closeTvSeekQueue() {
+        tvSeekOperation++;
+        if (pendingSeekProbe != null) main.removeCallbacks(pendingSeekProbe);
+        pendingSeekProbe = null;
+        if (tvSeekQueue != null) tvSeekQueue.close();
+        tvSeekQueue = null;
+        tvSeekView = null;
+        tvNativeSeekFocusedTarget = null;
     }
 
     private void sendNativeKeyToPlayer(int keyCode) {
+        sendNativeKeyToPlayer(keyCode, null);
+    }
+
+    private void sendNativeKeyToPlayer(int keyCode, Runnable completion) {
         View target = customView != null ? customView : webView;
         if (target == null) return;
+        final WebView requestedSurface = webView;
+        final long requestedSeekOperation = tvSeekOperation;
+        if (completion == null) tvNativeSeekFocusedTarget = null;
         target.setFocusable(true);
         target.setFocusableInTouchMode(true);
         target.requestFocus();
         Runnable dispatch = () -> {
             if (leavingPlayback || playbackFailed || target != (customView != null ? customView : webView)) return;
+            if (completion != null && (!tvForeground || requestedSurface != webView
+                    || requestedSeekOperation != tvSeekOperation)) return;
             long now = android.os.SystemClock.uptimeMillis();
             Log.d(TAG, "forwarding " + KeyEvent.keyCodeToString(keyCode) + " down/up to "
                     + (target == customView ? "fullscreen customView" : "WebView"));
-            target.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0));
-            target.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0));
+            try {
+                target.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0));
+                target.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0));
+            } catch (RuntimeException unavailableSurface) {
+                if (completion == null) throw unavailableSurface;
+                // A partially delivered pair is ambiguous. Never retry it or switch control paths.
+                nativeTvSeekUnavailable(requestedSurface, requestedSeekOperation);
+                return;
+            }
+            if (completion != null) completion.run();
         };
-        if (target != webView) {
+        if (target != webView || (completion != null && target == tvNativeSeekFocusedTarget && target.hasFocus())) {
             dispatch.run();
             return;
         }
@@ -760,9 +926,37 @@ public final class MoviePlayerActivity extends Activity {
         // document is not. This makes the provider, rather than an unrelated outer-page control,
         // receive the real Android fallback key event.
         String focusFrame = "(function(){try{var fs=document.querySelectorAll('iframe'),best=null,area=0;" +
-                "for(var i=0;i<fs.length;i++){var r=fs[i].getBoundingClientRect(),a=Math.max(0,r.width)*Math.max(0,r.height);if(a>area){area=a;best=fs[i];}}" +
-                "if(best){best.focus();return '1';}if(document.body)document.body.focus();return '0';}catch(e){return '0';}})();";
-        webView.evaluateJavascript(focusFrame, ignored -> dispatch.run());
+                (completion != null && TvPlaybackSource.HOST.equals(selectedPlaybackHost)
+                        ? "var f=document.getElementById('pf');if(!f)return '0';var u=new URL(f.src,location.href);"
+                            + "if(u.origin!=='" + TvPlayerProgressBridge.FRAME_ORIGIN + "'||u.pathname!==location.pathname)return '0';best=f;"
+                        : "for(var i=0;i<fs.length;i++){var r=fs[i].getBoundingClientRect(),a=Math.max(0,r.width)*Math.max(0,r.height);if(a>area){area=a;best=fs[i];}}") +
+                "if(best){best.focus();return document.activeElement===best?'1':'0';}if(document.body)document.body.focus();return '0';}catch(e){return '0';}})();";
+        android.webkit.ValueCallback<String> focused = result -> {
+            if (completion != null) {
+                if (!tvForeground || requestedSurface != webView || requestedSeekOperation != tvSeekOperation
+                        || leavingPlayback || playbackFailed) return;
+                if (!"\"1\"".equals(result) && !"1".equals(result)) {
+                    // An unconfirmed focus must not turn a seek into outer-page navigation.
+                    nativeTvSeekUnavailable(requestedSurface, requestedSeekOperation);
+                    return;
+                }
+                tvNativeSeekFocusedTarget = target;
+            }
+            dispatch.run();
+        };
+        try { requestedSurface.evaluateJavascript(focusFrame, focused); }
+        catch (RuntimeException unavailableSurface) {
+            if (completion == null) throw unavailableSurface;
+            nativeTvSeekUnavailable(requestedSurface, requestedSeekOperation);
+        }
+    }
+
+    private void nativeTvSeekUnavailable(WebView requestedSurface, long operation) {
+        if (requestedSurface != webView || operation != tvSeekOperation || !tvForeground
+                || leavingPlayback || playbackFailed) return;
+        closeTvSeekQueue();
+        Log.w(TAG, "TV seek provider_input_unavailable; playback_kept");
+        Toast.makeText(this, R.string.player_control_unavailable, Toast.LENGTH_SHORT).show();
     }
 
     private void clearBackArm() {
@@ -1023,7 +1217,10 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     @Override protected void onPause() {
-        if (tvMode) tvForeground = false;
+        if (tvMode) {
+            tvForeground = false;
+            closeTvSeekQueue();
+        }
         if (episodeProgress != null) episodeProgress.pause();
         if (webView != null) {
             webView.onPause();
@@ -1057,30 +1254,31 @@ public final class MoviePlayerActivity extends Activity {
 
     private void finishTvPlayback() {
         leavingPlayback = true;
-        if (returnToSeries) {
-            clearBackArm();
-            releaseMovieWebView();
-            resumeTvWhenClosing = false;
-            // Browsing artwork remains visual-only: restore the existing live stream only after
-            // VOD has been destroyed, without opening or recreating MainActivity.
-            MainActivity.resumePlaybackAfterOnDemand();
-            finish(); // Existing series detail Activity and its selected episode remain in place.
-        } else returnToLiveTv();
-    }
-
-    private void returnToLiveTv() {
         clearBackArm();
-        // Destroy movie media before requesting Live TV, so the two audio sources cannot overlap.
         releaseMovieWebView();
         resumeTvWhenClosing = false;
-        startActivity(new Intent(this, MainActivity.class)
-                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                .putExtra(MainActivity.EXTRA_RETURN_FROM_ON_DEMAND, true));
-        finish();
+        // Resume the existing Live TV audio only after the VOD surface has been destroyed.
+        // Browsing stays on the original catalog/detail Activity instead of opening MainActivity.
+        MainActivity.resumePlaybackAfterOnDemand();
+        if (returnToSeries) {
+            finish();
+        } else if (getIntent().getBooleanExtra(EXTRA_RETURN_TO_CATALOG, false)) {
+            setResult(RESULT_OK, new Intent().putExtra(EXTRA_CONFIRMED_TV_EXIT, true));
+            finish(); // The original TV movie detail receives this and exposes its catalog.
+        } else {
+            String origin = "series".equals(getIntent().getStringExtra("origin_section")) ? "series" : type;
+            startActivity(new Intent(this, CatalogActivity.class)
+                    .putExtra(CatalogActivity.EXTRA_SECTION, origin)
+                    .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP));
+            finish();
+        }
     }
 
     private void releaseMovieWebView() {
-        if (tvMode) pendingTvDocumentLoad = null;
+        if (tvMode) {
+            pendingTvDocumentLoad = null;
+            closeTvSeekQueue();
+        }
         if (episodeProgress != null) {
             episodeProgress.close();
             episodeProgress = null;

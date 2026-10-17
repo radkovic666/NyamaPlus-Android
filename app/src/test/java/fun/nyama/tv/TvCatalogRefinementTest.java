@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.drawable.ColorDrawable;
 import android.os.Looper;
+import android.os.Handler;
 import android.util.LruCache;
 import android.view.InputDevice;
 import android.view.MotionEvent;
@@ -312,6 +313,43 @@ public class TvCatalogRefinementTest {
         // The new layer remains visual only; no detail/player activity or catalogue load is started.
         assertEquals(0, io.jobs.size());
         assertNull(Shadows.shadowOf(activity).getNextStartedActivity());
+    }
+
+    @Test public void sameSectionReturnKeepsExactCatalogStateAndRefocusesOpenedPosterWithoutLoading() throws Exception {
+        for (String section : new String[]{"movies", "series"}) {
+            catalog(section, false);
+            List<CatalogItem> all = titles(15);
+            adapterItems(all); layout();
+            search().setText("keep this query");
+            ((Handler) get("main")).removeCallbacks((Runnable) get("liveSearch"));
+            genres().add("Drama"); set("favoritesOnly", true); set("sortMode", "rating");
+            set("page", 3); set("totalPages", 7);
+            Object originalAdapter = grid.getAdapter();
+            grid.setSelection(9); grid.requestFocus(); layout();
+            Method open = CatalogActivity.class.getDeclaredMethod("openDetail", CatalogItem.class);
+            open.setAccessible(true); open.invoke(activity, all.get(9));
+            assertEquals(9, get("restorePosition"));
+            Intent detail = Shadows.shadowOf(activity).getNextStartedActivity();
+            assertEquals(section, detail.getStringExtra("type"));
+            invoke("onPause");
+            assertEquals(9, activity.getSharedPreferences("nyama_plus_catalog_state", 0)
+                    .getInt(section + ":grid_pos", -1));
+
+            Intent returned = new Intent(activity, CatalogActivity.class)
+                    .putExtra(CatalogActivity.EXTRA_SECTION, section)
+                    .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            Method newIntent = CatalogActivity.class.getDeclaredMethod("onNewIntent", Intent.class);
+            newIntent.setAccessible(true); newIntent.invoke(activity, returned);
+            layout();
+            assertSame(originalAdapter, grid.getAdapter());
+            assertEquals(9, grid.getSelectedItemPosition()); assertTrue(grid.hasFocus());
+            assertEquals("keep this query", search().getText().toString());
+            assertEquals(Arrays.asList("Drama"), genres());
+            assertEquals(true, get("favoritesOnly")); assertEquals("rating", get("sortMode"));
+            assertEquals(3, get("page")); assertEquals(7, get("totalPages"));
+            assertEquals(0, io.jobs.size());
+            assertNull(Shadows.shadowOf(activity).getNextStartedActivity());
+        }
     }
 
     private List<CatalogItem> assertFocusedAndHoveredArtwork() throws Exception {

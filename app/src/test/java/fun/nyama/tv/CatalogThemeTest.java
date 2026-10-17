@@ -46,6 +46,10 @@ public class CatalogThemeTest {
     }
 
     private void catalog(String theme, boolean phone) throws Exception {
+        catalog(theme, phone, "movies");
+    }
+
+    private void catalog(String theme, boolean phone, String section) throws Exception {
         // Build only the native UI, without onCreate's catalogue HTTP calls.
         ActivityController<CatalogActivity> controller = Robolectric.buildActivity(CatalogActivity.class);
         activity = controller.get();
@@ -53,7 +57,7 @@ public class CatalogThemeTest {
         config.setDeviceMode(phone ? fun.nyama.tv.Config.MODE_PHONE : fun.nyama.tv.Config.MODE_TV);
         config.setColorTheme(theme);
         field("config").set(activity, config);
-        field("section").set(activity, "movies");
+        field("section").set(activity, section);
         Method build = CatalogActivity.class.getDeclaredMethod("buildUi");
         build.setAccessible(true);
         root = (View) build.invoke(activity);
@@ -131,7 +135,7 @@ public class CatalogThemeTest {
         assertEquals(UiTheme.contrastingTextColor(accent), title(card(0)).getCurrentTextColor());
         assertEquals(title(card(0)).getCurrentTextColor(), year(card(0)).getCurrentTextColor());
         assertTrue(card(0).getElevation() > 0f);
-        assertEquals(0xFF11161C, ((android.graphics.drawable.ColorDrawable) ((ImageView) card(0).getChildAt(0)).getBackground()).getColor());
+        assertEquals(0xFF11161C, background(card(0).getChildAt(0)));
         // Exercise Android's actual remote path instead of directly assigning selection.
         assertTrue(grid.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT)));
         grid.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_RIGHT));
@@ -198,5 +202,46 @@ public class CatalogThemeTest {
         assertEquals(Color.WHITE, title(card).getCurrentTextColor());
         assertEquals(0xFF9CA6B1, year(card).getCurrentTextColor());
         assertEquals(height, card.getLayoutParams().height);
+        assertEquals(272, Math.round(height / activity.getResources().getDisplayMetrics().density));
+        assertEquals(188, Math.round(card.getChildAt(0).getLayoutParams().height
+                / activity.getResources().getDisplayMetrics().density));
+        assertTrue(card.getChildAt(0).getBackground() instanceof android.graphics.drawable.ColorDrawable);
+        assertFalse(card.getChildAt(0).getClipToOutline());
+    }
+
+    @Test @Config(qualifiers = "w1280dp-h720dp-land-mdpi")
+    public void bothTvCatalogsHaveConsistentRoundedReadableCardsAt720p() throws Exception {
+        assertModernTvCatalogs(1280, 720);
+    }
+
+    @Test @Config(qualifiers = "w1920dp-h1080dp-land-mdpi")
+    public void bothTvCatalogsHaveConsistentRoundedReadableCardsAt1080p() throws Exception {
+        assertModernTvCatalogs(1920, 1080);
+    }
+
+    private void assertModernTvCatalogs(int width, int height) throws Exception {
+        for (String section : new String[]{"movies", "series"}) {
+            catalog(fun.nyama.tv.Config.THEME_GREEN, false, section);
+            root.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY));
+            root.layout(0, 0, width, height);
+            Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
+            grid.requestFocus(); grid.setSelection(0);
+            Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
+            LinearLayout card = card(0);
+            ImageView image = (ImageView) card.getChildAt(0);
+            assertTrue(image.getClipToOutline());
+            assertEquals(ImageView.ScaleType.FIT_CENTER, image.getScaleType());
+            assertEquals(9f, ((GradientDrawable) image.getBackground()).getCornerRadius(), 0f);
+            assertEquals(14f, ((GradientDrawable) card.getBackground()).getCornerRadius(), 0f);
+            assertEquals(12, grid.getHorizontalSpacing());
+            assertEquals(12, grid.getVerticalSpacing());
+            assertTrue(grid.getPaddingLeft() >= 8);
+            assertTrue("a complete card fits the screen", card.getHeight() < grid.getHeight());
+            assertTrue("readable title hierarchy", title(card).getTextSize() > year(card).getTextSize());
+            assertEquals(UiTheme.accent(activity), background(card));
+            assertTrue(ColorUtils.calculateContrast(title(card).getCurrentTextColor(),
+                    background(card)) >= 4.5);
+        }
     }
 }
