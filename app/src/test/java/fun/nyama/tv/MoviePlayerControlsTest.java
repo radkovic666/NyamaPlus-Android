@@ -700,16 +700,11 @@ public class MoviePlayerControlsTest {
     /** Models only Android's render acknowledgement; never claims provider media is playable. */
     private static final class VisualWebView extends WebView {
         VisualStateCallback visualCallback;
-        long requestId;
         VisualWebView(Context context) { super(context); }
         @Override public void postVisualStateCallback(long requestId, VisualStateCallback callback) {
-            this.requestId = requestId;
             visualCallback = callback;
         }
-        void presentFrame() {
-            assertNotNull("A selected-document render callback must have been requested", visualCallback);
-            visualCallback.onComplete(requestId);
-        }
+
     }
 
     private static VisualWebView captureVisualState(MoviePlayerActivity activity) throws Exception {
@@ -730,45 +725,47 @@ public class MoviePlayerControlsTest {
         return target;
     }
 
-    private static View loadingSurface(MoviePlayerActivity activity) throws Exception {
-        return (View) field("tvLoadingSurface").get(activity);
+    private static void assertNoLoadingOverlay(MoviePlayerActivity activity) throws Exception {
+        ViewGroup root = (ViewGroup) field("root").get(activity);
+        for (View child : views(root)) {
+            if (child instanceof TextView) {
+                String text = ((TextView) child).getText().toString();
+                assertFalse(text.contains("Loading") || text.contains("Зареждане"));
+            }
+        }
+        assertEquals("Only the WebView and hidden fullscreen container belong on the TV surface", 2, root.getChildCount());
+        assertSame(web(activity), root.getChildAt(0));
+        assertEquals(View.VISIBLE, web(activity).getVisibility());
+        assertEquals(View.GONE, root.getChildAt(1).getVisibility());
     }
 
-    @Test public void tvLoadingIsDarkAndNonFocusableUntilSelectedDocumentFrameIsPresented() throws Exception {
-        MoviePlayerActivity activity = open(false, episode(2, 3)).get();
-        VisualWebView target = captureVisualState(activity);
-        View loading = loadingSurface(activity);
-        assertEquals(Color.BLACK, Shadows.shadowOf(target).getBackgroundColor());
-        assertEquals(View.VISIBLE, loading.getVisibility());
-        assertFalse(loading.isFocusable());
-        assertFalse(loading.isClickable());
-        WebViewClient client = Shadows.shadowOf(target).getWebViewClient();
-        client.onPageCommitVisible(target, "about:blank");
-        client.onPageCommitVisible(target, "https://vaplayer.ru/embed/tv/" + SERIES + "/2/4");
-        assertNull(target.visualCallback);
-        client.onPageCommitVisible(target, url(activity));
-        assertNotNull(target.visualCallback);
-        assertEquals("Commit requests a render acknowledgement rather than exposing a blank surface",
-                View.VISIBLE, loading.getVisibility());
-        target.presentFrame();
-        assertEquals(View.GONE, loading.getVisibility());
-        assertNoTvPlaybackBar(activity);
+    @Test public void tvMovieAndEpisodeAreVisibleWithoutPageOrVisualCallbacks() throws Exception {
+        for (Intent selection : new Intent[] {title("movies", MOVIE), episode(2, 3)}) {
+            MoviePlayerActivity activity = open(false, selection).get();
+            assertNoLoadingOverlay(activity);
+            VisualWebView target = captureVisualState(activity);
+            WebViewClient client = Shadows.shadowOf(target).getWebViewClient();
+            client.onPageCommitVisible(target, url(activity));
+            client.onPageFinished(target, url(activity));
+            assertNull("Provider visibility must never wait for a render acknowledgement", target.visualCallback);
+            assertNoLoadingOverlay(activity);
+            assertNoTvPlaybackBar(activity);
+        }
     }
 
-    @Test public void delayedVisualCallbackCannotRevealAReplacementPlayer() throws Exception {
+    @Test public void staleCommitCannotCoverOrReloadAReplacementPlayer() throws Exception {
         MoviePlayerActivity activity = open(false, episode(2, 3)).get();
         VisualWebView failed = captureVisualState(activity);
         WebViewClient client = Shadows.shadowOf(failed).getWebViewClient();
-        client.onPageCommitVisible(failed, url(activity));
         assertTrue(client.onRenderProcessGone(failed, null));
         idle();
-        layoutPlayer(activity);
-        idle();
-        assertNotSame(failed, web(activity));
-        View replacementLoading = loadingSurface(activity);
-        assertEquals(View.VISIBLE, replacementLoading.getVisibility());
-        failed.presentFrame();
-        assertEquals(View.VISIBLE, replacementLoading.getVisibility());
+        WebView replacement = web(activity);
+        String selected = url(activity);
+        client.onPageCommitVisible(failed, selected);
+        assertNull(failed.visualCallback);
+        assertSame(replacement, web(activity));
+        assertEquals(selected, url(activity));
+        assertNoLoadingOverlay(activity);
     }
 
     @Test public void explicitRendererLossRecoversOnlyOnceUsingTheExactSelectedEpisode() throws Exception {
@@ -824,22 +821,22 @@ public class MoviePlayerControlsTest {
         assertFalse(flag(activity, "rendererRecoveryPending"));
     }
 
-    @Test public void pauseBeforeFirstLayoutDefersTvAutoplayUntilResume() throws Exception {
+    @Test public void tvNavigatesDuringCreateBeforeResumeOrFirstLayout() throws Exception {
         new fun.nyama.tv.Config(RuntimeEnvironment.getApplication()).setDeviceMode(fun.nyama.tv.Config.MODE_TV);
-        ActivityController<MoviePlayerActivity> lifecycle = Robolectric.buildActivity(MoviePlayerActivity.class, episode(3, 7))
-                .create().start().resume();
-        activities.add(lifecycle);
-        MoviePlayerActivity activity = lifecycle.get();
-        assertNull(url(activity));
-        lifecycle.pause();
-        lifecycle.visible();
-        layoutPlayer(activity);
-        idle();
-        assertNull("A queued layout must not start VOD while the Activity is paused", url(activity));
-        lifecycle.resume();
-        layoutPlayer(activity);
-        idle();
-        assertVapRoute(activity, "/embed/tv/" + SERIES + "/3/7", "en");
+        for (Intent selection : new Intent[] {title("movies", MOVIE), episode(3, 7)}) {
+            ActivityController<MoviePlayerActivity> lifecycle = Robolectric.buildActivity(MoviePlayerActivity.class, selection)
+                    .create();
+            MoviePlayerActivity activity = lifecycle.get();
+            assertNotNull("Navigation must not wait for resume, layout, or a posted runnable", url(activity));
+            assertEquals(0, web(activity).getWidth());
+            assertNoLoadingOverlay(activity);
+            String selected = url(activity);
+            lifecycle.start().resume().visible();
+            activities.add(lifecycle);
+            lifecycle.pause().resume();
+            idle();
+            assertEquals(selected, url(activity));
+        }
     }
 
     @Test public void sameProviderWrongDocumentFinishesWithRetryRatherThanPermanentLoadingCover() throws Exception {
@@ -853,14 +850,14 @@ public class MoviePlayerControlsTest {
         assertNull(Shadows.shadowOf(activity).getNextStartedActivity());
     }
 
-    @Test public void tvCustomFullscreenUsesDarkPosterAndHidesLoadingWithoutNewControls() throws Exception {
+    @Test public void tvCustomFullscreenUsesDarkPosterWithoutNewControls() throws Exception {
         MoviePlayerActivity activity = open(false, episode(2, 3)).get();
         WebView target = web(activity);
         WebChromeClient chrome = Shadows.shadowOf(target).getWebChromeClient();
         assertEquals(Color.BLACK, chrome.getDefaultVideoPoster().getPixel(0, 0));
         chrome.onShowCustomView(new View(activity), () -> {});
         idle();
-        assertEquals(View.GONE, loadingSurface(activity).getVisibility());
+        assertEquals(View.VISIBLE, web(activity).getVisibility());
         assertNoTvPlaybackBar(activity);
     }
 
@@ -884,7 +881,7 @@ public class MoviePlayerControlsTest {
     @Test public void phoneKeepsImmediateLoadingAndDefaultRendererFailureBehavior() throws Exception {
         MoviePlayerActivity activity = open(true, "movies").get();
         WebView target = web(activity);
-        assertNull(loadingSurface(activity));
+
         assertFalse(Shadows.shadowOf(target).getWebViewClient().onRenderProcessGone(target, null));
         assertSame(target, web(activity));
         assertFalse(Shadows.shadowOf(target).wasDestroyCalled());
@@ -892,14 +889,13 @@ public class MoviePlayerControlsTest {
         assertNotNull(controls(activity));
     }
 
-    @Test @Config(sdk = 24) public void android7TvMovieRetainsExactRouteAndRenderAcknowledgement() throws Exception {
+    @Test @Config(sdk = 24) public void android7TvMovieRetainsExactRouteWithoutRenderGate() throws Exception {
         MoviePlayerActivity activity = open(false, "movies").get();
         assertVapRoute(activity, "/embed/movie/" + MOVIE, "en");
         VisualWebView target = captureVisualState(activity);
         Shadows.shadowOf(target).getWebViewClient().onPageCommitVisible(target, url(activity));
-        assertEquals(View.VISIBLE, loadingSurface(activity).getVisibility());
-        target.presentFrame();
-        assertEquals(View.GONE, loadingSurface(activity).getVisibility());
+        assertNull(target.visualCallback);
+        assertNoLoadingOverlay(activity);
         assertNoTvPlaybackBar(activity);
     }
 

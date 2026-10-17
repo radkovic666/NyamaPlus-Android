@@ -44,6 +44,7 @@ import org.json.JSONTokener;
  * controls, touch handling and session state retain their existing behavior.
  */
 public final class MoviePlayerActivity extends Activity {
+    static final String EXTRA_TV_WATCH_STARTED_AT = "tv_watch_started_at";
     static final String EXTRA_RETURN_TO_CATALOG = "return_to_catalog";
     static final String EXTRA_CONFIRMED_TV_EXIT = "confirmed_tv_exit";
     private static final String TAG = "NyamaPlayer";
@@ -80,14 +81,15 @@ public final class MoviePlayerActivity extends Activity {
     private String loadedPlayerUrl = "";
     private String selectedPlaybackHost = PLAYER_HOST;
     private View playbackError;
-    private View tvLoadingSurface;
     private boolean tvForeground;
     private boolean rendererRecoveryUsed;
     private boolean rendererRecoveryPending;
     private long tvSurfaceGeneration;
     private long tvDocumentLoadGeneration = -1;
     private Bitmap tvDefaultVideoPoster;
-    private Runnable pendingTvDocumentLoad;
+    private long tvActivityCreatedAt;
+    private long tvDocumentLoadAt;
+    private long tvWatchStartedAt;
     private TvPlayerProgressBridge episodeProgress;
     private TvSeekQueue tvSeekQueue;
     private WebView tvSeekView;
@@ -108,10 +110,15 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     @Override protected void onCreate(Bundle state) {
+        long createdAt = android.os.SystemClock.elapsedRealtime();
         super.onCreate(state);
         config = new Config(this);
         if (!ActivationAccess.require(this)) return;
         tvMode = !config.isPhoneMode();
+        if (tvMode) {
+            tvActivityCreatedAt = createdAt;
+            tvWatchStartedAt = getIntent().getLongExtra(EXTRA_TV_WATCH_STARTED_AT, createdAt);
+        }
         id = safe(getIntent().getStringExtra("id"));
         type = "series".equals(getIntent().getStringExtra("type")) ? "series" : "movies";
         title = safe(getIntent().getStringExtra("title"));
@@ -133,20 +140,7 @@ public final class MoviePlayerActivity extends Activity {
         webView.setFocusableInTouchMode(true);
         webView.requestFocus();
 
-        if (tvMode) {
-            TextView loading = new TextView(this);
-            loading.setBackgroundColor(Color.BLACK);
-            loading.setTextColor(0xFFB8BDC5);
-            loading.setTextSize(18);
-            loading.setGravity(Gravity.CENTER);
-            loading.setText(tvText("Зареждане…", "Loading…"));
-            loading.setFocusable(false);
-            loading.setClickable(false);
-            loading.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-            tvLoadingSurface = loading;
-            root.addView(loading, new FrameLayout.LayoutParams(-1, -1));
-            tvSurfaceGeneration++;
-        }
+        if (tvMode) tvSurfaceGeneration++;
 
         fullscreenContainer = new FrameLayout(this);
         fullscreenContainer.setBackgroundColor(Color.BLACK);
@@ -260,8 +254,9 @@ public final class MoviePlayerActivity extends Activity {
             @Override public void onPageCommitVisible(WebView v, String url) {
                 super.onPageCommitVisible(v, url);
                 if (tvMode && v == webView && isSelectedMainDocument(url)) {
-                    Log.d(TAG, "TV initialization document_committed");
-                    awaitTvVisualState(v);
+                    Log.d(TAG, "TV initialization document_committed since_load_ms="
+                            + (android.os.SystemClock.elapsedRealtime() - tvDocumentLoadAt)
+                            + " since_watch_ms=" + (android.os.SystemClock.elapsedRealtime() - tvWatchStartedAt));
                 }
             }
 
@@ -317,7 +312,6 @@ public final class MoviePlayerActivity extends Activity {
                 if (tvMode) {
                     // A finished outer wrapper is not evidence that its cross-origin media is ready.
                     Log.d(TAG, "TV initialization document_finished");
-                    awaitTvVisualState(v);
                     suppressTvEdgeFocus();
                     installTvPlaybackAssist();
                     if (episodeProgress != null) episodeProgress.installListener(url);
@@ -358,7 +352,6 @@ public final class MoviePlayerActivity extends Activity {
                 fullscreenContainer.removeAllViews();
                 fullscreenContainer.addView(view, new FrameLayout.LayoutParams(-1, -1));
                 fullscreenContainer.setVisibility(View.VISIBLE);
-                if (tvMode) view.post(() -> markTvSurfaceVisible(configuredView));
                 view.requestFocus();
                 setControlsVisible(false, false);
                 immersive();
@@ -450,45 +443,28 @@ public final class MoviePlayerActivity extends Activity {
         }
     }
 
-    /** Load only after the new TV surface is attached and sized; phone timing stays unchanged. */
+    /** Navigate immediately after configuration; rendering and media readiness never gate startup. */
     private void startSelectedTvDocument() {
         final WebView target = webView;
         final long generation = tvSurfaceGeneration;
         final String selectedUrl = tvRecoveryUrl();
-        if (target == null || selectedUrl.isEmpty()) return;
+        if (target == null || selectedUrl.isEmpty() || tvDocumentLoadGeneration == generation
+                || playbackFailed || leavingPlayback) return;
+        // WebKit injects this origin-scoped object only on navigations after registration.
+        // Register synchronously; never wait for progress events or JS listener readiness.
         if ("series".equals(type) && TvPlaybackSource.HOST.equals(selectedPlaybackHost)) {
             episodeProgress = TvPlayerProgressBridge.attach(target, new TvEpisodeProgressStore(this), id,
                     getIntent().getIntExtra("season", -1), getIntent().getIntExtra("episode", -1));
         }
-        Runnable load = () -> {
-            if (target != webView || generation != tvSurfaceGeneration || tvDocumentLoadGeneration == generation
-                    || playbackFailed || leavingPlayback) return;
-            if (!tvForeground || !target.isAttachedToWindow() || target.getWidth() <= 0 || target.getHeight() <= 0) return;
-            pendingTvDocumentLoad = null;
-            tvDocumentLoadGeneration = generation;
-            // pauseTimers() is global: a replacement within the same resumed Activity otherwise
-            // never receives another Activity.onResume(), leaving provider scripts suspended.
-            target.onResume();
-            target.resumeTimers();
-            Log.d(TAG, "TV initialization document_load recovery=" + (rendererRecoveryUsed ? 1 : 0));
-            target.loadUrl(selectedUrl);
-        };
-        pendingTvDocumentLoad = load;
-        if (target.isAttachedToWindow() && target.getWidth() > 0 && target.getHeight() > 0) {
-            target.post(load);
-        } else {
-            target.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
-                @Override public void onLayoutChange(View v, int left, int top, int right, int bottom,
-                        int oldLeft, int oldTop, int oldRight, int oldBottom) {
-                    if (target != webView || generation != tvSurfaceGeneration) {
-                        target.removeOnLayoutChangeListener(this);
-                    } else if (target.isAttachedToWindow() && right > left && bottom > top) {
-                        target.removeOnLayoutChangeListener(this);
-                        target.post(load);
-                    }
-                }
-            });
-        }
+        tvDocumentLoadGeneration = generation;
+        // A replacement in a resumed Activity must resume the globally paused WebView timers.
+        target.onResume();
+        target.resumeTimers();
+        tvDocumentLoadAt = android.os.SystemClock.elapsedRealtime();
+        Log.d(TAG, "TV initialization document_load since_activity_ms="
+                + (tvDocumentLoadAt - tvActivityCreatedAt)
+                + " since_watch_ms=" + (tvDocumentLoadAt - tvWatchStartedAt) + " recovery=" + (rendererRecoveryUsed ? 1 : 0));
+        target.loadUrl(selectedUrl);
     }
 
     private String tvRecoveryUrl() {
@@ -514,33 +490,6 @@ public final class MoviePlayerActivity extends Activity {
                 && expected.getPath().equals(actual.getPath());
     }
 
-    private void awaitTvVisualState(WebView target) {
-        if (target != webView || playbackFailed || leavingPlayback) return;
-        final long generation = tvSurfaceGeneration;
-        // This checks WebView render submission, never pixel brightness, elapsed loading time or
-        // a cross-origin document's DOM. It does not claim the provider's media has started.
-        try {
-            target.postVisualStateCallback(generation, new WebView.VisualStateCallback() {
-                @Override public void onComplete(long requestId) {
-                    if (requestId == tvSurfaceGeneration) markTvSurfaceVisible(target);
-                }
-            });
-        } catch (RuntimeException | LinkageError unsupportedRenderCallback) {
-            // Some old vendor WebViews cannot provide this acknowledgement. Their valid
-            // document-commit/finish signal still exposes the provider instead of a permanent mask.
-            Log.w(TAG, "TV initialization visual_callback_unavailable");
-            markTvSurfaceVisible(target);
-        }
-    }
-
-    private void markTvSurfaceVisible(WebView target) {
-        if (target != webView || playbackFailed || leavingPlayback) return;
-        if (tvLoadingSurface != null && tvLoadingSurface.getVisibility() != View.GONE) {
-            tvLoadingSurface.setVisibility(View.GONE);
-            Log.d(TAG, "TV initialization surface_presented");
-        }
-    }
-
     private void handleTvRendererLoss(WebView failed) {
         Log.w(TAG, "TV initialization renderer_gone recovery=" + (rendererRecoveryUsed ? 1 : 0));
         closeTvSeekQueue();
@@ -561,7 +510,6 @@ public final class MoviePlayerActivity extends Activity {
             episodeProgress.close();
             episodeProgress = null;
         }
-        pendingTvDocumentLoad = null;
         // Android requires discarding a dead renderer. Do not run JavaScript, stopLoading(),
         // about:blank navigation or pauseTimers() against its unusable WebView.
         webView = null;
@@ -1240,7 +1188,6 @@ public final class MoviePlayerActivity extends Activity {
             webView.resumeTimers();
         }
         if (tvMode && rendererRecoveryPending) recoverTvRenderer();
-        else if (tvMode && pendingTvDocumentLoad != null && webView != null) webView.post(pendingTvDocumentLoad);
     }
 
     @SuppressWarnings("deprecation")
@@ -1276,7 +1223,6 @@ public final class MoviePlayerActivity extends Activity {
 
     private void releaseMovieWebView() {
         if (tvMode) {
-            pendingTvDocumentLoad = null;
             closeTvSeekQueue();
         }
         if (episodeProgress != null) {

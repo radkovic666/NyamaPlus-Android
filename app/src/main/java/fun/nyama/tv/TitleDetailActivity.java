@@ -404,6 +404,7 @@ public final class TitleDetailActivity extends Activity {
         i.putExtra("id", id); i.putExtra("type", section); i.putExtra("title", title);
         if (!config.isPhoneMode()) {
             i.putExtra(MoviePlayerActivity.EXTRA_RETURN_TO_CATALOG, true).putExtra("origin_section", section);
+            i.putExtra(MoviePlayerActivity.EXTRA_TV_WATCH_STARTED_AT, android.os.SystemClock.elapsedRealtime());
             startActivityForResult(i, TV_MOVIE_PLAYBACK_REQUEST);
         } else startActivity(i);
     }
@@ -418,7 +419,8 @@ public final class TitleDetailActivity extends Activity {
                 .putExtra("id", id).putExtra("type", section).putExtra("title", title)
                 .putExtra("series_imdb_id", id).putExtra("season", episode.season)
                 .putExtra("episode", episode.number).putExtra("return_to_series", true)
-                .putExtra("origin_section", section));
+                .putExtra("origin_section", section)
+                .putExtra(MoviePlayerActivity.EXTRA_TV_WATCH_STARTED_AT, android.os.SystemClock.elapsedRealtime()));
     }
 
     private void openMetadataSource(String value) {
