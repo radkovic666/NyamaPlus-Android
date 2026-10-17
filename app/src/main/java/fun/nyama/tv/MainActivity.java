@@ -6,6 +6,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.net.ConnectivityManager;
+import android.net.Network;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -49,15 +51,27 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @OptIn(markerClass = UnstableApi.class)
 public final class MainActivity extends Activity implements ChannelBrowserOverlay.Listener, EpgGuideOverlay.Listener {
     public static final String EXTRA_EMBEDDED_IN_NYAMA_PLUS = "nyama_plus_embedded";
+    public static final String EXTRA_RETURN_FROM_ON_DEMAND = "return_from_on_demand";
+    private boolean returnFromOnDemand;
+    private String loadedPlaylistUrl = "";
     private static WeakReference<MainActivity> activeInstance = new WeakReference<>(null);
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private final ExecutorService io = Executors.newFixedThreadPool(2);
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private ScheduledFuture<?> refreshTask;
+    private ScheduledFuture<?> playlistRetryTask;
+    private final AtomicBoolean playlistRefreshInFlight = new AtomicBoolean(false);
+    private volatile boolean hasUsablePlaylist = false;
+    private volatile boolean resumed = false;
+    private int startupRetryAttempt = 0;
+    private ConnectivityManager connectivityManager;
+    private ConnectivityManager.NetworkCallback networkCallback;
+    private static final long[] STARTUP_RETRY_DELAYS_MS = {3_000L, 10_000L, 30_000L, 60_000L};
     // A new MainActivity instance represents a fresh app start. The cached playlist may
     // be used immediately for fast startup, but exactly one forced network refresh is
     // requested before this instance settles into the normal 30-minute refresh cycle.
@@ -144,7 +158,11 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         super.onCreate(state);
         activeInstance = new WeakReference<>(this);
         config = new Config(this);
+        returnFromOnDemand = getIntent().getBooleanExtra(EXTRA_RETURN_FROM_ON_DEMAND, false);
         AutoStartManager.cancelDelayedLaunches(this);
+        suppressNextUserLeaveHint = true;
+        if (!ActivationAccess.require(this)) return;
+        suppressNextUserLeaveHint = false;
         if (!config.isPhoneMode()) setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
         compactUi = config.isPhoneMode();
         accent = UiTheme.accent(this);
@@ -154,10 +172,15 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
 
         buildUi();
         initPlayer();
+        registerNetworkCallback();
     }
 
     @Override protected void onResume() {
         super.onResume();
+        if (isFinishing()) return;
+        suppressNextUserLeaveHint = true;
+        if (!ActivationAccess.require(this)) return;
+        resumed = true;
         suppressNextUserLeaveHint = false;
         immersive();
 
@@ -171,14 +194,30 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
             startActivity(new Intent(this, AdminSettingsActivity.class));
             return;
         }
-        boolean forceStartupPlaylistRefresh = startupPlaylistRefreshPending;
+        boolean returning = returnFromOnDemand;
+        returnFromOnDemand = false;
+        boolean forceStartupPlaylistRefresh = startupPlaylistRefreshPending && !returning;
         startupPlaylistRefreshPending = false;
-        loadAndRefresh(forceStartupPlaylistRefresh);
+        if (!returning || !resumeLoadedLiveChannel()) loadAndRefresh(forceStartupPlaylistRefresh);
         startForegroundRefreshLoop();
         main.removeCallbacks(updateClock);
         main.post(updateClock);
         main.removeCallbacks(usageCheckpoint);
         main.post(usageCheckpoint);
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        returnFromOnDemand = intent.getBooleanExtra(EXTRA_RETURN_FROM_ON_DEMAND, false);
+    }
+
+    private boolean resumeLoadedLiveChannel() {
+        if (!ActivationAccess.playbackAllowed(this) || player == null || player.getMediaItemCount() == 0
+                || !loadedPlaylistUrl.equals(config.playlistUrl())) return false;
+        if (player.getPlaybackState() == Player.STATE_IDLE) player.prepare();
+        player.setPlayWhenReady(true);
+        return true;
     }
 
     @Override protected void onUserLeaveHint() {
@@ -197,6 +236,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
 
     @Override protected void onPause() {
         super.onPause();
+        resumed = false;
         if (refreshTask != null) refreshTask.cancel(false);
         refreshTask = null;
         main.removeCallbacks(updateClock);
@@ -214,6 +254,10 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         if (active == this) activeInstance.clear();
         super.onDestroy();
         if (player != null) player.release();
+        if (connectivityManager != null && networkCallback != null) {
+            try { connectivityManager.unregisterNetworkCallback(networkCallback); }
+            catch (RuntimeException ignored) {}
+        }
         io.shutdownNow();
         scheduler.shutdownNow();
     }
@@ -388,6 +432,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
             }
 
             @Override public void onPlayerError(PlaybackException error) {
+                NetworkDiagnostics.logFailure(MainActivity.this, "Media3 channel playback", error);
                 long generation = playGeneration;
                 buffering.setVisibility(View.GONE);
                 showStatus(getString(R.string.stream_retrying), 3500);
@@ -404,28 +449,31 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     private void loadAndRefresh(boolean forcePlaylistRefresh) {
         io.execute(() -> {
             List<Channel> cached = Collections.emptyList();
-            try { cached = PlaylistRepository.loadCached(this); } catch (Exception ignored) {}
+            try { cached = PlaylistRepository.loadCached(this); }
+            catch (Exception e) { NetworkDiagnostics.logFailure(this, "cached playlist startup", e); }
             if (!cached.isEmpty()) {
+                hasUsablePlaylist = true;
                 List<Channel> finalCached = cached;
                 main.post(() -> applyChannels(finalCached, false));
+            }
+
+            long age = System.currentTimeMillis() - config.playlistLastRefresh();
+            // Start playlist I/O before any EPG parsing. A slow or corrupt guide must
+            // never delay cached playback or the first attempt to obtain channels.
+            if (forcePlaylistRefresh || cached.isEmpty() || config.playlistLastRefresh() == 0L
+                    || age >= Config.PLAYLIST_REFRESH_MS) {
+                refreshPlaylistNow();
             }
 
             boolean epgParseFailed = false;
             if (EpgRepository.cacheFile(this).exists()) {
                 try { EpgRepository.parseRelevant(this); }
-                catch (Exception ignored) { epgParseFailed = true; }
+                catch (Exception e) {
+                    epgParseFailed = true;
+                    NetworkDiagnostics.logFailure(this, "cached EPG parse", e);
+                }
             }
             main.post(() -> browser.refreshEpg());
-
-            long age = System.currentTimeMillis() - config.playlistLastRefresh();
-            // Always refresh once on a fresh app start so additions/removals on the
-            // server are visible immediately. The cached list above remains a safe
-            // fallback if the network request fails. Subsequent foreground resumes
-            // keep the normal 30-minute freshness rule.
-            if (forcePlaylistRefresh || cached.isEmpty() || config.playlistLastRefresh() == 0L
-                    || age >= Config.PLAYLIST_REFRESH_MS) {
-                refreshPlaylistNow();
-            }
 
             // The XMLTV file is a persistent cache. Do not download it on every app start.
             // Refresh only when missing, unreadable, explicitly changed, or 24 hours old.
@@ -444,12 +492,21 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     }
 
     private void refreshPlaylistNow() {
+        if (!playlistRefreshInFlight.compareAndSet(false, true)) return;
         io.execute(() -> {
             try {
                 List<Channel> fresh = PlaylistRepository.refresh(this);
+                if (fresh.isEmpty()) throw new IllegalStateException("Playlist URL is not configured or returned no channels");
+                hasUsablePlaylist = true;
+                startupRetryAttempt = 0;
+                cancelPlaylistRetry();
                 main.post(() -> applyChannels(fresh, true));
             } catch (Exception e) {
+                NetworkDiagnostics.logFailure(this, "playlist refresh", e);
                 main.post(() -> showStatus(getString(R.string.playlist_refresh_failed), 3500));
+                if (!hasUsablePlaylist) scheduleStartupPlaylistRetry();
+            } finally {
+                playlistRefreshInFlight.set(false);
             }
         });
     }
@@ -463,9 +520,50 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
                     showCurrentInfoBriefly();
                 });
             } catch (Exception e) {
+                NetworkDiagnostics.logFailure(this, "EPG refresh", e);
                 main.post(() -> showStatus(getString(R.string.epg_refresh_failed), 3500));
             }
         });
+    }
+
+    private synchronized void scheduleStartupPlaylistRetry() {
+        if (hasUsablePlaylist || scheduler.isShutdown()) return;
+        if (playlistRetryTask != null && !playlistRetryTask.isDone()) return;
+        int index = Math.min(startupRetryAttempt, STARTUP_RETRY_DELAYS_MS.length - 1);
+        long delay = STARTUP_RETRY_DELAYS_MS[index];
+        startupRetryAttempt++;
+        NetworkDiagnostics.logInfo("Scheduling playlist startup retry in " + delay
+                + "ms; attempt=" + startupRetryAttempt + "; " + NetworkDiagnostics.networkSummary(this));
+        playlistRetryTask = scheduler.schedule(() -> {
+            synchronized (MainActivity.this) { playlistRetryTask = null; }
+            if (resumed && config.isConfigured() && !hasUsablePlaylist) refreshPlaylistNow();
+        }, delay, TimeUnit.MILLISECONDS);
+    }
+
+    private synchronized void cancelPlaylistRetry() {
+        if (playlistRetryTask != null) playlistRetryTask.cancel(false);
+        playlistRetryTask = null;
+    }
+
+    private void registerNetworkCallback() {
+        connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (connectivityManager == null) return;
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override public void onAvailable(Network network) {
+                NetworkDiagnostics.logInfo("Network became available; "
+                        + NetworkDiagnostics.networkSummary(MainActivity.this));
+                if (resumed && config.isConfigured() && !hasUsablePlaylist) {
+                    cancelPlaylistRetry();
+                    refreshPlaylistNow();
+                }
+            }
+        };
+        try {
+            connectivityManager.registerDefaultNetworkCallback(networkCallback);
+        } catch (RuntimeException e) {
+            NetworkDiagnostics.logFailure(this, "network callback registration", e);
+            networkCallback = null;
+        }
     }
 
     private void applyChannels(List<Channel> fresh, boolean fromRefresh) {
@@ -494,6 +592,8 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     }
 
     private void playChannel(int index, boolean refreshed) {
+        if (!ActivationAccess.playbackAllowed(this)) return;
+        loadedPlaylistUrl = config.playlistUrl();
         cancelExitPrompt();
         if (channels.isEmpty()) return;
         if (index < 0) index = channels.size() - 1;
@@ -686,6 +786,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     public static void resumePlaybackAfterOnDemand() {
         MainActivity activity = activeInstance.get();
         if (activity == null || activity.isFinishing()) return;
+        if (!ActivationAccess.playbackAllowed(activity)) return;
         activity.runOnUiThread(() -> {
             if (activity.player != null && activity.player.getMediaItemCount() > 0) {
                 activity.player.setPlayWhenReady(true);

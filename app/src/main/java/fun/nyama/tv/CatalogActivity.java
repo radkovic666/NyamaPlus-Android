@@ -19,6 +19,7 @@ import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.animation.DecelerateInterpolator;
 import android.view.View;
 import android.view.ViewGroup;
@@ -89,8 +90,10 @@ public final class CatalogActivity extends Activity {
     private final ArrayList<CatalogItem> tvInitialVisiblePage = new ArrayList<>();
     private boolean tvCatalogReady;
     private int tvWarmGeneration = -1;
-    private int tvDataGeneration;
-    private int tvSearchGeneration;
+    private volatile int tvDataGeneration;
+    private volatile int tvSearchGeneration;
+    private int tvPageGeneration;
+    private TvCinematicBackground cinematicBackground;
     private String tvDataKey = "";
     private boolean focusFirstAfterPageChange;
 
@@ -114,6 +117,7 @@ public final class CatalogActivity extends Activity {
         config = new Config(this);
         favorites = new MovieFavorites(this);
         section = "series".equals(getIntent().getStringExtra(EXTRA_SECTION)) ? "series" : "movies";
+        if (!ActivationAccess.require(this)) return;
         if (state != null) restoreState(state);
         else restorePersistentState();
         setContentView(buildUi());
@@ -123,12 +127,35 @@ public final class CatalogActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        if (isFinishing() || !ActivationAccess.require(this)) return;
         if (firstResume) { firstResume = false; return; }
         if (favoritesOnly) loadPage();
     }
 
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (config == null || config.isPhoneMode()) return;
+        String target = "series".equals(intent.getStringExtra(EXTRA_SECTION)) ? "series" : "movies";
+        if (!target.equals(section)) {
+            openSection(target);
+            return;
+        }
+        // CLEAR_TOP | SINGLE_TOP from TV movie playback reveals this same catalogue.
+        // Keep its live adapter, query, filters and page rather than fetching them again.
+        setIntent(intent);
+        if (grid != null && grid.getCount() > 0) {
+            final int position = Math.max(0, Math.min(grid.getCount() - 1,
+                    restorePosition >= 0 ? restorePosition : grid.getSelectedItemPosition()));
+            grid.post(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                grid.setSelection(position);
+                grid.requestFocus();
+            });
+        }
+    }
+
     @Override protected void onPause() {
-        savePersistentState();
+        if (grid != null) savePersistentState();
         super.onPause();
     }
 
@@ -137,6 +164,9 @@ public final class CatalogActivity extends Activity {
         main.removeCallbacks(liveSearch);
         io.shutdownNow();
         if (sidebarAnimator != null) sidebarAnimator.cancel();
+        tvDataGeneration++;
+        tvSearchGeneration++;
+        if (cinematicBackground != null) cinematicBackground.release();
         super.onDestroy();
     }
 
@@ -212,17 +242,19 @@ public final class CatalogActivity extends Activity {
                 });
         sidebarExpanded = phone;
         if (!phone) sidebar.setExpanded(false, false);
-        shell.addView(sidebar, new LinearLayout.LayoutParams(dp(phone ? 112 : SIDEBAR_COLLAPSED_DP), -1));
+        int sidebarWidthDp = phone ? sidebar.recommendedMobileLandscapeWidthDp() : SIDEBAR_COLLAPSED_DP;
+        shell.addView(sidebar, new LinearLayout.LayoutParams(dp(sidebarWidthDp), -1));
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(0xD90A0C0F);
-        root.setPadding(dp(phone ? 10 : 16), dp(phone ? 8 : 10), dp(phone ? 10 : 16), dp(8));
+        root.setBackgroundColor(!phone ? 0x770A0C0F : 0xD90A0C0F);
+        root.setPadding(dp(phone ? 10 : 20), dp(phone ? 8 : 12), dp(phone ? 10 : 20), dp(8));
         shell.addView(root, new LinearLayout.LayoutParams(0, -1, 1f));
 
         LinearLayout header = horizontal();
         TextView title = text(section.equals("series") ? getString(R.string.home_series) : getString(R.string.home_movies),
-                phone ? 24 : 31, Color.WHITE, true);
+                phone ? 24 : 32, Color.WHITE, true);
+        if (!phone) title.setLetterSpacing(0.015f);
         header.addView(title, new LinearLayout.LayoutParams(0, dp(phone ? 46 : 48), 1f));
         root.addView(header, new LinearLayout.LayoutParams(-1, dp(phone ? 46 : 48)));
 
@@ -235,13 +267,15 @@ public final class CatalogActivity extends Activity {
         search.setHint(getString(section.equals("series") ? R.string.search_series : R.string.search_movies));
         search.setText(restoredQuery);
         search.setTextColor(Color.WHITE);
-        search.setHintTextColor(0xFF707A86);
+        search.setHintTextColor(phone ? 0xFF707A86 : 0xFF9DAABA);
         search.setTextSize(UiTheme.sp(this, phone ? 15 : 16));
         // TV reserves room for the clear-X which is visually inside the search field.
         search.setPadding(dp(14), 0, dp(phone ? 14 : 52), 0);
-        search.setBackground(panelBackground(0xDD151A20, 0xFF2A3139, 1));
+        search.setBackground(panelBackground(phone ? 0xDD151A20 : 0xE0141D29,
+                phone ? 0xFF2A3139 : 0xFF3B4859, 1));
         search.setOnFocusChangeListener((v, focused) -> {
-            search.setBackground(panelBackground(0xDD151A20, focused ? accent : 0xFF2A3139, focused ? 2 : 1));
+            search.setBackground(panelBackground(phone ? 0xDD151A20 : 0xE0141D29,
+                    focused ? accent : (phone ? 0xFF2A3139 : 0xFF3B4859), focused ? 2 : 1));
             if (focused && !phone) setCatalogSidebarExpanded(false, true);
         });
         search.setOnEditorActionListener((v, actionId, event) -> {
@@ -253,7 +287,8 @@ public final class CatalogActivity extends Activity {
         search.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
-                if (searchClearButton != null) searchClearButton.setVisibility(s.length() == 0 ? View.GONE : View.VISIBLE);
+                if (searchClearButton != null) searchClearButton.setVisibility(phone && s.length() == 0 ? View.GONE : View.VISIBLE);
+                if (!phone) tvSearchGeneration++;
                 main.removeCallbacks(liveSearch);
                 main.postDelayed(liveSearch, phone ? 320L : 120L);
             }
@@ -283,15 +318,8 @@ public final class CatalogActivity extends Activity {
             searchClearButton.setClickable(true);
             searchClearButton.setBackground(panelBackground(0x00151A20, 0x002A3139, 0));
             searchClearButton.setContentDescription(getString(R.string.clear_search));
-            searchClearButton.setVisibility(search.length() == 0 ? View.GONE : View.VISIBLE);
-            searchClearButton.setOnClickListener(v -> {
-                search.setText("");
-                main.removeCallbacks(liveSearch);
-                page = 1;
-                restorePosition = 0;
-                search.requestFocus();
-                if (phone) loadPage(); else handleSearchChanged();
-            });
+            searchClearButton.setVisibility(View.VISIBLE);
+            searchClearButton.setOnClickListener(v -> resetTvCatalog());
             searchClearButton.setOnFocusChangeListener((v, focused) -> {
                 searchClearButton.setTextColor(focused ? Color.WHITE : 0xFFD7DDE5);
                 searchClearButton.setBackground(panelBackground(
@@ -308,7 +336,8 @@ public final class CatalogActivity extends Activity {
         filterButton = new ImageButton(this);
         filterButton.setId(View.generateViewId());
         filterButton.setImageResource(R.drawable.ic_filter_list);
-        filterButton.setBackground(panelBackground(0xDD151A20, 0xFF2A3139, 1));
+        filterButton.setBackground(panelBackground(phone ? 0xDD151A20 : 0xE0141D29,
+                phone ? 0xFF2A3139 : 0xFF3B4859, 1));
         filterButton.setColorFilter(Color.WHITE);
         filterButton.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
         filterButton.setPadding(dp(12), dp(12), dp(12), dp(12));
@@ -317,8 +346,9 @@ public final class CatalogActivity extends Activity {
         filterButton.setContentDescription(getString(R.string.filters));
         filterButton.setOnClickListener(v -> showFilters());
         filterButton.setOnFocusChangeListener((v, focused) -> {
-            int fill = focused ? ((accent & 0x00FFFFFF) | 0x33000000) : 0xDD151A20;
-            filterButton.setBackground(panelBackground(fill, focused ? accent : 0xFF2A3139, focused ? 2 : 1));
+            int fill = focused ? ((accent & 0x00FFFFFF) | 0x33000000) : (phone ? 0xDD151A20 : 0xE0141D29);
+            filterButton.setBackground(panelBackground(fill,
+                    focused ? accent : (phone ? 0xFF2A3139 : 0xFF3B4859), focused ? 2 : 1));
             if (focused && !phone) setCatalogSidebarExpanded(false, true);
             updateFilterIndicator();
         });
@@ -338,7 +368,7 @@ public final class CatalogActivity extends Activity {
         root.addView(controls, controlsParams);
 
         LinearLayout statusRow = horizontal();
-        status = text(getString(R.string.loading), 12, 0xFF9CA6B1, false);
+        status = text(getString(R.string.loading), phone ? 12 : 13, phone ? 0xFF9CA6B1 : 0xFFC2CCDA, false);
         statusRow.addView(status, new LinearLayout.LayoutParams(0, dp(26), 1f));
         loading = new ProgressBar(this);
         loading.setIndeterminate(true);
@@ -346,25 +376,35 @@ public final class CatalogActivity extends Activity {
         root.addView(statusRow, new LinearLayout.LayoutParams(-1, dp(28)));
 
         grid = new GridView(this);
-        catalogColumns = phone ? calculateColumns(145, 2, 112) : calculateColumns(132, 4, SIDEBAR_COLLAPSED_DP);
+        catalogColumns = phone ? calculateColumns(145, 2, sidebarWidthDp) : calculateColumns(132, 4, SIDEBAR_COLLAPSED_DP);
         if (!phone) catalogColumns = Math.min(6, Math.max(4, catalogColumns));
         if (phone && getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE) catalogColumns = Math.max(catalogColumns, 3);
         grid.setNumColumns(catalogColumns);
-        grid.setHorizontalSpacing(dp(phone ? 8 : 8));
-        grid.setVerticalSpacing(dp(phone ? 9 : 8));
-        grid.setPadding(dp(2), dp(4), dp(2), dp(6));
+        grid.setHorizontalSpacing(dp(phone ? 8 : 12));
+        grid.setVerticalSpacing(dp(phone ? 9 : 12));
+        grid.setPadding(dp(phone ? 2 : 8), dp(phone ? 4 : 8), dp(phone ? 2 : 8), dp(phone ? 6 : 10));
         grid.setClipToPadding(false);
         grid.setClipChildren(false);
-        grid.setSelector(new ColorDrawable((accent & 0x00FFFFFF) | 0x55000000));
+        // TV cards draw their own exact accent background and contrasting focus outline.
+        grid.setSelector(new ColorDrawable(phone ? (accent & 0x00FFFFFF) | 0x55000000 : Color.TRANSPARENT));
         adapter = new CatalogAdapter(this);
         grid.setAdapter(adapter);
         grid.setOnFocusChangeListener((v, focused) -> {
             if (focused && !phone) setCatalogSidebarExpanded(false, true);
+            if (!phone) updateTvCardHighlights();
         });
         grid.setOnItemClickListener((parent, view, position, id) -> openDetail(adapter.getItem(position)));
         grid.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             private View previous;
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (!phone) {
+                    if (previous != null && previous != view) updateTvCardAppearance(previous);
+                    updateTvCardHighlights();
+                    if (view != null) updateTvCardAppearance(view);
+                    previous = view;
+                    showCatalogArtwork(adapter.getItem(position));
+                    return;
+                }
                 if (previous != null && previous != view) {
                     previous.animate().scaleX(1f).scaleY(1f).setDuration(110L).start();
                     if (android.os.Build.VERSION.SDK_INT >= 21) previous.setElevation(0f);
@@ -376,6 +416,12 @@ public final class CatalogActivity extends Activity {
                 previous = view;
             }
             @Override public void onNothingSelected(AdapterView<?> parent) {
+                if (!phone) {
+                    if (previous != null) updateTvCardAppearance(previous);
+                    previous = null;
+                    updateTvCardHighlights();
+                    return;
+                }
                 if (previous != null) {
                     previous.animate().scaleX(1f).scaleY(1f).setDuration(110L).start();
                     if (android.os.Build.VERSION.SDK_INT >= 21) previous.setElevation(0f);
@@ -400,7 +446,66 @@ public final class CatalogActivity extends Activity {
         if (!phone) {
             grid.post(() -> { if (grid.getCount() > 0) grid.requestFocus(); else search.requestFocus(); });
         }
+        if (!phone) {
+            // Artwork is a visual layer only: browsing must never acquire audio focus or touch TV playback.
+            FrameLayout cinematicShell = new FrameLayout(this);
+            cinematicBackground = new TvCinematicBackground(this);
+            cinematicShell.addView(cinematicBackground, new FrameLayout.LayoutParams(-1, -1));
+            cinematicShell.addView(shell, new FrameLayout.LayoutParams(-1, -1));
+            return cinematicShell;
+        }
         return shell;
+    }
+
+    private void showCatalogArtwork(CatalogItem item) {
+        if (cinematicBackground == null || config.isPhoneMode()) return;
+        if (item == null || item.id.isEmpty()) cinematicBackground.showFallback();
+        else cinematicBackground.show(PukankiApi.posterUrl(this, item.id), true);
+    }
+
+    /** TV's X resets the current VOD section, without touching the TV playlist or phone search. */
+    private void resetTvCatalog() {
+        if (config.isPhoneMode()) return;
+        // Invalidate local search results even if a worker has already queued its UI callback.
+        tvSearchGeneration++;
+        main.removeCallbacks(liveSearch);
+        search.setText("");
+        main.removeCallbacks(liveSearch);
+        restoredQuery = "";
+        selectedGenres.clear();
+        favoritesOnly = false;
+        sortMode = "reviews";
+        page = 1;
+        restorePosition = 0;
+        focusFirstAfterPageChange = true;
+        updateFilterIndicator();
+        savePersistentState();
+        loadTvPage();
+    }
+
+    private void updateTvCardHighlights() {
+        if (grid == null || config.isPhoneMode()) return;
+        for (int i = 0; i < grid.getChildCount(); i++) updateTvCardAppearance(grid.getChildAt(i));
+    }
+
+    private void updateTvCardAppearance(View card) {
+        if (config.isPhoneMode() || !(card.getTag() instanceof Holder)) return;
+        Holder h = (Holder) card.getTag();
+        boolean focused = grid != null && grid.hasFocus() && h.position == grid.getSelectedItemPosition();
+        boolean highlighted = focused || h.hovered;
+        int accent = UiTheme.accent(this);
+        int foreground = UiTheme.contrastingTextColor(accent);
+        card.setBackground(panelBackground(highlighted ? accent : 0xFF11161C,
+                highlighted ? foreground : 0xFF242C35, highlighted ? 2 : 1));
+        h.title.setTextColor(highlighted ? foreground : Color.WHITE);
+        h.meta.setTextColor(highlighted ? foreground : 0xFF9CA6B1);
+        // Keep the poster image and its dark matte intact; focus is around the whole card.
+        if (h.highlighted != highlighted) {
+            float scale = highlighted ? 1.025f : 1f;
+            card.animate().scaleX(scale).scaleY(scale).setDuration(120L).start();
+            card.setElevation(highlighted ? dp(10) : 0f);
+            h.highlighted = highlighted;
+        }
     }
 
     private void setCatalogSidebarExpanded(boolean expanded, boolean animate) {
@@ -640,28 +745,33 @@ public final class CatalogActivity extends Activity {
             loadPage();
             return;
         }
-        // TV search is local. Never show the loading spinner and never refetch catalogue JSON
-        // simply because the user typed another character.
+        final int searchGeneration = ++tvSearchGeneration;
+        final int dataGeneration = tvDataGeneration;
+        final String query = currentQuery();
+        // TV search is local. A complete validated catalogue needs no network round trip.
         if (tvCatalogReady) {
-            applyTvLocalPage(tvVisibleCatalog, currentQuery());
+            applyTvLocalPage(tvVisibleCatalog, query);
             return;
         }
         List<CatalogItem> rawSnapshot;
         synchronized (tvRawCatalog) { rawSnapshot = new ArrayList<>(tvRawCatalog); }
-        if (!rawSnapshot.isEmpty()) {
-            if (currentQuery().isEmpty()) return;
-            List<CatalogItem> matches = PukankiApi.filterLocal(rawSnapshot, currentQuery());
-            final int generation = ++tvSearchGeneration;
+        if (!rawSnapshot.isEmpty() && !query.isEmpty()) {
+            List<CatalogItem> matches = PukankiApi.filterLocal(rawSnapshot, query);
             io.execute(() -> {
+                if (!isTvRequestCurrent(dataGeneration) || searchGeneration != tvSearchGeneration) return;
                 List<CatalogItem> visible = PukankiApi.validateTvPostersFast(this, matches);
-                if (generation != tvSearchGeneration || isFinishing()) return;
-                runOnUiThread(() -> applyTvLocalPage(visible, ""));
+                runOnUiThread(() -> {
+                    if (!isTvRequestCurrent(dataGeneration) || searchGeneration != tvSearchGeneration) return;
+                    applyTvLocalPage(visible, "");
+                });
             });
             return;
         }
-        // Raw catalogue is still warming: filter the stable first page rather than repeatedly
-        // filtering an already-filtered adapter when the user types/backspaces.
-        applyTvLocalPage(tvInitialVisiblePage.isEmpty() ? adapter.snapshot() : tvInitialVisiblePage, currentQuery());
+        // Clearing a search during warm-up must restore the stable first page immediately,
+        // rather than retaining an old filtered/empty adapter until the full poster sweep finishes.
+        if (!tvInitialVisiblePage.isEmpty()) applyTvLocalPage(tvInitialVisiblePage, query);
+        else if (!rawSnapshot.isEmpty()) loadTvPage();
+        else applyTvLocalPage(adapter.snapshot(), query);
     }
 
     private String currentQuery() {
@@ -698,40 +808,71 @@ public final class CatalogActivity extends Activity {
         });
     }
 
+    /** Immutable state prevents an old filter request from being cached under new filter values. */
+    private static final class TvCatalogRequest {
+        final String section;
+        final List<String> genres;
+        final String sort;
+        final boolean favoritesOnly;
+        final String favoriteIds;
+        final int page;
+        final String key;
+
+        TvCatalogRequest(String section, List<String> genres, String sort, boolean favoritesOnly,
+                         String favoriteIds, int page) {
+            this.section = section;
+            this.genres = new ArrayList<>(genres);
+            this.sort = sort;
+            this.favoritesOnly = favoritesOnly;
+            this.favoriteIds = favoriteIds;
+            this.page = page;
+            StringBuilder keyBuilder = new StringBuilder(section).append('|').append(sort).append('|')
+                    .append(favoritesOnly).append('|').append(favoriteIds);
+            for (String genre : this.genres) keyBuilder.append('|').append(genre);
+            key = keyBuilder.toString();
+        }
+    }
+
+    private boolean isTvRequestCurrent(int generation) {
+        return generation == tvDataGeneration && !isFinishing() && !isDestroyed();
+    }
+
     private void loadTvPage() {
-        final List<String> genres = new ArrayList<>(selectedGenres);
-        final String favIds = favorites.csv();
-        StringBuilder keyBuilder = new StringBuilder(section).append('|').append(sortMode).append('|')
-                .append(favoritesOnly).append('|').append(favIds);
-        for (String g : genres) keyBuilder.append('|').append(g);
-        String newDataKey = keyBuilder.toString();
-        if (!newDataKey.equals(tvDataKey)) {
-            tvDataKey = newDataKey;
-            tvRawCatalog.clear();
+        final TvCatalogRequest request = new TvCatalogRequest(section, selectedGenres, sortMode,
+                favoritesOnly, favorites.csv(), page);
+        final boolean dataChanged = !request.key.equals(tvDataKey);
+        if (dataChanged) {
+            tvDataKey = request.key;
+            synchronized (tvRawCatalog) { tvRawCatalog.clear(); }
             tvVisibleCatalog.clear();
             tvInitialVisiblePage.clear();
             tvCatalogReady = false;
             tvDataGeneration++;
+            tvSearchGeneration++;
         }
         final int dataGeneration = tvDataGeneration;
+        final int pageGeneration = ++tvPageGeneration;
 
-        List<CatalogItem> cached = PukankiApi.getCachedVisibleTvCatalog(this, section, genres, sortMode, favoritesOnly, favIds);
+        if (tvCatalogReady) {
+            applyTvLocalPage(tvVisibleCatalog, currentQuery());
+            return;
+        }
+        List<CatalogItem> cached = PukankiApi.getCachedVisibleTvCatalog(this, request.section,
+                request.genres, request.sort, request.favoritesOnly, request.favoriteIds);
         if (cached != null && !cached.isEmpty()) {
             tvVisibleCatalog.clear();
             tvVisibleCatalog.addAll(cached);
             tvCatalogReady = true;
-            loading.setVisibility(View.GONE);
             applyTvLocalPage(tvVisibleCatalog, currentQuery());
-            warmTvRawOnly(genres, favIds, dataGeneration);
             return;
         }
 
-        List<CatalogItem> rawCached = PukankiApi.getCachedRawTvCatalog(this, section, genres, sortMode, favoritesOnly, favIds);
+        final List<CatalogItem> rawCached = PukankiApi.getCachedRawTvCatalog(this, request.section,
+                request.genres, request.sort, request.favoritesOnly, request.favoriteIds);
         if (rawCached != null && !rawCached.isEmpty()) {
             synchronized (tvRawCatalog) { tvRawCatalog.clear(); tvRawCatalog.addAll(rawCached); }
         }
-
-        tvCatalogReady = false;
+        if (dataChanged) adapter.setItems(new ArrayList<>());
         if (adapter.getCount() == 0) {
             loading.setVisibility(View.VISIBLE);
             status.setText(R.string.loading);
@@ -741,80 +882,84 @@ public final class CatalogActivity extends Activity {
         prev.setEnabled(false);
         next.setEnabled(false);
 
-        // First paint validates only a small page instead of blocking on every poster in the catalogue.
-        // If raw JSON is already cached, even this step avoids a catalogue network request.
+        // First paint validates one page. Cached raw JSON avoids a catalogue network request.
         io.execute(() -> {
             try {
+                if (!isTvRequestCurrent(dataGeneration)) return;
                 CatalogPage first;
                 if (rawCached != null && !rawCached.isEmpty()) {
                     int rawTotal = rawCached.size();
                     int rawPages = Math.max(1, (rawTotal + PAGE_SIZE - 1) / PAGE_SIZE);
-                    int safePage = Math.max(1, Math.min(page, rawPages));
+                    int safePage = Math.max(1, Math.min(request.page, rawPages));
                     int start = Math.min(rawTotal, (safePage - 1) * PAGE_SIZE);
                     int end = Math.min(rawTotal, start + PAGE_SIZE);
                     List<CatalogItem> visible = PukankiApi.validateTvPostersFast(this,
                             new ArrayList<>(rawCached.subList(start, end)));
                     first = new CatalogPage(visible, rawTotal, safePage, rawPages);
                 } else {
-                    first = PukankiApi.fetchTvFastPage(this, section, page, PAGE_SIZE, genres, sortMode, favoritesOnly, favIds);
+                    first = PukankiApi.fetchTvFastPage(this, request.section, request.page, PAGE_SIZE,
+                            request.genres, request.sort, request.favoritesOnly, request.favoriteIds);
                 }
-                if (dataGeneration != tvDataGeneration || isFinishing()) return;
                 runOnUiThread(() -> {
-                    if (dataGeneration != tvDataGeneration) return;
+                    if (!isTvRequestCurrent(dataGeneration) || pageGeneration != tvPageGeneration
+                            || tvCatalogReady) return;
                     tvInitialVisiblePage.clear();
                     tvInitialVisiblePage.addAll(first.items);
-                    loading.setVisibility(View.GONE);
                     if (currentQuery().isEmpty()) applyPage(first);
                     else applyTvLocalPage(first.items, currentQuery());
                 });
             } catch (Exception e) {
-                if (dataGeneration != tvDataGeneration || isFinishing()) return;
-                runOnUiThread(() -> { if (adapter.getCount() == 0) showLoadFailure(e); });
+                runOnUiThread(() -> {
+                    if (!isTvRequestCurrent(dataGeneration) || pageGeneration != tvPageGeneration
+                            || tvCatalogReady) return;
+                    if (adapter.getCount() == 0) showLoadFailure(e);
+                    else loading.setVisibility(View.GONE);
+                });
             }
         });
-        warmTvCatalogue(genres, favIds, dataGeneration);
+        warmTvCatalogue(request, dataGeneration);
     }
 
-    private void warmTvRawOnly(List<String> genres, String favIds, int generation) {
-        if (!tvRawCatalog.isEmpty()) return;
-        io.execute(() -> {
-            try {
-                List<CatalogItem> raw = PukankiApi.fetchTvRawCatalog(this, section, genres, sortMode, favoritesOnly, favIds);
-                if (generation != tvDataGeneration) return;
-                synchronized (tvRawCatalog) { tvRawCatalog.clear(); tvRawCatalog.addAll(raw); }
-                main.post(liveSearch);
-            } catch (Exception ignored) {}
-        });
-    }
-
-    private void warmTvCatalogue(List<String> genres, String favIds, int generation) {
+    private void warmTvCatalogue(TvCatalogRequest request, int generation) {
         if (tvWarmGeneration == generation) return;
         tvWarmGeneration = generation;
         io.execute(() -> {
             try {
-                List<CatalogItem> raw = PukankiApi.fetchTvRawCatalog(this, section, genres, sortMode, favoritesOnly, favIds);
-                if (generation != tvDataGeneration || isFinishing()) return;
-                synchronized (tvRawCatalog) { tvRawCatalog.clear(); tvRawCatalog.addAll(raw); }
+                if (!isTvRequestCurrent(generation)) return;
+                List<CatalogItem> raw = PukankiApi.fetchTvRawCatalog(this, request.section,
+                        request.genres, request.sort, request.favoritesOnly, request.favoriteIds);
+                if (!isTvRequestCurrent(generation)) return;
+                main.post(() -> {
+                    if (!isTvRequestCurrent(generation)) return;
+                    synchronized (tvRawCatalog) { tvRawCatalog.clear(); tvRawCatalog.addAll(raw); }
+                    if (!currentQuery().isEmpty()) handleSearchChanged();
+                });
 
-                main.post(liveSearch);
-
-                List<CatalogItem> visible = "series".equals(section)
+                List<CatalogItem> visible = "series".equals(request.section)
                         ? PukankiApi.validateTvSeriesPosters(this, raw)
                         : PukankiApi.validateTvPosters(this, raw);
-                if (generation != tvDataGeneration || isFinishing()) return;
-                PukankiApi.cacheVisibleTvCatalog(this, section, genres, sortMode, favoritesOnly, favIds, visible);
+                if (!isTvRequestCurrent(generation)) return;
+                PukankiApi.cacheVisibleTvCatalog(this, request.section, request.genres,
+                        request.sort, request.favoritesOnly, request.favoriteIds, visible);
                 runOnUiThread(() -> {
+                    if (!isTvRequestCurrent(generation)) return;
+                    // A transient enrichment failure must not erase an already verified usable page.
+                    if (visible.isEmpty() && !tvInitialVisiblePage.isEmpty()) {
+                        loading.setVisibility(View.GONE);
+                        return;
+                    }
                     tvVisibleCatalog.clear();
                     tvVisibleCatalog.addAll(visible);
                     tvCatalogReady = true;
-                    loading.setVisibility(View.GONE);
                     applyTvLocalPage(tvVisibleCatalog, currentQuery());
                 });
-            } catch (Exception ignored) {
-                // Keep the already usable first page on screen. Poster/network enrichment must never
-                // put the TV catalogue back into an indefinite Loading state.
-            } finally {
-                // Generation changes naturally supersede older warm-up work.
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (!isTvRequestCurrent(generation)) return;
+                    tvWarmGeneration = -1; // A later reset/retry can restart an interrupted warm-up.
+                    if (adapter.getCount() == 0) showLoadFailure(e);
+                    else loading.setVisibility(View.GONE);
+                });
             }
         });
     }
@@ -852,6 +997,7 @@ public final class CatalogActivity extends Activity {
         updateFilterIndicator();
         if (focusFirstAfterPageChange && !config.isPhoneMode() && !result.items.isEmpty()) {
             focusFirstAfterPageChange = false;
+            firstGridFocus = false;
             restorePosition = -1;
             grid.setSelection(0);
             grid.post(() -> {
@@ -871,12 +1017,17 @@ public final class CatalogActivity extends Activity {
 
     private void openDetail(CatalogItem item) {
         if (item == null) return;
-        restorePosition = grid.getFirstVisiblePosition();
+        restorePosition = config.isPhoneMode() ? grid.getFirstVisiblePosition()
+                : Math.max(0, adapter.snapshot().indexOf(item));
         Intent i = new Intent(this, TitleDetailActivity.class);
         i.putExtra("id", item.id); i.putExtra("type", section); i.putExtra("title", item.title);
         i.putExtra("originalTitle", item.originalTitle); i.putExtra("year", item.year); i.putExtra("endYear", item.endYear);
         i.putExtra("runtime", item.runtime); i.putExtra("genres", item.genres); i.putExtra("rating", item.rating);
         i.putExtra("votes", item.votes); i.putExtra("seasons", item.seasons); i.putExtra("episodeCount", item.episodeCount);
+        if (!config.isPhoneMode() && "movies".equals(section) && !item.id.isEmpty()) {
+            i.putExtra("tv_artwork_url", PukankiApi.posterUrl(this, item.id));
+            i.putExtra("tv_artwork_portrait", true);
+        }
         startActivity(i);
     }
 
@@ -912,7 +1063,7 @@ public final class CatalogActivity extends Activity {
     private GradientDrawable panelBackground(int fill, int stroke, int strokeWidthDp) {
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(fill);
-        bg.setCornerRadius(dp(10));
+        bg.setCornerRadius(dp(config.isPhoneMode() ? 10 : 14));
         if (strokeWidthDp > 0) bg.setStroke(dp(strokeWidthDp), stroke);
         return bg;
     }
@@ -984,6 +1135,12 @@ public final class CatalogActivity extends Activity {
 
     private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
 
+    private int tvPosterHeightDp() {
+        int screenHeightDp = Math.round(getResources().getDisplayMetrics().heightPixels
+                / getResources().getDisplayMetrics().density);
+        return screenHeightDp <= 480 ? 140 : screenHeightDp <= 600 ? 158 : 184;
+    }
+
     private final class CatalogAdapter extends BaseAdapter {
         private final Context context;
         private final List<CatalogItem> items = new ArrayList<>();
@@ -1000,26 +1157,55 @@ public final class CatalogActivity extends Activity {
                 boolean phone = config.isPhoneMode();
                 LinearLayout box = new LinearLayout(context);
                 box.setOrientation(LinearLayout.VERTICAL);
-                box.setPadding(dp(5), dp(5), dp(5), dp(7));
+                box.setPadding(dp(phone ? 5 : 7), dp(phone ? 5 : 7), dp(phone ? 5 : 7), dp(phone ? 7 : 9));
                 box.setBackground(panelBackground(0xFF11161C, 0xFF242C35, 1));
                 ImageView poster = new ImageView(context);
                 poster.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                poster.setBackgroundColor(0xFF11161C);
+                if (phone) poster.setBackgroundColor(0xFF11161C);
+                else {
+                    GradientDrawable matte = new GradientDrawable();
+                    matte.setColor(0xFF11161C);
+                    matte.setCornerRadius(dp(9));
+                    poster.setBackground(matte);
+                    poster.setClipToOutline(true);
+                }
                 // Phone keeps the 1.0.7 card. TV is deliberately poster + name + year only.
-                box.addView(poster, new LinearLayout.LayoutParams(-1, dp(phone ? 188 : 174)));
-                TextView title = text("", phone ? 13 : 14, Color.WHITE, true);
+                int posterHeightDp = phone ? 188 : tvPosterHeightDp();
+                box.addView(poster, new LinearLayout.LayoutParams(-1, dp(posterHeightDp)));
+                TextView title = text("", phone ? 13 : 15, Color.WHITE, true);
                 title.setMaxLines(2);
-                LinearLayout.LayoutParams t = new LinearLayout.LayoutParams(-1, dp(phone ? 44 : 42));
-                t.setMargins(dp(2), dp(4), dp(2), 0);
+                if (!phone) {
+                    title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                    title.setLineSpacing(0f, 1.06f);
+                }
+                LinearLayout.LayoutParams t = new LinearLayout.LayoutParams(-1, dp(phone ? 44 : 48));
+                t.setMargins(dp(phone ? 2 : 4), dp(phone ? 4 : 6), dp(phone ? 2 : 4), 0);
                 box.addView(title, t);
                 TextView meta = text("", phone ? 11 : 12, 0xFF9CA6B1, false);
                 meta.setGravity(Gravity.TOP);
                 meta.setLineSpacing(0f, 1.05f);
                 meta.setMaxLines(1);
-                box.addView(meta, new LinearLayout.LayoutParams(-1, dp(phone ? 23 : 24)));
-                box.setLayoutParams(new AbsListView.LayoutParams(-1, dp(phone ? 272 : 254)));
+                LinearLayout.LayoutParams metaLp = new LinearLayout.LayoutParams(-1, dp(phone ? 23 : 22));
+                if (!phone) metaLp.setMargins(dp(4), 0, dp(4), 0);
+                box.addView(meta, metaLp);
+                box.setLayoutParams(new AbsListView.LayoutParams(-1, dp(phone ? 272 : posterHeightDp + 92)));
                 h = new Holder(poster, title, meta); box.setTag(h); convertView = box;
+                if (!phone) box.setOnHoverListener((v, event) -> {
+                    int action = event.getActionMasked();
+                    if (action == MotionEvent.ACTION_HOVER_ENTER || action == MotionEvent.ACTION_HOVER_MOVE
+                            || action == MotionEvent.ACTION_HOVER_EXIT) {
+                        ((Holder) v.getTag()).hovered = action != MotionEvent.ACTION_HOVER_EXIT;
+                        updateTvCardAppearance(v);
+                        if (action != MotionEvent.ACTION_HOVER_EXIT) {
+                            showCatalogArtwork(adapter.getItem(((Holder) v.getTag()).position));
+                        }
+                    }
+                    return false;
+                });
             } else h = (Holder) convertView.getTag();
+            // A recycled card must not inherit another title's mouse highlight.
+            if (h.position != position) h.hovered = false;
+            h.position = position;
             CatalogItem item = getItem(position);
             if (item != null) {
                 h.poster.setImageDrawable(null);
@@ -1034,12 +1220,16 @@ public final class CatalogActivity extends Activity {
                 }
                 PosterLoader.load(CatalogActivity.this, item.id, h.poster);
             }
+            if (!config.isPhoneMode()) updateTvCardAppearance(convertView);
             return convertView;
         }
     }
 
     private static final class Holder {
         final ImageView poster; final TextView title; final TextView meta;
+        int position = -1;
+        boolean hovered;
+        boolean highlighted;
         Holder(ImageView poster, TextView title, TextView meta) { this.poster = poster; this.title = title; this.meta = meta; }
     }
 }

@@ -3,14 +3,16 @@ package fun.nyama.tv;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.ActivityInfo;
+import android.content.ActivityNotFoundException;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
+import android.net.Uri;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -22,8 +24,10 @@ import org.json.JSONObject;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 public final class TitleDetailActivity extends Activity {
+    private static final int TV_MOVIE_PLAYBACK_REQUEST = 4701;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private Config config;
     private MovieFavorites favorites;
@@ -33,6 +37,13 @@ public final class TitleDetailActivity extends Activity {
     private Button favoriteButton;
     private TextView details;
     private ProgressBar loading;
+    private Button watchButton;
+    private TvSeriesSelectionView seriesSelection;
+    private Future<?> infoTask;
+    private volatile boolean detailDestroyed;
+    private int infoGeneration;
+    private boolean restoreSeriesFocus;
+    private TvCinematicBackground cinematicBackground;
 
     @Override protected void attachBaseContext(Context newBase) {
         super.attachBaseContext(LocaleHelper.wrap(newBase));
@@ -41,24 +52,56 @@ public final class TitleDetailActivity extends Activity {
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         config = new Config(this);
+        if (!ActivationAccess.require(this)) return;
         favorites = new MovieFavorites(this);
         id = safe(getIntent().getStringExtra("id"));
         section = "series".equals(getIntent().getStringExtra("type")) ? "series" : "movies";
         title = safe(getIntent().getStringExtra("title"));
+        restoreSeriesFocus = state != null && state.getBoolean("series_selection_focus", false);
         setContentView(buildUi());
         loadInfo();
     }
 
+    @Override protected void onResume() {
+        super.onResume();
+        if (seriesSelection != null) seriesSelection.refreshWatchProgress();
+        if (!isFinishing() && ActivationAccess.require(this) && restoreSeriesFocus && seriesSelection != null) {
+            seriesSelection.post(() -> {
+                if (!detailDestroyed && !isFinishing()) seriesSelection.restoreSelectionFocus();
+            });
+        }
+    }
+
+    @Override protected void onSaveInstanceState(Bundle state) {
+        state.putBoolean("series_selection_focus", restoreSeriesFocus);
+        super.onSaveInstanceState(state);
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == TV_MOVIE_PLAYBACK_REQUEST && resultCode == RESULT_OK
+                && config != null && !config.isPhoneMode() && "movies".equals(section)
+                && data != null && data.getBooleanExtra(MoviePlayerActivity.EXTRA_CONFIRMED_TV_EXIT, false)) {
+            // Reveal the original Movies catalogue, including its search, page and focused poster.
+            finish();
+        }
+    }
+
     @Override protected void onDestroy() {
+        detailDestroyed = true;
+        infoGeneration++;
+        if (infoTask != null) infoTask.cancel(true);
+        if (cinematicBackground != null) cinematicBackground.release();
         io.shutdownNow();
         super.onDestroy();
     }
 
     private View buildUi() {
         boolean phone = config.isPhoneMode();
+        boolean tvSeries = !phone && "series".equals(section);
         int accent = UiTheme.accent(this);
         ScrollView scroll = new ScrollView(this);
-        scroll.setBackgroundColor(0xD6090B0E);
+        scroll.setBackgroundColor(phone ? 0xD6090B0E : Color.TRANSPARENT);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(phone ? 18 : 40), dp(phone ? 16 : 28), dp(phone ? 18 : 40), dp(26));
@@ -113,8 +156,9 @@ public final class TitleDetailActivity extends Activity {
 
         LinearLayout actions = horizontal();
         actions.setGravity(phone ? Gravity.CENTER_HORIZONTAL : Gravity.START | Gravity.CENTER_VERTICAL);
-        Button watch = primaryButton(getString(R.string.watch_now), phone ? 18 : 15, accent);
-        watch.setOnClickListener(v -> openPlayer());
+        Button watch = tvSeries ? null : primaryButton(getString(R.string.watch_now), phone ? 18 : 15, accent);
+        watchButton = watch;
+        if (watch != null) watch.setOnClickListener(v -> openPlayer());
         favoriteButton = secondaryButton("", phone ? 17 : 14, accent);
         favoriteButton.setOnClickListener(v -> { favorites.toggle(id); updateFavoriteButton(); });
         updateFavoriteButton();
@@ -124,12 +168,31 @@ public final class TitleDetailActivity extends Activity {
             actions.addView(favoriteButton, fp);
         } else {
             // Android TV: deliberately compact buttons so the poster/info remains the focus.
-            actions.addView(watch, new LinearLayout.LayoutParams(dp(154), dp(44)));
-            LinearLayout.LayoutParams fp = new LinearLayout.LayoutParams(dp(184), dp(44)); fp.setMargins(dp(9),0,0,0);
+            if (watch != null) actions.addView(watch, new LinearLayout.LayoutParams(dp(154), dp(44)));
+            LinearLayout.LayoutParams fp = new LinearLayout.LayoutParams(dp(184), dp(44)); fp.setMargins(dp(tvSeries ? 0 : 9),0,0,0);
             actions.addView(favoriteButton, fp);
         }
         LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(-1, -2); ap.setMargins(0, dp(18), 0, dp(16));
         info.addView(actions, ap);
+
+        if (tvSeries) {
+            seriesSelection = new TvSeriesSelectionView(this, id, new TvSeriesSelectionView.Listener() {
+                @Override public void onSelectionChanged(TvSeriesMetadata.Episode episode, boolean metadataPresent) {
+                    // Episode cards are the only Android TV series playback actions.
+                }
+                @Override public void onPlay(TvSeriesMetadata.Episode episode) { openEpisode(episode); }
+                @Override public void onSource(String url) { openMetadataSource(url); }
+                @Override public void onEpisodeFocused(TvSeriesMetadata.Episode episode) {
+                    if (cinematicBackground == null) return;
+                    String url = episode == null ? "" : episode.originalStillUrl;
+                    if (url.isEmpty() && episode != null) url = episode.stillUrl;
+                    if (url.isEmpty()) cinematicBackground.showFallback();
+                    else cinematicBackground.show(url, false);
+                }
+            });
+            seriesSelection.setAbove(favoriteButton);
+            info.addView(seriesSelection, new LinearLayout.LayoutParams(-1, -2));
+        }
 
         loading = new ProgressBar(this);
         loading.setIndeterminate(true);
@@ -142,8 +205,19 @@ public final class TitleDetailActivity extends Activity {
         dp2.topMargin = dp(10);
         info.addView(details, dp2);
 
-        watch.requestFocus();
-        return scroll;
+        if (watch != null) watch.requestFocus();
+        else favoriteButton.requestFocus();
+        if (phone) return scroll;
+        FrameLayout screen = new FrameLayout(this);
+        cinematicBackground = new TvCinematicBackground(this);
+        screen.addView(cinematicBackground, new FrameLayout.LayoutParams(-1, -1));
+        screen.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
+        cinematicBackground.setFallback(PukankiApi.posterUrl(this, id), true);
+        String suppliedArtwork = safe(getIntent().getStringExtra("tv_artwork_url"));
+        if ("movies".equals(section) && !suppliedArtwork.isEmpty())
+            cinematicBackground.show(suppliedArtwork, getIntent().getBooleanExtra("tv_artwork_portrait", true));
+        else cinematicBackground.showFallback();
+        return screen;
     }
 
     private String initialMeta() {
@@ -189,21 +263,49 @@ public final class TitleDetailActivity extends Activity {
     }
 
     private void loadInfo() {
-        io.execute(() -> {
+        final int generation = ++infoGeneration;
+        final String requestedId = id;
+        final boolean loadEpisodes = seriesSelection != null;
+        final Context context = getApplicationContext();
+        infoTask = io.submit(() -> {
+            JSONObject fetched = null;
             try {
-                JSONObject data = PukankiApi.fetchTitleInfo(this, id);
-                runOnUiThread(() -> renderInfo(data));
+                fetched = PukankiApi.fetchTitleInfo(context, requestedId);
             } catch (Exception e) {
-                runOnUiThread(() -> {
+                // Episode metadata has its own cache and can still be loaded when title info fails.
+            }
+            final JSONObject data = fetched;
+            runOnUiThread(() -> {
+                if (!currentInfo(generation, requestedId)) return;
+                if (data != null) renderInfo(data);
+                else {
                     loading.setVisibility(View.GONE);
                     details.setText(getString(R.string.info_unavailable));
+                }
+            });
+            if (!loadEpisodes || detailDestroyed || Thread.currentThread().isInterrupted()) return;
+            try {
+                TvSeriesMetadata metadata = TvSeriesRepository.get(context).load(requestedId, data, System.currentTimeMillis());
+                runOnUiThread(() -> {
+                    if (!currentInfo(generation, requestedId)) return;
+                    seriesSelection.bind(metadata);
+                    if (restoreSeriesFocus || seriesSelection.hadRememberedSelection()) seriesSelection.restoreSelectionFocus();
+                });
+            } catch (Exception failure) {
+                runOnUiThread(() -> {
+                    if (currentInfo(generation, requestedId)) seriesSelection.showUnavailable();
                 });
             }
         });
     }
 
+    private boolean currentInfo(int generation, String requestedId) {
+        return !detailDestroyed && !isFinishing() && generation == infoGeneration && requestedId.equals(id);
+    }
+
     private void renderInfo(JSONObject data) {
         loading.setVisibility(View.GONE);
+        updateTvArtwork(data);
         StringBuilder sb = new StringBuilder();
         boolean tvImdbRatingShown = false;
 
@@ -274,10 +376,58 @@ public final class TitleDetailActivity extends Activity {
         details.setText(sb.length() == 0 ? getString(R.string.info_unavailable) : sb.toString().trim());
     }
 
+    private void updateTvArtwork(JSONObject data) {
+        if (config.isPhoneMode() || cinematicBackground == null || data == null) return;
+        String declared = safe(data.optString("imdbID"));
+        if (declared.isEmpty()) declared = safe(data.optString("imdb_id"));
+        if (!declared.isEmpty() && !id.equals(declared)) return;
+        for (String field : new String[] { "backdrop", "backdrop_url", "backdropUrl", "background", "fanart" }) {
+            String url = TvArtworkLoader.safeUrl(data.optString(field));
+            if (!url.isEmpty()) {
+                cinematicBackground.setFallback(url, false);
+                if ("movies".equals(section) || seriesSelection == null || !seriesSelection.hasMetadata())
+                    cinematicBackground.showFallback();
+                return;
+            }
+        }
+    }
+
     private void openPlayer() {
+        if (!config.isPhoneMode() && "series".equals(section)) {
+            // No generic series route replaces a missing exact episode selection.
+            if (seriesSelection == null) return;
+            TvSeriesMetadata.Episode episode = seriesSelection.selectedEpisode();
+            if (episode != null) openEpisode(episode);
+            return;
+        }
         Intent i = new Intent(this, MoviePlayerActivity.class);
         i.putExtra("id", id); i.putExtra("type", section); i.putExtra("title", title);
-        startActivity(i);
+        if (!config.isPhoneMode()) {
+            i.putExtra(MoviePlayerActivity.EXTRA_RETURN_TO_CATALOG, true).putExtra("origin_section", section);
+            i.putExtra(MoviePlayerActivity.EXTRA_TV_WATCH_STARTED_AT, android.os.SystemClock.elapsedRealtime());
+            startActivityForResult(i, TV_MOVIE_PLAYBACK_REQUEST);
+        } else startActivity(i);
+    }
+
+    private void openEpisode(TvSeriesMetadata.Episode episode) {
+        if (config.isPhoneMode() || !"series".equals(section) || episode == null
+                || !episode.eligibleForPlayback() || episode.season < 0 || episode.number <= 0
+                || !id.matches("tt[0-9]{7,10}") || seriesSelection == null
+                || seriesSelection.selectedEpisode() != episode) return;
+        restoreSeriesFocus = true;
+        startActivity(new Intent(this, MoviePlayerActivity.class)
+                .putExtra("id", id).putExtra("type", section).putExtra("title", title)
+                .putExtra("series_imdb_id", id).putExtra("season", episode.season)
+                .putExtra("episode", episode.number).putExtra("return_to_series", true)
+                .putExtra("origin_section", section)
+                .putExtra(MoviePlayerActivity.EXTRA_TV_WATCH_STARTED_AT, android.os.SystemClock.elapsedRealtime()));
+    }
+
+    private void openMetadataSource(String value) {
+        String url = TvSeriesSelectionView.safeSourceUrl(value);
+        if (url.isEmpty()) return;
+        try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))); }
+        catch (ActivityNotFoundException ignored) { /* TV devices need not have a browser. */ }
     }
 
     private void updateFavoriteButton() {

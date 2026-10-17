@@ -5,6 +5,8 @@ import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.widget.ProgressBar;
 
+import androidx.core.graphics.ColorUtils;
+
 public final class UiTheme {
     private UiTheme() {}
 
@@ -18,6 +20,13 @@ public final class UiTheme {
 
     public static float sp(Context context, float baseSp) {
         return baseSp * new Config(context).textScale();
+    }
+
+    /** Pick the higher WCAG contrast against an opaque card background. */
+    public static int contrastingTextColor(int background) {
+        int opaque = background | 0xFF000000;
+        return ColorUtils.calculateContrast(Color.BLACK, opaque)
+                >= ColorUtils.calculateContrast(Color.WHITE, opaque) ? Color.BLACK : Color.WHITE;
     }
 
     public static void tintProgress(Context context, ProgressBar bar) {

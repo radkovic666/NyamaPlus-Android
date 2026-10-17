@@ -21,7 +21,12 @@ public final class PlaylistRepository {
         File cache = cacheFile(context);
         File candidate = new File(context.getFilesDir(), "playlist.candidate.m3u");
         if (candidate.exists()) candidate.delete();
-        HttpUtil.downloadToFile(context, url, candidate);
+        try {
+            HttpUtil.downloadToFile(context, url, candidate);
+        } catch (Exception e) {
+            NetworkDiagnostics.logFailure(context, "playlist download", e);
+            throw e;
+        }
 
         List<Channel> channels = M3uParser.parse(candidate);
         if (channels.isEmpty()) {
@@ -35,7 +40,12 @@ public final class PlaylistRepository {
     }
 
     public static synchronized List<Channel> loadCached(Context context) throws Exception {
-        return M3uParser.parse(cacheFile(context));
+        try {
+            return M3uParser.parse(cacheFile(context));
+        } catch (Exception e) {
+            NetworkDiagnostics.logFailure(context, "cached playlist parse", e);
+            throw e;
+        }
     }
 
     private static void replace(File source, File target) throws Exception {

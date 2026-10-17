@@ -30,6 +30,10 @@ public final class SettingsActivity extends Activity {
     private TextView textScaleValue;
     private TextView clockScaleValue;
     private TextView dataUsageValue;
+    private TextView subscriptionValue, subscriptionExpiry;
+    private final android.os.Handler accountUi = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable subscriptionTick = this::updateSubscription;
+    private boolean accountVisible;
     private UpdateManager updateManager;
     private boolean suppressNextUserLeaveHint;
 
@@ -46,8 +50,15 @@ public final class SettingsActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        suppressNextUserLeaveHint = true;
+        if (isFinishing() || !ActivationAccess.require(this)) return;
         suppressNextUserLeaveHint = false;
         updateDataUsage();
+        accountVisible = true;
+        updateSubscription();
+        if (ActivationStore.managed(this)) ActivationAccess.refreshAccount(this, () -> {
+            if (accountVisible && !isFinishing()) updateSubscription();
+        });
         if (updateManager != null) updateManager.onResume();
     }
 
@@ -71,7 +82,15 @@ public final class SettingsActivity extends Activity {
         super.onBackPressed();
     }
 
+    @Override protected void onPause() {
+        accountVisible = false;
+        accountUi.removeCallbacks(subscriptionTick);
+        super.onPause();
+    }
+
     @Override protected void onDestroy() {
+        accountVisible = false;
+        accountUi.removeCallbacksAndMessages(null);
         if (updateManager != null) updateManager.destroy();
         super.onDestroy();
     }
@@ -108,6 +127,17 @@ public final class SettingsActivity extends Activity {
         LinearLayout.LayoutParams accountParams = new LinearLayout.LayoutParams(-1, -2);
         accountParams.setMargins(0, 0, 0, dp(18));
         root.addView(account, accountParams);
+
+        // Entitlement details belong to Settings, with no playback overlay or per-second HTTP.
+        if (ActivationStore.managed(this)) {
+            LinearLayout accountCard = card();
+            subscriptionValue = label("", 17, Color.WHITE, true);
+            subscriptionExpiry = label("", 15, 0xFFAAB3BF, false);
+            accountCard.addView(subscriptionValue);
+            accountCard.addView(subscriptionExpiry);
+            addSection(root, Config.LANG_EN.equals(config.language()) ? "Subscription" : "Абонамент", accountCard);
+            updateSubscription();
+        }
 
         // General settings card.
         LinearLayout general = card();
@@ -223,6 +253,20 @@ public final class SettingsActivity extends Activity {
         adminCard.addView(admin, adminParams);
         addSection(root, getString(R.string.admin_section), adminCard);
 
+        if (!phone) {
+            boolean english = Config.LANG_EN.equals(config.language());
+            LinearLayout information = card();
+            information.addView(description(english ? "Series metadata: TVmaze · CC BY-SA"
+                    : "Метаданни за сериали: TVmaze · CC BY-SA"));
+            Button source = professionalButton("TVmaze ↗");
+            source.setOnClickListener(v -> openInformationLink("https://www.tvmaze.com"));
+            information.addView(source, new LinearLayout.LayoutParams(-1, dp(52)));
+            Button license = professionalButton("CC BY-SA ↗");
+            license.setOnClickListener(v -> openInformationLink("https://creativecommons.org/licenses/by-sa/4.0/"));
+            information.addView(license, new LinearLayout.LayoutParams(-1, dp(52)));
+            addSection(root, english ? "Information" : "Информация", information);
+        }
+
         Button close = professionalButton(getString(R.string.close));
         close.setOnClickListener(v -> {
             suppressNextUserLeaveHint = true;
@@ -234,6 +278,16 @@ public final class SettingsActivity extends Activity {
 
         autostart.requestFocus();
         return scroll;
+    }
+
+    private void openInformationLink(String url) {
+        suppressNextUserLeaveHint = true;
+        try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))); }
+        catch (android.content.ActivityNotFoundException missingBrowser) {
+            suppressNextUserLeaveHint = false;
+            Toast.makeText(this, Config.LANG_EN.equals(config.language())
+                    ? "No browser installed" : "Няма инсталиран браузър", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void updateDataUsage() {
@@ -293,6 +347,10 @@ public final class SettingsActivity extends Activity {
     }
 
     private void askAdminPin() {
+        if (ActivationStore.managed(this) && !config.hasPin()) {
+            if (ActivationAccess.require(this)) createAdminPin();
+            return;
+        }
         EditText input = new EditText(this);
         input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
         input.setHint(getString(R.string.admin_pin));
@@ -324,7 +382,59 @@ public final class SettingsActivity extends Activity {
         input.requestFocus();
     }
 
+    /** Explicit owner setup after activation; never ship a shared PIN or expose the admin form. */
+    private void createAdminPin() {
+        boolean english = Config.LANG_EN.equals(config.language());
+        LinearLayout fields = new LinearLayout(this);
+        fields.setOrientation(LinearLayout.VERTICAL);
+        fields.setPadding(dp(20), dp(12), dp(20), 0);
+        EditText first = new EditText(this);
+        EditText confirmation = new EditText(this);
+        for (EditText field : new EditText[]{first, confirmation}) {
+            field.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+            field.setSingleLine(true);
+            field.setSaveEnabled(false);
+            fields.addView(field, new LinearLayout.LayoutParams(-1, dp(60)));
+        }
+        first.setHint(english ? "New administrator PIN (at least 6 digits)" : "Нов администраторски PIN (поне 6 цифри)");
+        confirmation.setHint(english ? "Confirm PIN" : "Потвърдете PIN");
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(english ? "Protect administrator settings" : "Защита на администраторските настройки")
+                .setMessage(english ? "The device owner chooses this PIN once. Keep it private." : "Собственикът на устройството задава този PIN веднъж. Пазете го в тайна.")
+                .setView(fields).setPositiveButton(english ? "Save PIN" : "Запази PIN", null)
+                .setNegativeButton(getString(R.string.cancel), null).create();
+        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String pin = first.getText().toString();
+            if (!pin.matches("[0-9]{6,}" ) || !pin.equals(confirmation.getText().toString())) {
+                confirmation.setError(english ? "Enter matching PINs with at least 6 digits" : "Въведете еднакви PIN кодове с поне 6 цифри");
+                return;
+            }
+            if (!ActivationAccess.playbackAllowed(this)) { dialog.dismiss(); ActivationAccess.require(this); return; }
+            if (!config.hasPin()) config.setPin(pin);
+            first.setText(""); confirmation.setText("");
+            dialog.dismiss();
+            askAdminPin(); // The protected form still requires an explicit PIN verification.
+        }));
+        dialog.show();
+        first.requestFocus();
+    }
+
+    private void updateSubscription() {
+        accountUi.removeCallbacks(subscriptionTick);
+        if (subscriptionValue == null) return;
+        SubscriptionInfo info = ActivationAccess.subscription();
+        boolean english = Config.LANG_EN.equals(config.language());
+        long now = android.os.SystemClock.elapsedRealtime();
+        subscriptionValue.setText(info.display(english, now));
+        String expiry = info.expiryDisplay(english);
+        subscriptionExpiry.setText(expiry);
+        subscriptionExpiry.setVisibility(expiry.isEmpty() ? View.GONE : View.VISIBLE);
+        if (accountVisible && info.hasCountdown() && info.remainingAt(now) > 0L)
+            accountUi.postDelayed(subscriptionTick, 1000L);
+    }
+
     private String accountUsername() {
+        if (!config.activationUsername().isEmpty()) return config.activationUsername();
         try {
             Uri uri = Uri.parse(config.playlistUrl());
             String username = uri.getQueryParameter("username");
