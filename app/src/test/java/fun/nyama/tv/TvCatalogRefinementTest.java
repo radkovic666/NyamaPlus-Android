@@ -175,6 +175,40 @@ public class TvCatalogRefinementTest {
     @SuppressWarnings("unchecked") private List<String> genres() throws Exception { return (List<String>) get("selectedGenres"); }
     private void reset() throws Exception { assertTrue(((Button) get("searchClearButton")).performClick()); }
 
+    @Test public void horizontalRowsReuseCardStyleKeepSidebarNavigationAndOpenExactTitle() throws Exception {
+        catalog("movies", false);
+        List<CatalogItem> cached = titles(18);
+        List<CatalogItem> observed = new ArrayList<>();
+        for (int i = 0; i < cached.size(); i++) {
+            CatalogItem item = cached.get(i);
+            observed.add(new CatalogItem(item.id, "movie", item.title, "Original", "2024", "", "90",
+                    i < 6 ? "Action" : i < 12 ? "Comedy" : "Drama", "8.1", "200", "", ""));
+        }
+        activity.getSharedPreferences("nyama_catalog_rows", 0).edit().clear().commit();
+        List<CatalogRows.Row> rows = CatalogRows.observeAndRead(activity, "movies", observed, System.currentTimeMillis());
+        Method render = CatalogActivity.class.getDeclaredMethod("renderRows", List.class); render.setAccessible(true);
+        render.invoke(activity, rows); layout();
+        View home = (View) get("homeRows");
+        assertEquals(View.VISIBLE, home.getVisibility()); assertEquals(View.GONE, grid.getVisibility());
+        @SuppressWarnings("unchecked") List<View> cards = (List<View>) get("rowCards");
+        assertTrue(cards.size() > 6 && cards.size() <= 42);
+        View first = cards.get(0); assertTrue(first.requestFocus()); layout();
+        int accent = UiTheme.accent(activity);
+        assertEquals(accent, ((android.graphics.drawable.GradientDrawable) first.getBackground()).getColor().getDefaultColor());
+        assertEquals(UiTheme.contrastingTextColor(accent), ((android.widget.TextView) ((LinearLayout) first).getChildAt(1)).getCurrentTextColor());
+        assertTrue(first.dispatchKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_DPAD_LEFT)));
+        AppSidebar sidebar = (AppSidebar) get("sidebar"); assertTrue(sidebar.hasMenuFocus());
+        activity.dispatchKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_DPAD_RIGHT));
+        assertTrue(first.hasFocus());
+        assertEquals(0, io.jobs.size()); // Focus/navigation must never fetch catalog data.
+        assertTrue(first.performClick());
+        Intent detail = Shadows.shadowOf(activity).getNextStartedActivity();
+        assertEquals(rows.get(0).items.get(0).id, detail.getStringExtra("id"));
+        assertEquals("movies", detail.getStringExtra("type")); assertEquals("Original", detail.getStringExtra("originalTitle"));
+        set("page", 2); invoke("updateDailyRow");
+        assertEquals(View.GONE, home.getVisibility()); assertEquals(View.VISIBLE, grid.getVisibility());
+    }
+
     @Test public void tvXResetsAllFiltersAndUsesCompleteValidatedCacheWithoutNetwork() throws Exception {
         catalog("movies", false);
         List<CatalogItem> all = titles(35);

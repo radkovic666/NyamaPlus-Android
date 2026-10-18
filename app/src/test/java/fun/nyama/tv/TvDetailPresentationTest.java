@@ -79,7 +79,9 @@ public class TvDetailPresentationTest {
 
     private TitleDetailActivity detail(boolean phone, String type) throws Exception {
         TitleDetailActivity detail = Robolectric.buildActivity(TitleDetailActivity.class,
-                new Intent().putExtra("id", IMDB).putExtra("type", type).putExtra("title", "Synthetic title")).get();
+                new Intent().putExtra("id", IMDB).putExtra("type", type).putExtra("title", "Synthetic title")
+                        .putExtra("year", "2019").putExtra("rating", "8.4").putExtra("genres", "Drama")
+                        .putExtra("seasons", "3").putExtra("episodeCount", "24")).get();
         details.add(detail);
         fun.nyama.tv.Config config = new fun.nyama.tv.Config(detail);
         config.setDeviceMode(phone ? fun.nyama.tv.Config.MODE_PHONE : fun.nyama.tv.Config.MODE_TV);
@@ -153,6 +155,30 @@ public class TvDetailPresentationTest {
         assertEquals(PukankiApi.posterUrl(detail, IMDB), background.currentRequestedUrl());
         assertEquals("keep-current-channel", config.lastChannelKey());
         assertNull(Shadows.shadowOf(detail).getNextStartedActivity());
+    }
+
+    @Test public void mainSeriesMetadataRemainsAboveEpisodesBeforeAndAfterEnrichment() throws Exception {
+        TitleDetailActivity detail = detail(false, "series");
+        TextView info = (TextView) get(detail, "details");
+        assertTrue(info.getText().toString().contains("2019"));
+        assertTrue(info.getText().toString().contains("8.4"));
+        Method render = TitleDetailActivity.class.getDeclaredMethod("renderInfo", JSONObject.class); render.setAccessible(true);
+        render.invoke(detail, new JSONObject().put("overview", "Existing series description")
+                .put("first_air_date", "2019-05-20"));
+        String enriched = info.getText().toString();
+        assertTrue(enriched.contains("Existing series description")); assertTrue(enriched.contains("Drama"));
+        assertTrue(enriched.contains("24"));
+        TvSeriesSelectionView selector = (TvSeriesSelectionView) get(detail, "seriesSelection");
+        long now = System.currentTimeMillis();
+        selector.bind(new TvSeriesMetadata(IMDB, "TVmaze", "", Arrays.asList(new TvSeriesMetadata.Season(1, Arrays.asList(
+                new TvSeriesMetadata.Episode(1, 1, "Episode title", 42, "Episode summary", "", now - 1, now))))));
+        assertEquals(enriched, info.getText().toString()); assertEquals(View.VISIBLE, info.getVisibility());
+        assertSame(info.getParent(), selector.getParent());
+        ViewGroup parent = (ViewGroup) info.getParent();
+        assertTrue(parent.indexOfChild(info) < parent.indexOfChild(selector));
+        assertNotNull(tagged(selector, "episode:1:1"));
+        selector.showUnavailable();
+        assertEquals(enriched, info.getText().toString());
     }
 
     @Test public void phoneDetailKeepsOriginalScrollAndHasNoCinematicLayer() throws Exception {

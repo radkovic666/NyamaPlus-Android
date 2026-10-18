@@ -116,10 +116,8 @@ public final class MoviePlayerActivity extends Activity {
         config = new Config(this);
         if (!ActivationAccess.require(this)) return;
         tvMode = !config.isPhoneMode();
-        if (tvMode) {
-            tvActivityCreatedAt = createdAt;
-            tvWatchStartedAt = getIntent().getLongExtra(EXTRA_TV_WATCH_STARTED_AT, createdAt);
-        }
+        tvActivityCreatedAt = createdAt;
+        tvWatchStartedAt = getIntent().getLongExtra(EXTRA_TV_WATCH_STARTED_AT, createdAt);
         id = safe(getIntent().getStringExtra("id"));
         type = "series".equals(getIntent().getStringExtra("type")) ? "series" : "movies";
         title = safe(getIntent().getStringExtra("title"));
@@ -134,8 +132,11 @@ public final class MoviePlayerActivity extends Activity {
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
 
+        long webViewStartedAt = android.os.SystemClock.elapsedRealtime();
         webView = new WebView(this);
         configureWebView(webView);
+        Log.d(TAG, (tvMode ? "TV" : "Mobile") + " initialization webview_configured elapsed_ms="
+                + (android.os.SystemClock.elapsedRealtime() - webViewStartedAt));
         root.addView(webView, new FrameLayout.LayoutParams(-1, -1));
         webView.setFocusable(true);
         webView.setFocusableInTouchMode(true);
@@ -254,8 +255,8 @@ public final class MoviePlayerActivity extends Activity {
 
             @Override public void onPageCommitVisible(WebView v, String url) {
                 super.onPageCommitVisible(v, url);
-                if (tvMode && v == webView && isSelectedMainDocument(url)) {
-                    Log.d(TAG, "TV initialization document_committed since_load_ms="
+                if (v == webView && (tvMode ? isSelectedMainDocument(url) : loadedPlayerUrl.equals(url))) {
+                    Log.d(TAG, (tvMode ? "TV" : "Mobile") + " initialization document_committed since_load_ms="
                             + (android.os.SystemClock.elapsedRealtime() - tvDocumentLoadAt)
                             + " since_watch_ms=" + (android.os.SystemClock.elapsedRealtime() - tvWatchStartedAt));
                 }
@@ -420,7 +421,9 @@ public final class MoviePlayerActivity extends Activity {
     private void loadPlayer() {
         String path = "series".equals(type) ? "tv" : "movie";
         if (!tvMode) {
-            webView.loadUrl(PLAYER_BASE + path + "/" + Uri.encode(id));
+            loadedPlayerUrl = PLAYER_BASE + path + "/" + Uri.encode(id);
+            recordDocumentLoad();
+            webView.loadUrl(loadedPlayerUrl);
             return;
         }
         try {
@@ -459,11 +462,15 @@ public final class MoviePlayerActivity extends Activity {
         // A replacement in a resumed Activity must resume the globally paused WebView timers.
         target.onResume();
         target.resumeTimers();
+        recordDocumentLoad();
+        target.loadUrl(selectedUrl);
+    }
+
+    private void recordDocumentLoad() {
         tvDocumentLoadAt = android.os.SystemClock.elapsedRealtime();
-        Log.d(TAG, "TV initialization document_load since_activity_ms="
+        Log.d(TAG, (tvMode ? "TV" : "Mobile") + " initialization document_load since_activity_ms="
                 + (tvDocumentLoadAt - tvActivityCreatedAt)
                 + " since_watch_ms=" + (tvDocumentLoadAt - tvWatchStartedAt) + " recovery=" + (rendererRecoveryUsed ? 1 : 0));
-        target.loadUrl(selectedUrl);
     }
 
     private String tvRecoveryUrl() {

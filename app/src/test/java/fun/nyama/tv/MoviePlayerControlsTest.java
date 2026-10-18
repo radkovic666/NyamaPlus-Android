@@ -877,6 +877,18 @@ public class MoviePlayerControlsTest {
         }
     }
 
+    @Test public void mobileNavigatesDuringCreateBeforeResumeOrLayoutAndKeepsSeriesChooser() throws Exception {
+        new fun.nyama.tv.Config(RuntimeEnvironment.getApplication()).setDeviceMode(fun.nyama.tv.Config.MODE_PHONE);
+        for (String type : new String[]{"movies", "series"}) {
+            ActivityController<MoviePlayerActivity> lifecycle = Robolectric.buildActivity(MoviePlayerActivity.class,
+                    title(type, "movies".equals(type) ? MOVIE : SERIES)).create();
+            MoviePlayerActivity activity = lifecycle.get();
+            assertEquals("https://streamimdb.ru/embed/" + ("movies".equals(type) ? "movie/" + MOVIE : "tv/" + SERIES), url(activity));
+            assertEquals(0, web(activity).getWidth());
+            lifecycle.start().resume().visible(); activities.add(lifecycle);
+        }
+    }
+
     @Test public void sameProviderWrongDocumentFinishesWithRetryRatherThanPermanentLoadingCover() throws Exception {
         MoviePlayerActivity activity = open(false, episode(2, 3)).get();
         WebView target = web(activity);

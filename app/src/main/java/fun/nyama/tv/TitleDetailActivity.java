@@ -59,6 +59,7 @@ public final class TitleDetailActivity extends Activity {
         title = safe(getIntent().getStringExtra("title"));
         restoreSeriesFocus = state != null && state.getBoolean("series_selection_focus", false);
         setContentView(buildUi());
+        PlayerWebViewStartup.prepare(this);
         loadInfo();
     }
 
@@ -191,7 +192,7 @@ public final class TitleDetailActivity extends Activity {
                 }
             });
             seriesSelection.setAbove(favoriteButton);
-            info.addView(seriesSelection, new LinearLayout.LayoutParams(-1, -2));
+            // Added below the persistent title information after it is constructed.
         }
 
         loading = new ProgressBar(this);
@@ -199,11 +200,13 @@ public final class TitleDetailActivity extends Activity {
         UiTheme.tintProgress(this, loading);
         info.addView(loading, new LinearLayout.LayoutParams(dp(34), dp(34)));
 
-        details = text(getString(R.string.loading), 16, 0xFFD2D7DD, false);
+        details = text(phone ? getString(R.string.loading) : "", 16, 0xFFD2D7DD, false);
         details.setLineSpacing(0, 1.15f);
         LinearLayout.LayoutParams dp2 = new LinearLayout.LayoutParams(-1, -2);
         dp2.topMargin = dp(10);
         info.addView(details, dp2);
+        if (!phone) renderInfo(new JSONObject()); // Already-known title metadata is immediately visible.
+        if (seriesSelection != null) info.addView(seriesSelection, new LinearLayout.LayoutParams(-1, -2));
 
         if (watch != null) watch.requestFocus();
         else favoriteButton.requestFocus();
@@ -281,7 +284,7 @@ public final class TitleDetailActivity extends Activity {
                 if (data != null) renderInfo(data);
                 else {
                     loading.setVisibility(View.GONE);
-                    details.setText(getString(R.string.info_unavailable));
+                    if (config.isPhoneMode()) details.setText(getString(R.string.info_unavailable));
                 }
             });
             if (!loadEpisodes || detailDestroyed || Thread.currentThread().isInterrupted()) return;
@@ -409,9 +412,9 @@ public final class TitleDetailActivity extends Activity {
         }
         Intent i = new Intent(this, MoviePlayerActivity.class);
         i.putExtra("id", id); i.putExtra("type", section); i.putExtra("title", title);
+        i.putExtra(MoviePlayerActivity.EXTRA_TV_WATCH_STARTED_AT, android.os.SystemClock.elapsedRealtime());
         if (!config.isPhoneMode()) {
             i.putExtra(MoviePlayerActivity.EXTRA_RETURN_TO_CATALOG, true).putExtra("origin_section", section);
-            i.putExtra(MoviePlayerActivity.EXTRA_TV_WATCH_STARTED_AT, android.os.SystemClock.elapsedRealtime());
             startActivityForResult(i, TV_MOVIE_PLAYBACK_REQUEST);
         } else startActivity(i);
     }

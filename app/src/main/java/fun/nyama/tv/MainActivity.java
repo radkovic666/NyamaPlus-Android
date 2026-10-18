@@ -394,10 +394,16 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
                 compactUi ? dp(300) : dp(430), -2, Gravity.CENTER);
         root.addView(exitPrompt, xp);
 
-        // Nyama+ navigation now lives inside the normal channel browser.
+        // TV navigation lives inside the normal channel browser; phones use a measured bottom bar.
         // There is intentionally no floating NY+ handle or separate TV navigation overlay.
 
-        setContentView(root);
+        setContentView(config.isPhoneMode() ? MobileBottomNav.wrap(this, root, AppSidebar.SECTION_TV,
+                new AppSidebar.Listener() {
+                    public void onTv() { browser.show(channels, currentIndex); }
+                    public void onMovies() { onRequestMovies(); }
+                    public void onSeries() { onRequestSeries(); }
+                    public void onSettings() { onRequestSettings(); }
+                }) : root);
         if (config.isPhoneMode()) installPhoneTouchControls();
         refreshCornerClock();
     }

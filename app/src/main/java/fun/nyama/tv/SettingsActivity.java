@@ -277,7 +277,8 @@ public final class SettingsActivity extends Activity {
         root.addView(close, cp);
 
         autostart.requestFocus();
-        return scroll;
+        return phone ? MobileBottomNav.wrap(this, scroll, AppSidebar.SECTION_SETTINGS,
+                MobileBottomNav.destinations(this, AppSidebar.SECTION_SETTINGS)) : scroll;
     }
 
     private void openInformationLink(String url) {

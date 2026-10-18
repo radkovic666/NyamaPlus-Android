@@ -144,9 +144,9 @@ public final class ChannelBrowserOverlay extends FrameLayout {
         if (portraitPhone) columns.setPadding(dp(7), dp(6), dp(7), dp(7));
         root.addView(columns, new LinearLayout.LayoutParams(-1, 0, 1f));
 
-        // Portrait phone is intentionally a compact stacked design: a short app tab strip,
+        // Portrait phone keeps its compact stacked channel/category design;
         // a scrollable category band, the channel list as the main area, and a fixed EPG card.
-        // Fixed heights prevent the four menu areas from drawing over each other on narrow phones.
+        // Fixed heights prevent these areas from drawing over each other on narrow phones.
         final int portraitCategoryHeight = Math.max(104, Math.min(128, Math.round(heightDp * 0.20f)));
         final int portraitDetailHeight = Math.max(142, Math.min(172, Math.round(heightDp * 0.27f)));
 
@@ -178,11 +178,11 @@ public final class ChannelBrowserOverlay extends FrameLayout {
                 ? new LinearLayout.LayoutParams(-1, dp(62))
                 : new LinearLayout.LayoutParams(0, -1, 0.18f);
         if (portraitPhone) appPaneParams.bottomMargin = dp(6);
-        columns.addView(appPane, appPaneParams);
+        if (!compact) columns.addView(appPane, appPaneParams);
 
         View divider0 = new View(context);
         divider0.setBackgroundColor(0x7730343B);
-        columns.addView(divider0, portraitPhone
+        if (!compact) columns.addView(divider0, portraitPhone
                 ? new LinearLayout.LayoutParams(-1, 0)
                 : new LinearLayout.LayoutParams(dp(1), -1));
 

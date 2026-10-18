@@ -9,6 +9,7 @@ import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
@@ -32,6 +33,7 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.GridView;
 import android.widget.ImageButton;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -59,6 +61,7 @@ public final class CatalogActivity extends Activity {
     private static final int SIDEBAR_EXPANDED_DP = 205;
 
     private final ExecutorService io = Executors.newFixedThreadPool(3);
+    private final ExecutorService rowsIo = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Runnable liveSearch = this::handleSearchChanged;
     private final AtomicInteger requestGeneration = new AtomicInteger();
@@ -108,7 +111,11 @@ public final class CatalogActivity extends Activity {
     private ProgressBar loading;
     private Button catalogRetry;
     private final Object tvFetchLock = new Object();
-    private LinearLayout dailyRow;
+    private ScrollView homeRows;
+    private LinearLayout rowContainer;
+    private View lastRowFocus;
+    private int rowsGeneration;
+    private final List<View> rowCards = new ArrayList<>();
 
     @Override protected void attachBaseContext(Context newBase) {
         super.attachBaseContext(LocaleHelper.wrap(newBase));
@@ -123,6 +130,7 @@ public final class CatalogActivity extends Activity {
         if (state != null) restoreState(state);
         else restorePersistentState();
         setContentView(buildUi());
+        PlayerWebViewStartup.prepare(this);
         loadGenres();
         loadPage();
     }
@@ -145,6 +153,10 @@ public final class CatalogActivity extends Activity {
         // CLEAR_TOP | SINGLE_TOP from TV movie playback reveals this same catalogue.
         // Keep its live adapter, query, filters and page rather than fetching them again.
         setIntent(intent);
+        if (homeRows != null && homeRows.getVisibility() == View.VISIBLE && lastRowFocus != null) {
+            lastRowFocus.requestFocus();
+            return;
+        }
         if (grid != null && grid.getCount() > 0) {
             final int position = Math.max(0, Math.min(grid.getCount() - 1,
                     restorePosition >= 0 ? restorePosition : grid.getSelectedItemPosition()));
@@ -162,9 +174,11 @@ public final class CatalogActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        rowsGeneration++;
         requestGeneration.incrementAndGet();
         main.removeCallbacksAndMessages(null);
         io.shutdownNow();
+        rowsIo.shutdownNow();
         if (sidebarAnimator != null) sidebarAnimator.cancel();
         tvDataGeneration++;
         tvSearchGeneration++;
@@ -234,18 +248,17 @@ public final class CatalogActivity extends Activity {
         shell.setOrientation(LinearLayout.HORIZONTAL);
         shell.setBackgroundColor(Color.TRANSPARENT);
 
-        sidebar = new AppSidebar(this,
-                "series".equals(section) ? AppSidebar.SECTION_SERIES : AppSidebar.SECTION_MOVIES,
-                new AppSidebar.Listener() {
+        AppSidebar.Listener navigation = new AppSidebar.Listener() {
                     @Override public void onTv() { returnToTv(); }
                     @Override public void onMovies() { openSection("movies"); }
                     @Override public void onSeries() { openSection("series"); }
                     @Override public void onSettings() { savePersistentState(); startActivity(new Intent(CatalogActivity.this, SettingsActivity.class)); finish(); }
-                });
+                };
+        sidebar = new AppSidebar(this, section, navigation);
         sidebarExpanded = phone;
         if (!phone) sidebar.setExpanded(false, false);
-        int sidebarWidthDp = phone ? sidebar.recommendedMobileLandscapeWidthDp() : SIDEBAR_COLLAPSED_DP;
-        shell.addView(sidebar, new LinearLayout.LayoutParams(dp(sidebarWidthDp), -1));
+        int sidebarWidthDp = phone ? 0 : SIDEBAR_COLLAPSED_DP;
+        if (!phone) shell.addView(sidebar, new LinearLayout.LayoutParams(dp(sidebarWidthDp), -1));
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -381,8 +394,12 @@ public final class CatalogActivity extends Activity {
         if (!phone) statusRow.addView(catalogRetry, new LinearLayout.LayoutParams(dp(150), dp(28)));
         root.addView(statusRow, new LinearLayout.LayoutParams(-1, dp(28)));
         if (!phone) {
-            dailyRow = horizontal(); dailyRow.setVisibility(View.GONE);
-            root.addView(dailyRow, new LinearLayout.LayoutParams(-1, dp(42)));
+            homeRows = new ScrollView(this); homeRows.setTag("tv-catalog-rows");
+            homeRows.setVisibility(View.GONE); homeRows.setClipToPadding(false);
+            rowContainer = new LinearLayout(this); rowContainer.setOrientation(LinearLayout.VERTICAL);
+            homeRows.addView(rowContainer, new ScrollView.LayoutParams(-1, -2));
+            homeRows.setOnScrollChangeListener((v, x, y, oldX, oldY) -> loadVisibleRowPosters());
+            root.addView(homeRows, new LinearLayout.LayoutParams(-1, 0, 1f));
         }
 
         grid = new GridView(this);
@@ -464,7 +481,7 @@ public final class CatalogActivity extends Activity {
             cinematicShell.addView(shell, new FrameLayout.LayoutParams(-1, -1));
             return cinematicShell;
         }
-        return shell;
+        return phone ? MobileBottomNav.wrap(this, shell, section, navigation) : shell;
     }
 
     private void showCatalogArtwork(CatalogItem item) {
@@ -501,7 +518,8 @@ public final class CatalogActivity extends Activity {
     private void updateTvCardAppearance(View card) {
         if (config.isPhoneMode() || !(card.getTag() instanceof Holder)) return;
         Holder h = (Holder) card.getTag();
-        boolean focused = grid != null && grid.hasFocus() && h.position == grid.getSelectedItemPosition();
+        boolean focused = h.row ? card.hasFocus()
+                : grid != null && grid.hasFocus() && h.position == grid.getSelectedItemPosition();
         boolean highlighted = focused || h.hovered;
         int accent = UiTheme.accent(this);
         int foreground = UiTheme.contrastingTextColor(accent);
@@ -545,7 +563,8 @@ public final class CatalogActivity extends Activity {
 
     private void focusContentFromSidebar() {
         setCatalogSidebarExpanded(false, true);
-        if (lastContentFocus == 1 && filterButton != null) filterButton.requestFocus();
+        if (lastContentFocus == 3 && lastRowFocus != null && homeRows.getVisibility() == View.VISIBLE) lastRowFocus.requestFocus();
+        else if (lastContentFocus == 1 && filterButton != null) filterButton.requestFocus();
         else if (lastContentFocus == 2 && grid != null && grid.getCount() > 0) grid.requestFocus();
         else if (search != null) search.requestFocus();
     }
@@ -609,7 +628,8 @@ public final class CatalogActivity extends Activity {
     private void openSection(String target) {
         String normalized = "series".equals(target) ? "series" : "movies";
         if (normalized.equals(section)) {
-            if (grid != null && grid.getCount() > 0) grid.requestFocus();
+            if (homeRows != null && homeRows.getVisibility() == View.VISIBLE && lastRowFocus != null) lastRowFocus.requestFocus();
+            else if (grid != null && grid.getCount() > 0) grid.requestFocus();
             return;
         }
         savePersistentState();
@@ -898,21 +918,91 @@ public final class CatalogActivity extends Activity {
         return isTvRequestCurrent(data) && paging == tvPageGeneration && searching == tvSearchGeneration;
     }
 
+    private boolean isRowLanding() {
+        return currentQuery().isEmpty() && !favoritesOnly && selectedGenres.isEmpty()
+                && page == 1 && "reviews".equals(sortMode);
+    }
+
     private void updateDailyRow() {
-        if (dailyRow == null) return;
-        dailyRow.removeAllViews();
-        if (!currentQuery().isEmpty() || favoritesOnly || !selectedGenres.isEmpty() || page != 1) {
-            dailyRow.setVisibility(View.GONE); return;
+        if (homeRows == null) return;
+        rowsGeneration++;
+        boolean show = isRowLanding() && rowContainer.getChildCount() > 0;
+        homeRows.setVisibility(show ? View.VISIBLE : View.GONE);
+        grid.setVisibility(show ? View.GONE : View.VISIBLE);
+    }
+
+    private void observeRows(List<CatalogItem> verified) {
+        if (homeRows == null || !currentQuery().isEmpty() || favoritesOnly) return;
+        final int generation = rowsGeneration;
+        final String requestedSection = section;
+        final Context application = getApplicationContext();
+        final List<CatalogItem> snapshot = new ArrayList<>(verified);
+        rowsIo.execute(() -> {
+            List<CatalogRows.Row> rows = CatalogRows.observeAndRead(application, requestedSection, snapshot, System.currentTimeMillis());
+            main.post(() -> {
+                if (generation != rowsGeneration || isFinishing() || isDestroyed() || !isRowLanding()) return;
+                renderRows(rows);
+            });
+        });
+    }
+
+    private void renderRows(List<CatalogRows.Row> rows) {
+        boolean restoreFocus = grid.hasFocus() || homeRows.hasFocus();
+        String focusedId = lastRowFocus != null && lastRowFocus.getTag() instanceof Holder
+                ? ((Holder) lastRowFocus.getTag()).item.id : "";
+        rowContainer.removeAllViews(); rowCards.clear(); lastRowFocus = null;
+        for (CatalogRows.Row row : rows) {
+            TextView heading = text(Config.LANG_EN.equals(config.language()) ? row.en : row.bg, 18, 0xFFC2CCDA, true);
+            heading.setPadding(dp(8), dp(10), dp(8), dp(6));
+            rowContainer.addView(heading, new LinearLayout.LayoutParams(-1, -2));
+            HorizontalScrollView strip = new HorizontalScrollView(this);
+            strip.setHorizontalScrollBarEnabled(false); strip.setClipChildren(false); strip.setClipToPadding(false);
+            strip.setTag("catalog-row-" + row.key);
+            strip.setOnScrollChangeListener((v, x, y, oldX, oldY) -> loadVisibleRowPosters());
+            LinearLayout cards = horizontal(); cards.setPadding(dp(8), dp(8), dp(8), dp(12));
+            strip.addView(cards, new HorizontalScrollView.LayoutParams(-2, -2));
+            CatalogAdapter rowAdapter = new CatalogAdapter(this); rowAdapter.setItems(row.items); rowAdapter.row = true;
+            for (int i = 0; i < row.items.size(); i++) {
+                CatalogItem item = row.items.get(i);
+                View card = rowAdapter.getView(i, null, cards);
+                card.setFocusable(true); card.setClickable(true);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(144), dp(tvPosterHeightDp() + 92));
+                lp.rightMargin = dp(12); cards.addView(card, lp); rowCards.add(card);
+                if (focusedId.equals(item.id) && lastRowFocus == null) lastRowFocus = card;
+                card.setOnClickListener(v -> openDetail(item));
+                card.setOnFocusChangeListener((v, focused) -> {
+                    updateTvCardAppearance(v);
+                    if (focused) {
+                        lastRowFocus = v; lastContentFocus = 3;
+                        setCatalogSidebarExpanded(false, true); showCatalogArtwork(item);
+                        v.post(this::loadVisibleRowPosters);
+                    }
+                });
+                if (i == 0) card.setOnKeyListener((v, key, event) -> {
+                    if (key == KeyEvent.KEYCODE_DPAD_LEFT && event.getAction() == KeyEvent.ACTION_DOWN) {
+                        lastRowFocus = v; lastContentFocus = 3;
+                        setCatalogSidebarExpanded(true, true); sidebar.focusFirst(); return true;
+                    }
+                    return false;
+                });
+            }
+            rowContainer.addView(strip, new LinearLayout.LayoutParams(-1, -2));
         }
-        List<CatalogItem> selected = DailyTitles.read(this, section, System.currentTimeMillis());
-        dailyRow.setVisibility(selected.isEmpty() ? View.GONE : View.VISIBLE);
-        if (selected.isEmpty()) return;
-        dailyRow.addView(text(Config.LANG_EN.equals(config.language()) ? "Selected today" : "Избрани днес", 13, 0xFFC2CCDA, true));
-        for (CatalogItem item : selected) {
-            Button title = smallButton(item.title + "  ★ " + item.rating);
-            title.setSingleLine(true); title.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            title.setOnClickListener(v -> openDetail(item));
-            dailyRow.addView(title, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        if (lastRowFocus == null && !rowCards.isEmpty()) lastRowFocus = rowCards.get(0);
+        boolean show = !rows.isEmpty();
+        homeRows.setVisibility(show ? View.VISIBLE : View.GONE); grid.setVisibility(show ? View.GONE : View.VISIBLE);
+        if (show && restoreFocus && lastRowFocus != null) lastRowFocus.requestFocus();
+        homeRows.post(this::loadVisibleRowPosters);
+    }
+
+    private void loadVisibleRowPosters() {
+        Rect visible = new Rect();
+        for (View card : rowCards) {
+            Holder holder = (Holder) card.getTag();
+            if (!holder.posterRequested && card.isShown() && card.getGlobalVisibleRect(visible)) {
+                holder.posterRequested = true;
+                PosterLoader.load(this, holder.item.id, holder.poster);
+            }
         }
     }
 
@@ -944,9 +1034,9 @@ public final class CatalogActivity extends Activity {
         adapter.setItems(result.items);
         if (!config.isPhoneMode()) {
             catalogRetry.setVisibility(View.GONE);
-            if (currentQuery().isEmpty() && !favoritesOnly)
-                DailyTitles.observe(this, section, result.items, System.currentTimeMillis());
             updateDailyRow();
+            observeRows(tvCatalogReady ? tvVisibleCatalog.subList(0, Math.min(CatalogRows.MAX_CANDIDATES, tvVisibleCatalog.size()))
+                    : result.items);
         }
         loading.setVisibility(View.GONE);
         status.setText(!config.isPhoneMode() && !tvCatalogReady
@@ -1105,6 +1195,7 @@ public final class CatalogActivity extends Activity {
     private final class CatalogAdapter extends BaseAdapter {
         private final Context context;
         private final List<CatalogItem> items = new ArrayList<>();
+        private boolean row;
         CatalogAdapter(Context context) { this.context = context; }
         void setItems(List<CatalogItem> fresh) { items.clear(); if (fresh != null) items.addAll(fresh); notifyDataSetChanged(); }
         List<CatalogItem> snapshot() { return new ArrayList<>(items); }
@@ -1158,7 +1249,7 @@ public final class CatalogActivity extends Activity {
                         ((Holder) v.getTag()).hovered = action != MotionEvent.ACTION_HOVER_EXIT;
                         updateTvCardAppearance(v);
                         if (action != MotionEvent.ACTION_HOVER_EXIT) {
-                            showCatalogArtwork(adapter.getItem(((Holder) v.getTag()).position));
+                            showCatalogArtwork(((Holder) v.getTag()).item);
                         }
                     }
                     return false;
@@ -1168,6 +1259,7 @@ public final class CatalogActivity extends Activity {
             if (h.position != position) h.hovered = false;
             h.position = position;
             CatalogItem item = getItem(position);
+            h.item = item; h.row = row;
             if (item != null) {
                 h.poster.setImageDrawable(null);
                 h.poster.setTag(null);
@@ -1179,7 +1271,7 @@ public final class CatalogActivity extends Activity {
                 } else {
                     h.meta.setText(cardMeta(item));
                 }
-                PosterLoader.load(CatalogActivity.this, item.id, h.poster);
+                if (!row) PosterLoader.load(CatalogActivity.this, item.id, h.poster);
             }
             if (!config.isPhoneMode()) updateTvCardAppearance(convertView);
             return convertView;
@@ -1189,6 +1281,9 @@ public final class CatalogActivity extends Activity {
     private static final class Holder {
         final ImageView poster; final TextView title; final TextView meta;
         int position = -1;
+        CatalogItem item;
+        boolean row;
+        boolean posterRequested;
         boolean hovered;
         boolean highlighted;
         Holder(ImageView poster, TextView title, TextView meta) { this.poster = poster; this.title = title; this.meta = meta; }
