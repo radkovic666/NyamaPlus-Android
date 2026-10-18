@@ -82,14 +82,13 @@ public final class CatalogActivity extends Activity {
     private int catalogColumns = 5;
     private ValueAnimator sidebarAnimator;
 
-    // Code 13 TV catalogue state. Raw JSON is cached separately from poster validation so
-    // search never needs to refetch the catalogue and the first usable grid is not blocked by
-    // a full-catalogue poster sweep. Mobile behavior intentionally remains unchanged.
+    // Reuse already complete catalog snapshots when present. Otherwise query/page requests
+    // validate only visible posters; launching a catalog never starts a whole-catalog scan.
+    // Mobile behavior intentionally remains unchanged.
     private final ArrayList<CatalogItem> tvRawCatalog = new ArrayList<>();
     private final ArrayList<CatalogItem> tvVisibleCatalog = new ArrayList<>();
     private final ArrayList<CatalogItem> tvInitialVisiblePage = new ArrayList<>();
     private boolean tvCatalogReady;
-    private int tvWarmGeneration = -1;
     private volatile int tvDataGeneration;
     private volatile int tvSearchGeneration;
     private int tvPageGeneration;
@@ -107,6 +106,9 @@ public final class CatalogActivity extends Activity {
     private Button prev;
     private Button next;
     private ProgressBar loading;
+    private Button catalogRetry;
+    private final Object tvFetchLock = new Object();
+    private LinearLayout dailyRow;
 
     @Override protected void attachBaseContext(Context newBase) {
         super.attachBaseContext(LocaleHelper.wrap(newBase));
@@ -161,7 +163,7 @@ public final class CatalogActivity extends Activity {
 
     @Override protected void onDestroy() {
         requestGeneration.incrementAndGet();
-        main.removeCallbacks(liveSearch);
+        main.removeCallbacksAndMessages(null);
         io.shutdownNow();
         if (sidebarAnimator != null) sidebarAnimator.cancel();
         tvDataGeneration++;
@@ -288,9 +290,9 @@ public final class CatalogActivity extends Activity {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
                 if (searchClearButton != null) searchClearButton.setVisibility(phone && s.length() == 0 ? View.GONE : View.VISIBLE);
-                if (!phone) tvSearchGeneration++;
+                if (!phone) { tvSearchGeneration++; tvPageGeneration++; }
                 main.removeCallbacks(liveSearch);
-                main.postDelayed(liveSearch, phone ? 320L : 120L);
+                main.postDelayed(liveSearch, 320L);
             }
             @Override public void afterTextChanged(Editable s) {}
         });
@@ -373,7 +375,15 @@ public final class CatalogActivity extends Activity {
         loading = new ProgressBar(this);
         loading.setIndeterminate(true);
         statusRow.addView(loading, new LinearLayout.LayoutParams(dp(24), dp(24)));
+        catalogRetry = smallButton(Config.LANG_EN.equals(config.language()) ? "Retry" : "Опитай отново");
+        catalogRetry.setVisibility(View.GONE);
+        catalogRetry.setOnClickListener(v -> loadPage());
+        if (!phone) statusRow.addView(catalogRetry, new LinearLayout.LayoutParams(dp(150), dp(28)));
         root.addView(statusRow, new LinearLayout.LayoutParams(-1, dp(28)));
+        if (!phone) {
+            dailyRow = horizontal(); dailyRow.setVisibility(View.GONE);
+            root.addView(dailyRow, new LinearLayout.LayoutParams(-1, dp(42)));
+        }
 
         grid = new GridView(this);
         catalogColumns = phone ? calculateColumns(145, 2, sidebarWidthDp) : calculateColumns(132, 4, SIDEBAR_COLLAPSED_DP);
@@ -745,33 +755,12 @@ public final class CatalogActivity extends Activity {
             loadPage();
             return;
         }
-        final int searchGeneration = ++tvSearchGeneration;
-        final int dataGeneration = tvDataGeneration;
-        final String query = currentQuery();
-        // TV search is local. A complete validated catalogue needs no network round trip.
-        if (tvCatalogReady) {
-            applyTvLocalPage(tvVisibleCatalog, query);
-            return;
+        ++tvSearchGeneration;
+        if (tvCatalogReady) { applyTvLocalPage(tvVisibleCatalog, currentQuery()); return; }
+        if (currentQuery().isEmpty() && !tvInitialVisiblePage.isEmpty()) {
+            applyTvLocalPage(tvInitialVisiblePage, "");
         }
-        List<CatalogItem> rawSnapshot;
-        synchronized (tvRawCatalog) { rawSnapshot = new ArrayList<>(tvRawCatalog); }
-        if (!rawSnapshot.isEmpty() && !query.isEmpty()) {
-            List<CatalogItem> matches = PukankiApi.filterLocal(rawSnapshot, query);
-            io.execute(() -> {
-                if (!isTvRequestCurrent(dataGeneration) || searchGeneration != tvSearchGeneration) return;
-                List<CatalogItem> visible = PukankiApi.validateTvPostersFast(this, matches);
-                runOnUiThread(() -> {
-                    if (!isTvRequestCurrent(dataGeneration) || searchGeneration != tvSearchGeneration) return;
-                    applyTvLocalPage(visible, "");
-                });
-            });
-            return;
-        }
-        // Clearing a search during warm-up must restore the stable first page immediately,
-        // rather than retaining an old filtered/empty adapter until the full poster sweep finishes.
-        if (!tvInitialVisiblePage.isEmpty()) applyTvLocalPage(tvInitialVisiblePage, query);
-        else if (!rawSnapshot.isEmpty()) loadTvPage();
-        else applyTvLocalPage(adapter.snapshot(), query);
+        loadTvPage();
     }
 
     private String currentQuery() {
@@ -840,128 +829,91 @@ public final class CatalogActivity extends Activity {
     private void loadTvPage() {
         final TvCatalogRequest request = new TvCatalogRequest(section, selectedGenres, sortMode,
                 favoritesOnly, favorites.csv(), page);
-        final boolean dataChanged = !request.key.equals(tvDataKey);
-        if (dataChanged) {
+        final String query = currentQuery();
+        if (!request.key.equals(tvDataKey)) {
             tvDataKey = request.key;
-            synchronized (tvRawCatalog) { tvRawCatalog.clear(); }
+            tvDataGeneration++;
+            tvCatalogReady = false;
             tvVisibleCatalog.clear();
             tvInitialVisiblePage.clear();
-            tvCatalogReady = false;
-            tvDataGeneration++;
-            tvSearchGeneration++;
+            synchronized (tvRawCatalog) { tvRawCatalog.clear(); }
         }
         final int dataGeneration = tvDataGeneration;
         final int pageGeneration = ++tvPageGeneration;
-
-        if (tvCatalogReady) {
-            applyTvLocalPage(tvVisibleCatalog, currentQuery());
-            return;
-        }
+        final int searchGeneration = tvSearchGeneration;
+        if (tvCatalogReady) { applyTvLocalPage(tvVisibleCatalog, query); return; }
         List<CatalogItem> cached = PukankiApi.getCachedVisibleTvCatalog(this, request.section,
                 request.genres, request.sort, request.favoritesOnly, request.favoriteIds);
-        if (cached != null && !cached.isEmpty()) {
-            tvVisibleCatalog.clear();
-            tvVisibleCatalog.addAll(cached);
-            tvCatalogReady = true;
-            applyTvLocalPage(tvVisibleCatalog, currentQuery());
-            return;
+        if (cached != null) {
+            tvVisibleCatalog.clear(); tvVisibleCatalog.addAll(cached); tvCatalogReady = true;
+            applyTvLocalPage(tvVisibleCatalog, query); return;
         }
-
-        final List<CatalogItem> rawCached = PukankiApi.getCachedRawTvCatalog(this, request.section,
+        List<CatalogItem> raw = PukankiApi.getCachedRawTvCatalog(this, request.section,
                 request.genres, request.sort, request.favoritesOnly, request.favoriteIds);
-        if (rawCached != null && !rawCached.isEmpty()) {
-            synchronized (tvRawCatalog) { tvRawCatalog.clear(); tvRawCatalog.addAll(rawCached); }
-        }
-        if (dataChanged) adapter.setItems(new ArrayList<>());
-        if (adapter.getCount() == 0) {
-            loading.setVisibility(View.VISIBLE);
-            status.setText(R.string.loading);
-        } else {
-            loading.setVisibility(View.GONE);
-        }
-        prev.setEnabled(false);
-        next.setEnabled(false);
-
-        // First paint validates one page. Cached raw JSON avoids a catalogue network request.
+        if (raw == null) synchronized (tvRawCatalog) { if (!tvRawCatalog.isEmpty()) raw = new ArrayList<>(tvRawCatalog); }
+        final List<CatalogItem> rawSnapshot = raw;
+        loading.setVisibility(View.VISIBLE);
+        catalogRetry.setVisibility(View.GONE);
+        status.setText(R.string.loading);
+        prev.setEnabled(false); next.setEnabled(false);
+        updateDailyRow();
+        final Runnable timeout = () -> {
+            if (currentTvPage(dataGeneration, pageGeneration, searchGeneration, query)) {
+                tvPageGeneration++;
+                showLoadFailure(new java.io.IOException("Catalog request timed out"));
+            }
+        };
+        main.postDelayed(timeout, 24000L);
         io.execute(() -> {
-            try {
-                if (!isTvRequestCurrent(dataGeneration)) return;
-                CatalogPage first;
-                if (rawCached != null && !rawCached.isEmpty()) {
-                    int rawTotal = rawCached.size();
-                    int rawPages = Math.max(1, (rawTotal + PAGE_SIZE - 1) / PAGE_SIZE);
-                    int safePage = Math.max(1, Math.min(request.page, rawPages));
-                    int start = Math.min(rawTotal, (safePage - 1) * PAGE_SIZE);
-                    int end = Math.min(rawTotal, start + PAGE_SIZE);
-                    List<CatalogItem> visible = PukankiApi.validateTvPostersFast(this,
-                            new ArrayList<>(rawCached.subList(start, end)));
-                    first = new CatalogPage(visible, rawTotal, safePage, rawPages);
-                } else {
-                    first = PukankiApi.fetchTvFastPage(this, request.section, request.page, PAGE_SIZE,
-                            request.genres, request.sort, request.favoritesOnly, request.favoriteIds);
+            synchronized (tvFetchLock) {
+                if (!currentTvPage(dataGeneration, pageGeneration, searchGeneration, query)) return;
+                try {
+                    CatalogPage result;
+                    if (rawSnapshot != null) {
+                        List<CatalogItem> matches = PukankiApi.filterLocal(rawSnapshot, query);
+                        int pages = Math.max(1, (matches.size() + PAGE_SIZE - 1) / PAGE_SIZE);
+                        int target = Math.max(1, Math.min(request.page, pages));
+                        int from = Math.min(matches.size(), (target - 1) * PAGE_SIZE);
+                        List<CatalogItem> visible = PukankiApi.validateTvPostersFast(this,
+                                new ArrayList<>(matches.subList(from, Math.min(matches.size(), from + PAGE_SIZE))));
+                        result = new CatalogPage(visible, matches.size(), target, pages);
+                    } else result = PukankiApi.fetchTvPage(this, request.section, request.page, PAGE_SIZE,
+                            query, request.genres, request.sort, request.favoritesOnly, request.favoriteIds);
+                    main.post(() -> {
+                        if (!currentTvPage(dataGeneration, pageGeneration, searchGeneration, query)) return;
+                        if (query.isEmpty()) { tvInitialVisiblePage.clear(); tvInitialVisiblePage.addAll(result.items); }
+                        main.removeCallbacks(timeout);
+                        applyPage(result);
+                    });
+                } catch (Exception failure) {
+                    main.post(() -> {
+                        if (currentTvPage(dataGeneration, pageGeneration, searchGeneration, query)) { main.removeCallbacks(timeout); showLoadFailure(failure); }
+                    });
                 }
-                runOnUiThread(() -> {
-                    if (!isTvRequestCurrent(dataGeneration) || pageGeneration != tvPageGeneration
-                            || tvCatalogReady) return;
-                    tvInitialVisiblePage.clear();
-                    tvInitialVisiblePage.addAll(first.items);
-                    if (currentQuery().isEmpty()) applyPage(first);
-                    else applyTvLocalPage(first.items, currentQuery());
-                });
-            } catch (Exception e) {
-                runOnUiThread(() -> {
-                    if (!isTvRequestCurrent(dataGeneration) || pageGeneration != tvPageGeneration
-                            || tvCatalogReady) return;
-                    if (adapter.getCount() == 0) showLoadFailure(e);
-                    else loading.setVisibility(View.GONE);
-                });
             }
         });
-        warmTvCatalogue(request, dataGeneration);
     }
 
-    private void warmTvCatalogue(TvCatalogRequest request, int generation) {
-        if (tvWarmGeneration == generation) return;
-        tvWarmGeneration = generation;
-        io.execute(() -> {
-            try {
-                if (!isTvRequestCurrent(generation)) return;
-                List<CatalogItem> raw = PukankiApi.fetchTvRawCatalog(this, request.section,
-                        request.genres, request.sort, request.favoritesOnly, request.favoriteIds);
-                if (!isTvRequestCurrent(generation)) return;
-                main.post(() -> {
-                    if (!isTvRequestCurrent(generation)) return;
-                    synchronized (tvRawCatalog) { tvRawCatalog.clear(); tvRawCatalog.addAll(raw); }
-                    if (!currentQuery().isEmpty()) handleSearchChanged();
-                });
+    private boolean currentTvPage(int data, int paging, int searching, String query) {
+        return isTvRequestCurrent(data) && paging == tvPageGeneration && searching == tvSearchGeneration;
+    }
 
-                List<CatalogItem> visible = "series".equals(request.section)
-                        ? PukankiApi.validateTvSeriesPosters(this, raw)
-                        : PukankiApi.validateTvPosters(this, raw);
-                if (!isTvRequestCurrent(generation)) return;
-                PukankiApi.cacheVisibleTvCatalog(this, request.section, request.genres,
-                        request.sort, request.favoritesOnly, request.favoriteIds, visible);
-                runOnUiThread(() -> {
-                    if (!isTvRequestCurrent(generation)) return;
-                    // A transient enrichment failure must not erase an already verified usable page.
-                    if (visible.isEmpty() && !tvInitialVisiblePage.isEmpty()) {
-                        loading.setVisibility(View.GONE);
-                        return;
-                    }
-                    tvVisibleCatalog.clear();
-                    tvVisibleCatalog.addAll(visible);
-                    tvCatalogReady = true;
-                    applyTvLocalPage(tvVisibleCatalog, currentQuery());
-                });
-            } catch (Exception e) {
-                runOnUiThread(() -> {
-                    if (!isTvRequestCurrent(generation)) return;
-                    tvWarmGeneration = -1; // A later reset/retry can restart an interrupted warm-up.
-                    if (adapter.getCount() == 0) showLoadFailure(e);
-                    else loading.setVisibility(View.GONE);
-                });
-            }
-        });
+    private void updateDailyRow() {
+        if (dailyRow == null) return;
+        dailyRow.removeAllViews();
+        if (!currentQuery().isEmpty() || favoritesOnly || !selectedGenres.isEmpty() || page != 1) {
+            dailyRow.setVisibility(View.GONE); return;
+        }
+        List<CatalogItem> selected = DailyTitles.read(this, section, System.currentTimeMillis());
+        dailyRow.setVisibility(selected.isEmpty() ? View.GONE : View.VISIBLE);
+        if (selected.isEmpty()) return;
+        dailyRow.addView(text(Config.LANG_EN.equals(config.language()) ? "Selected today" : "Избрани днес", 13, 0xFFC2CCDA, true));
+        for (CatalogItem item : selected) {
+            Button title = smallButton(item.title + "  ★ " + item.rating);
+            title.setSingleLine(true); title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            title.setOnClickListener(v -> openDetail(item));
+            dailyRow.addView(title, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        }
     }
 
     private void applyTvLocalPage(List<CatalogItem> source, String query) {
@@ -979,6 +931,7 @@ public final class CatalogActivity extends Activity {
 
     private void showLoadFailure(Exception e) {
         loading.setVisibility(View.GONE);
+        if (!config.isPhoneMode() && catalogRetry != null) catalogRetry.setVisibility(View.VISIBLE);
         status.setText(getString(R.string.catalog_failed, safeMessage(e)));
         prev.setEnabled(page > 1);
         next.setEnabled(page < totalPages);
@@ -989,8 +942,16 @@ public final class CatalogActivity extends Activity {
         totalPages = Math.max(1, result.totalPages);
         total = result.total;
         adapter.setItems(result.items);
+        if (!config.isPhoneMode()) {
+            catalogRetry.setVisibility(View.GONE);
+            if (currentQuery().isEmpty() && !favoritesOnly)
+                DailyTitles.observe(this, section, result.items, System.currentTimeMillis());
+            updateDailyRow();
+        }
         loading.setVisibility(View.GONE);
-        status.setText(getString(R.string.catalog_count, total));
+        status.setText(!config.isPhoneMode() && !tvCatalogReady
+                ? result.items.size() + (Config.LANG_EN.equals(config.language()) ? " on this page · Catalog: " : " на тази страница · Каталог: ") + total
+                : getString(R.string.catalog_count, total));
         pageStatus.setText(getString(R.string.page_of, page, totalPages));
         prev.setEnabled(page > 1);
         next.setEnabled(page < totalPages);

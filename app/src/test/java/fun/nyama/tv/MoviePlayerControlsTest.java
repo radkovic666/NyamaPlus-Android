@@ -63,6 +63,7 @@ public class MoviePlayerControlsTest {
     private final List<ActivityController<MoviePlayerActivity>> activities = new ArrayList<>();
 
     @Before public void before() {
+        PlaylistReturnRefresh.refresher = context -> java.util.Collections.emptyList();
         Context context = RuntimeEnvironment.getApplication();
         ActivationAccess.deny();
         context.getSharedPreferences("nyama_activation_mode", 0).edit().clear().commit();
@@ -76,6 +77,7 @@ public class MoviePlayerControlsTest {
     @After public void after() {
         for (ActivityController<MoviePlayerActivity> lifecycle : activities) lifecycle.pause().stop().destroy();
         activities.clear();
+        PlaylistReturnRefresh.refresher = PlaylistRepository::refresh;
     }
 
     /** Models the real provider's superclass layout/focus delegation, absent from the stub proxy. */
@@ -697,6 +699,42 @@ public class MoviePlayerControlsTest {
         assertFalse(phoneClient.shouldOverrideUrlLoading(phoneWeb, "https://streamimdb.ru/embed/movie/" + MOVIE));
         assertTrue(phoneClient.shouldOverrideUrlLoading(phoneWeb, "https://vaplayer.ru/embed/movie/" + MOVIE));
     }
+    @Test public void genericSeriesRouteKeepsProviderSubtitleControlsWithoutGuessingEpisode() throws Exception {
+        MoviePlayerActivity activity = open(false, "series").get();
+        String before = Shadows.shadowOf(web(activity)).getLastEvaluatedJavascript();
+        ReflectionHelpers.callInstanceMethod(activity, "installTvPlaybackAssist");
+        assertEquals(before, Shadows.shadowOf(web(activity)).getLastEvaluatedJavascript());
+    }
+
+    @Test public void tvMovieAndEpisodeExitRequestOneAsyncPlaylistRefreshEach() throws Exception {
+        java.util.concurrent.Executor previous = PlaylistReturnRefresh.io;
+        java.util.ArrayDeque<Runnable> jobs = new java.util.ArrayDeque<>();
+        int[] downloads = {0};
+        java.lang.reflect.Field instance = MainActivity.class.getDeclaredField("activeInstance");
+        instance.setAccessible(true); Object oldInstance = instance.get(null);
+        instance.set(null, new java.lang.ref.WeakReference<MainActivity>(null));
+        PlaylistReturnRefresh.io = jobs::add;
+        PlaylistReturnRefresh.refresher = context -> { downloads[0]++; return java.util.Collections.emptyList(); };
+        try {
+            for (Intent selection : new Intent[]{title("movies", MOVIE), episode(2, 3)}) {
+                ActivityController<MoviePlayerActivity> lifecycle = open(false, selection);
+                MoviePlayerActivity activity = lifecycle.get();
+                ReflectionHelpers.callInstanceMethod(activity, "finishTvPlayback");
+                ReflectionHelpers.callInstanceMethod(activity, "finishTvPlayback");
+                assertEquals(1, jobs.size());
+                destroy(lifecycle);
+                assertEquals(1, jobs.size());
+                jobs.remove().run();
+            }
+            assertEquals(2, downloads[0]);
+        } finally {
+            while (!jobs.isEmpty()) jobs.remove().run();
+            PlaylistReturnRefresh.io = previous;
+            PlaylistReturnRefresh.consumeReturn();
+            instance.set(null, oldInstance);
+        }
+    }
+
     /** Models only Android's render acknowledgement; never claims provider media is playable. */
     private static final class VisualWebView extends WebView {
         VisualStateCallback visualCallback;

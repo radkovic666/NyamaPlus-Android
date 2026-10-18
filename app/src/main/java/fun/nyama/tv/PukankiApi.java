@@ -29,7 +29,26 @@ public final class PukankiApi {
     private static final ExecutorService CATALOG_SCAN = Executors.newFixedThreadPool(4);
     private static final ExecutorService TV_POSTER_CHECKS = Executors.newFixedThreadPool(6);
     private static final Map<String, Boolean> POSTER_AVAILABILITY = new ConcurrentHashMap<>();
-    private static final Map<String, Boolean> TV_POSTER_AVAILABILITY = new ConcurrentHashMap<>();
+    private static final Map<String, Boolean> TV_POSTER_AVAILABILITY = java.util.Collections.synchronizedMap(new TimedPosters());
+    private static final class TimedPosters extends LinkedHashMap<String, Boolean> {
+        private final Map<String, Long> times = new java.util.HashMap<>();
+        TimedPosters() { super(512, .75f, true); }
+        @Override public Boolean get(Object key) {
+            Boolean value = super.get(key);
+            Long at = times.get(key);
+            if (at != null && android.os.SystemClock.elapsedRealtime() - at > (Boolean.TRUE.equals(value) ? 600000L : 60000L)) {
+                remove(key); times.remove(key); return null;
+            }
+            return value;
+        }
+        @Override public Boolean put(String key, Boolean value) {
+            times.put(key, android.os.SystemClock.elapsedRealtime());
+            Boolean old = super.put(key, value);
+            while (size() > 512) { String first = keySet().iterator().next(); remove(first); times.remove(first); }
+            return old;
+        }
+        @Override public void clear() { super.clear(); times.clear(); }
+    }
 
     // Code 13: raw TV catalog cache. JSON catalogue loading is cheap compared with probing every
     // poster. Keep the parsed catalogue separately so search can be purely local while poster
@@ -50,6 +69,35 @@ public final class PukankiApi {
                     return size() > 12;
                 }
             };
+
+    private static final TvRequestCache<CatalogPage> TV_PAGES = new TvRequestCache<>(32, 180000L, android.os.SystemClock::elapsedRealtime);
+    private static final TvRequestCache<String> TV_TITLE_INFO = new TvRequestCache<>(48, 600000L, android.os.SystemClock::elapsedRealtime);
+    private static final TvRequestCache<List<String>> TV_GENRES = new TvRequestCache<>(8, 600000L, android.os.SystemClock::elapsedRealtime);
+
+    /** TV fetches only the requested query/page, never scans the full catalog on launch. */
+    public static CatalogPage fetchTvPage(Context context, String section, int page, int pageSize, String query,
+            List<String> genres, String sort, boolean favoritesOnly, String favoriteIds) throws Exception {
+        String key = posterCatalogKey(context, section, query, genres, sort, favoritesOnly, favoriteIds)
+                + "|page=" + page + "|size=" + pageSize;
+        CatalogPage cached = TV_PAGES.get(key, () -> {
+            JSONObject root = fetchCatalogRoot(context, section, page, pageSize, query, genres, sort, favoritesOnly, favoriteIds);
+            if (root.optJSONArray("items") == null || root.has("error") || (root.has("ok") && !root.optBoolean("ok")))
+                throw new IllegalStateException("Catalog response unavailable; retry");
+            List<CatalogItem> parsed = parseItems(root);
+            List<CatalogItem> visible = onlyTvItemsWithPostersFast(context,
+                    new ArrayList<>(parsed.subList(0, Math.min(parsed.size(), Math.max(1, pageSize)))));
+            return new CatalogPage(visible, root.optInt("total", visible.size()),
+                    root.optInt("page", page), root.optInt("total_pages", 1));
+        });
+        return new CatalogPage(new ArrayList<>(cached.items), cached.total, cached.page, cached.totalPages);
+    }
+
+    static JSONObject fetchTvTitleInfo(Context context, String id) throws Exception {
+        String url = new Config(context).pukankiBaseUrl() + "/title-info/" + Uri.encode(id);
+        return new JSONObject(TV_TITLE_INFO.get(url, () -> {
+            String body = getTv(context, url); new JSONObject(body); return body;
+        }));
+    }
 
     private PukankiApi() {}
 
@@ -275,21 +323,22 @@ public final class PukankiApi {
     private static List<CatalogItem> onlyTvItemsWithPostersFast(Context context, List<CatalogItem> source) {
         List<CatalogItem> result = new ArrayList<>();
         if (source == null || source.isEmpty()) return result;
-        List<Callable<Boolean>> checks = new ArrayList<>();
-        for (CatalogItem item : source) {
-            checks.add(() -> posterExists(context, item == null ? "" : item.id));
-        }
+        List<Callable<PosterProbe>> checks = new ArrayList<>();
+        for (CatalogItem item : source) checks.add(() -> probePosterForTv(context, item == null ? "" : item.id));
+        boolean unknown = false;
         try {
-            List<Future<Boolean>> futures = POSTER_CHECKS.invokeAll(checks, 2800L, TimeUnit.MILLISECONDS);
-            for (int i = 0; i < source.size() && i < futures.size(); i++) {
-                Future<Boolean> future = futures.get(i);
-                if (future.isCancelled()) continue;
-                try { if (Boolean.TRUE.equals(future.get())) result.add(source.get(i)); }
-                catch (Exception ignored) {}
+            List<Future<PosterProbe>> futures = TV_POSTER_CHECKS.invokeAll(checks, 6000L, TimeUnit.MILLISECONDS);
+            for (int i = 0; i < futures.size(); i++) {
+                Future<PosterProbe> future = futures.get(i);
+                if (future.isCancelled()) { unknown = true; continue; }
+                try {
+                    PosterProbe state = future.get();
+                    if (state == PosterProbe.AVAILABLE) result.add(source.get(i));
+                    if (state == PosterProbe.UNKNOWN) unknown = true;
+                } catch (Exception failed) { unknown = true; }
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); unknown = true; }
+        if (unknown && result.isEmpty()) throw new IllegalStateException("Poster service unavailable; retry");
         return result;
     }
 
@@ -438,7 +487,7 @@ public final class PukankiApi {
         if (genres != null && !genres.isEmpty()) b.appendQueryParameter("genres", join(genres));
         b.appendQueryParameter("view", favoritesOnly ? "favorites" : "all");
         if (favoritesOnly) b.appendQueryParameter("ids", favoriteIds == null ? "" : favoriteIds);
-        return new JSONObject(get(context, b.build().toString()));
+        return new JSONObject(new Config(context).isPhoneMode() ? get(context, b.build().toString()) : getTv(context, b.build().toString()));
     }
 
     private static List<CatalogItem> parseItems(JSONObject root) {
@@ -468,11 +517,19 @@ public final class PukankiApi {
     }
 
     public static List<String> fetchGenres(Context context, String section) throws Exception {
+        if (!new Config(context).isPhoneMode()) {
+            String key = new Config(context).pukankiBaseUrl() + "|" + section;
+            return new ArrayList<>(TV_GENRES.get(key, () -> fetchGenresUncached(context, section)));
+        }
+        return fetchGenresUncached(context, section);
+    }
+
+    private static List<String> fetchGenresUncached(Context context, String section) throws Exception {
         String base = new Config(context).pukankiBaseUrl();
         Uri uri = Uri.parse(base + "/api/genres").buildUpon()
                 .appendQueryParameter("section", "series".equals(section) ? "series" : "movies")
                 .build();
-        JSONObject root = new JSONObject(get(context, uri.toString()));
+        JSONObject root = new JSONObject(new Config(context).isPhoneMode() ? get(context, uri.toString()) : getTv(context, uri.toString()));
         JSONArray arr = root.optJSONArray("genres");
         List<String> result = new ArrayList<>();
         if (arr != null) for (int i = 0; i < arr.length(); i++) {
@@ -549,10 +606,12 @@ public final class PukankiApi {
         }
     }
 
-    private static String get(Context context, String source) throws Exception {
+    private static String get(Context context, String source) throws Exception { return get(context, source, 15000, 30000); }
+    private static String getTv(Context context, String source) throws Exception { return get(context, source, 5000, 8000); }
+    private static String get(Context context, String source, int connect, int read) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(source).openConnection();
-        c.setConnectTimeout(15000);
-        c.setReadTimeout(30000);
+        c.setConnectTimeout(connect);
+        c.setReadTimeout(read);
         c.setUseCaches(false);
         c.setRequestProperty("User-Agent", DeviceIdentity.userAgent(context) + " NyamaPlus/1.0.10");
         c.setRequestProperty("Accept", "application/json,*/*");
@@ -567,7 +626,12 @@ public final class PukankiApi {
             StringBuilder sb = new StringBuilder();
             char[] buf = new char[8192];
             int n;
-            while ((n = reader.read(buf)) >= 0) sb.append(buf, 0, n);
+            long deadline = android.os.SystemClock.elapsedRealtime() + 15000L;
+            while ((n = reader.read(buf)) >= 0) {
+                if (connect == 5000 && (sb.length() + n > 4 * 1024 * 1024 || android.os.SystemClock.elapsedRealtime() > deadline))
+                    throw new java.io.IOException("Catalog response limit exceeded");
+                sb.append(buf, 0, n);
+            }
             return sb.toString();
         } finally {
             c.disconnect();

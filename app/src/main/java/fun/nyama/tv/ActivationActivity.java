@@ -56,6 +56,17 @@ public final class ActivationActivity extends Activity {
     private String email = "", challenge = "", screen = "welcome", payment = "";
     private long challengeExpiresAt;
     private boolean busy, destroyed;
+    private final Runnable renewalCheck = () -> {
+        if (!visible || destroyed || !"renewal".equals(screen) || config.isPhoneMode()) return;
+        if (!busy) checkAuthorization();
+        scheduleRenewalCheck();
+    };
+
+    private void scheduleRenewalCheck() {
+        main.removeCallbacks(renewalCheck);
+        if (visible && !destroyed && "renewal".equals(screen) && !config.isPhoneMode())
+            main.postDelayed(renewalCheck, 45000L);
+    }
     private int requestGeneration;
     private Runnable retry = this::checkAuthorization;
 
@@ -467,12 +478,14 @@ public final class ActivationActivity extends Activity {
     }
 
     private void checkAuthorization() {
-        screen = "checking";
-        layout(tr("Проверка на абонамента…", "Checking subscription…"));
+        main.removeCallbacks(renewalCheck);
+        if (config.isPhoneMode() || !"renewal".equals(screen)) {
+            screen = "checking";
+            layout(tr("Проверка на абонамента…", "Checking subscription…"));
+        }
         retry = this::checkAuthorization;
         run(-1, () -> {
-            String token = store.token();
-            if (token.isEmpty()) return this::welcome;
+            if (!controller().hasToken()) return this::welcome;
             ActivationResponse response = controller().config();
             return () -> apply(response);
         });
@@ -495,16 +508,20 @@ public final class ActivationActivity extends Activity {
         } else {
             payment = response.payment;
             screen = "renewal";
-            layout(tr("Абонаментът ви изтече", "Your subscription has expired"));
+            layout(config.isPhoneMode() ? tr("Абонаментът ви изтече", "Your subscription has expired")
+                    : "trial".equals(response.subscription.phase)
+                    ? tr("Пробният Ви период изтече", "Your trial has expired")
+                    : tr("Абонаментът Ви е изтекъл", "Your subscription has expired"));
             text(tr("За да продължите да гледате Nyama+, подновете своя абонамент.", "Renew your subscription to continue watching Nyama+."), 18);
             if (config.isPhoneMode()) button(tr("Поднови абонамента", "Renew subscription"), () -> openBrowser(payment));
             else {
                 qr(payment);
                 text(tr("Сканирайте QR кода, за да подновите абонамента.", "Scan the QR code to renew your subscription."), 18);
             }
-            button(tr("Проверка на плащането", "Check payment"), this::checkAuthorization).requestFocus();
+            button(tr(config.isPhoneMode() ? "Проверка на плащането" : "Проверка за плащане", "Check payment"), this::checkAuthorization).requestFocus();
             text(tr("Ако вече сте платили, изчакайте обработката и проверете отново.", "If you have paid, allow processing time and check again."), 16);
             retry = this::checkAuthorization;
+            scheduleRenewalCheck();
         }
     }
 
@@ -544,6 +561,11 @@ public final class ActivationActivity extends Activity {
                     ActivationAccess.deny();
                     if ("code_expired".equals(errorCode)) challenge = "";
                     if ("activation_invalid".equals(errorCode)) welcome();
+                    if ("renewal".equals(screen) && ("inactive_account".equals(errorCode) || "email_unverified".equals(errorCode))) {
+                        screen = "checking";
+                        layout(tr("Достъп до профила", "Account access"));
+                        retry = this::checkAuthorization;
+                    }
                     if (credentialAvailable && "code".equals(screen)) {
                         challenge = "";
                         screen = "checking";
@@ -556,6 +578,7 @@ public final class ActivationActivity extends Activity {
                     message.setText(error(errorCode));
                     if ("rate_limited".equals(errorCode) && action >= 0 && wait > 0) cooldownMessageAction = action;
                     tickCooldown();
+                    scheduleRenewalCheck();
                 });
             }
         });
@@ -628,6 +651,7 @@ public final class ActivationActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         visible = true;
+        scheduleRenewalCheck();
         tickCooldown();
         if ("welcome".equals(screen)) {
             if (pairing != null && SystemClock.elapsedRealtime() >= pairing.expiresAt) expirePairing.run();
@@ -640,6 +664,7 @@ public final class ActivationActivity extends Activity {
 
     @Override protected void onPause() {
         visible = false;
+        main.removeCallbacks(renewalCheck);
         main.removeCallbacks(cooldown);
         stopPairing();
         super.onPause();

@@ -78,6 +78,7 @@ public final class MoviePlayerActivity extends Activity {
     private boolean returnToSeries;
     private boolean playbackFailed;
     private boolean leavingPlayback;
+    private boolean playlistReturnRequested;
     private String loadedPlayerUrl = "";
     private String selectedPlaybackHost = PLAYER_HOST;
     private View playbackError;
@@ -398,14 +399,12 @@ public final class MoviePlayerActivity extends Activity {
     /** Prefer an actually available app-language HTML5 track once, without touching protected frames. */
     private void installTvPlaybackAssist() {
         if (!tvMode || webView == null) return;
-        String js = "(function(){try{" + accessibleVideoScript() +
-                "if(!best||!best.textTracks)return '0';" +
-                "if(best.__nyamaSubtitlePreferenceApplied)return '1';" +
-                "var found=-1;for(var i=0;i<best.textTracks.length;i++){var t=best.textTracks[i];" +
-                "if(new RegExp('^(" + (Config.LANG_EN.equals(config.language()) ? "en|eng" : "bg|bul") + ")(-|$)','i').test(t.language||''))found=i;}" +
-                "if(found<0)return '0';best.__nyamaSubtitlePreferenceApplied=true;" +
-                "for(var j=0;j<best.textTracks.length;j++)best.textTracks[j].mode=(j===found?'showing':'disabled');" +
-                "return '1';}catch(e){return '0';}})();";
+        // A generic series route does not establish the currently selected episode.
+        if ("series".equals(type) && (getIntent().getIntExtra("season", -1) < 0
+                || getIntent().getIntExtra("episode", -1) <= 0)) return;
+        String js = TvSubtitlePolicy.script(accessibleVideoScript(), id,
+                "series".equals(type) ? getIntent().getIntExtra("season", -1) : -1,
+                getIntent().getIntExtra("episode", -1), Config.LANG_EN.equals(config.language()));
         // Never repeatedly call play(), click provider menus or override a customer's pause.
         webView.evaluateJavascript(js, null);
     }
@@ -1200,7 +1199,9 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     private void finishTvPlayback() {
+        if (leavingPlayback) return;
         leavingPlayback = true;
+        requestReturnPlaylistRefresh();
         clearBackArm();
         releaseMovieWebView();
         resumeTvWhenClosing = false;
@@ -1219,6 +1220,13 @@ public final class MoviePlayerActivity extends Activity {
                     .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP));
             finish();
         }
+    }
+
+    private void requestReturnPlaylistRefresh() {
+        if (!tvMode || playlistReturnRequested) return;
+        playlistReturnRequested = true;
+        PlaylistReturnRefresh.markReturn();
+        MainActivity.refreshPlaylistAfterOnDemand(getApplicationContext());
     }
 
     private void releaseMovieWebView() {
@@ -1247,6 +1255,7 @@ public final class MoviePlayerActivity extends Activity {
         main.removeCallbacks(clearCloseArm);
         main.removeCallbacks(hideControls);
         releaseMovieWebView();
+        if (tvMode && isFinishing()) requestReturnPlaylistRefresh();
         if (resumeTvWhenClosing) MainActivity.resumePlaybackAfterOnDemand();
         super.onDestroy();
     }

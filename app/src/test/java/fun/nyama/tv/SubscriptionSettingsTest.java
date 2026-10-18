@@ -84,6 +84,7 @@ public class SubscriptionSettingsTest {
     }
 
     @Test public void explicitServerExpiryUsesExistingRenewalWithoutDeletingPermanentToken() throws Exception {
+        new fun.nyama.tv.Config(app).setDeviceMode(fun.nyama.tv.Config.MODE_TV);
         ActivityController<SettingsActivity> screen = open();
         replies.add(new JSONObject().put("ok", true).put("access_status", "subscription_expired")
                 .put("subscription", new JSONObject().put("status", "expired").put("phase", "paid").put("remaining_seconds", 0))
@@ -94,7 +95,7 @@ public class SubscriptionSettingsTest {
         assertEquals(ActivationActivity.class.getName(), gate.getComponent().getClassName());
         assertEquals(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK, gate.getFlags());
         ActivityController<ActivationActivity> renewal = Robolectric.buildActivity(ActivationActivity.class).create();
-        assertTrue(text(renewal.get().getWindow().getDecorView()).contains("Абонаментът ви изтече"));
+        assertTrue(text(renewal.get().getWindow().getDecorView()).contains("Абонаментът Ви е изтекъл"));
         assertEquals(1, requests); assertTrue(executor.queue.isEmpty()); // Reuses the verified expiry response.
         renewal.destroy(); screen.pause().stop().destroy();
     }

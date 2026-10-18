@@ -270,7 +270,8 @@ public final class TitleDetailActivity extends Activity {
         infoTask = io.submit(() -> {
             JSONObject fetched = null;
             try {
-                fetched = PukankiApi.fetchTitleInfo(context, requestedId);
+                fetched = config.isPhoneMode() ? PukankiApi.fetchTitleInfo(context, requestedId)
+                        : TvTitleInfo.normalize(PukankiApi.fetchTvTitleInfo(context, requestedId));
             } catch (Exception e) {
                 // Episode metadata has its own cache and can still be loaded when title info fails.
             }
@@ -304,6 +305,7 @@ public final class TitleDetailActivity extends Activity {
     }
 
     private void renderInfo(JSONObject data) {
+        if (!config.isPhoneMode()) { try { data = TvTitleInfo.normalize(data); } catch (Exception ignored) { } }
         loading.setVisibility(View.GONE);
         updateTvArtwork(data);
         StringBuilder sb = new StringBuilder();
@@ -313,13 +315,18 @@ public final class TitleDetailActivity extends Activity {
         if (!config.isPhoneMode()) {
             String originalTitle = cleanDetailValue(getIntent().getStringExtra("originalTitle"));
             String year = cleanDetailValue(getIntent().getStringExtra("year"));
+            year = TvTitleInfo.fallback(year, data, "Year");
             String endYear = cleanDetailValue(getIntent().getStringExtra("endYear"));
             String runtime = cleanDetailValue(getIntent().getStringExtra("runtime"));
+            runtime = TvTitleInfo.fallback(runtime, data, "Runtime");
             String genres = cleanDetailValue(getIntent().getStringExtra("genres"));
+            genres = TvTitleInfo.fallback(genres, data, "Genre");
             String rating = cleanDetailValue(getIntent().getStringExtra("rating"));
             String votes = cleanDetailValue(getIntent().getStringExtra("votes"));
             String seasons = cleanDetailValue(getIntent().getStringExtra("seasons"));
+            seasons = TvTitleInfo.fallback(seasons, data, "totalSeasons");
             String episodes = cleanDetailValue(getIntent().getStringExtra("episodeCount"));
+            episodes = TvTitleInfo.fallback(episodes, data, "totalEpisodes");
 
             if (!originalTitle.isEmpty() && !originalTitle.equalsIgnoreCase(title)) {
                 addLine(sb, getString(R.string.original_title), originalTitle);
@@ -329,7 +336,7 @@ public final class TitleDetailActivity extends Activity {
                 if (section.equals("series") && !endYear.isEmpty() && !endYear.equals(year)) years += "–" + endYear;
                 addLine(sb, getString(R.string.year_label), years);
             }
-            if (!runtime.isEmpty()) addLine(sb, getString(R.string.runtime_label), runtime + " min");
+            if (!runtime.isEmpty()) addLine(sb, getString(R.string.runtime_label), runtime.matches("[0-9]+") ? runtime + " min" : runtime);
             if (!rating.isEmpty()) {
                 addLine(sb, getString(R.string.rating_label), "★ " + rating + " / 10");
                 tvImdbRatingShown = true;

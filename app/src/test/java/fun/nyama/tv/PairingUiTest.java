@@ -125,12 +125,16 @@ public class PairingUiTest {
         h.advance(100); assertTrue(h.executor.queue.isEmpty());
     }
     @Test public void expiredPairSavesIdentityAndOpensRenewalWithoutConfig() throws Exception {
+        new fun.nyama.tv.Config(RuntimeEnvironment.getApplication()).setDeviceMode(fun.nyama.tv.Config.MODE_TV);
         Harness h=new Harness(); h.respond(start()); h.advance(3); h.respond(activated(true));
         assertEquals(TOKEN,h.credentials.token); assertFalse(h.activity.isFinishing());
         assertFalse(ActivationAccess.playbackAllowed(h.activity));
-        assertTrue(text(h.activity).contains("Абонаментът ви изтече"));
+        assertTrue(text(h.activity).contains("Абонаментът Ви е изтекъл"));
         assertEquals("customer",h.activity.getSharedPreferences("nyama_tv_private",0).getString("activation_username",""));
-        assertEquals("",new fun.nyama.tv.Config(h.activity).playlistUrl()); h.advance(100); assertTrue(h.executor.queue.isEmpty());
+        assertEquals("",new fun.nyama.tv.Config(h.activity).playlistUrl());
+        h.advance(44); assertTrue(h.executor.queue.isEmpty());
+        h.advance(1); assertEquals(1, h.executor.queue.size()); // One normal config check, no OTP/pair restart.
+        h.lifecycle.pause().stop().destroy();
     }
     @Test public void onlyOnePollRunsAndServerDelayIsRespected() throws Exception {
         Harness h=new Harness(); h.respond(start().put("poll_after",8)); h.advance(7); assertTrue(h.executor.queue.isEmpty());

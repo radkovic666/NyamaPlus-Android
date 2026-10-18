@@ -19,7 +19,7 @@ final class ActivationResponse {
         subscription = SubscriptionInfo.from(body, 0L);
         String status = body.optString("access_status");
         active = "active".equals(status);
-        if (!active && !"subscription_expired".equals(status))
+        if (!active && (!"subscription_expired".equals(status) || subscription.vip))
             throw new ActivationApi.Failure("server_unavailable", 0);
         JSONObject account = body.optJSONObject("account");
         username = account == null ? "" : account.optString("username");

@@ -211,7 +211,7 @@ public class TvCatalogRefinementTest {
         assertEquals(4, get("total")); assertEquals(0, io.jobs.size());
     }
 
-    @Test public void resetDuringWarmupUsesRawCacheThenUpdatesExactEligibleCount() throws Exception {
+    @Test public void resetLoadsOnlyVisiblePageWithoutFullCatalogSweep() throws Exception {
         catalog("movies", false);
         List<CatalogItem> all = titles(35);
         cacheRaw("movies", all);
@@ -221,25 +221,25 @@ public class TvCatalogRefinementTest {
         availability.put(new fun.nyama.tv.Config(activity).pukankiBaseUrl() + "|" + all.get(34).id, false);
         search().setText("no results"); set("favoritesOnly", true); set("sortMode", "title");
         reset();
-        assertEquals(2, io.jobs.size());
+        assertEquals(1, io.jobs.size());
         io.runNext(); // Existing first-page validation, with no catalogue request.
         Shadows.shadowOf(Looper.getMainLooper()).idle();
         assertEquals(30, grid.getAdapter().getCount());
-        io.runNext(); // Existing full poster sweep, all responses supplied by the test cache.
-        Shadows.shadowOf(Looper.getMainLooper()).idle();
-        assertEquals(34, get("total")); assertEquals(2, get("totalPages")); assertEquals(1, get("page"));
+        assertTrue(io.jobs.isEmpty()); // No catalog-wide poster sweep.
+        assertEquals(35, get("total")); assertEquals(2, get("totalPages")); assertEquals(1, get("page"));
         assertEquals(View.GONE, ((View) get("loading")).getVisibility());
     }
 
     @Test public void delayedLocalSearchCannotReplaceResetResults() throws Exception {
         catalog("movies", false);
         List<CatalogItem> all = titles(5);
-        cacheVisible("movies", all);
+        cacheRaw("movies", all);
         @SuppressWarnings("unchecked") List<CatalogItem> raw = (List<CatalogItem>) get("tvRawCatalog");
         raw.addAll(all);
         search().setText("Movie 4");
         invoke("handleSearchChanged");
         assertEquals(1, io.jobs.size());
+        cacheVisible("movies", all);
         reset();
         assertEquals(5, get("total"));
         io.runNext(); Shadows.shadowOf(Looper.getMainLooper()).idle();
@@ -251,12 +251,15 @@ public class TvCatalogRefinementTest {
         List<CatalogItem> all = titles(3);
         @SuppressWarnings("unchecked") List<CatalogItem> raw = (List<CatalogItem>) get("tvRawCatalog");
         raw.addAll(all);
+        cacheRaw("series", all);
         @SuppressWarnings("unchecked") List<CatalogItem> initial = (List<CatalogItem>) get("tvInitialVisiblePage");
         initial.addAll(all);
         adapterItems(Collections.emptyList());
         invoke("handleSearchChanged");
         assertEquals(3, grid.getAdapter().getCount()); assertEquals(3, get("total"));
-        assertEquals(0, io.jobs.size());
+        assertEquals(1, io.jobs.size());
+        io.runNext(); Shadows.shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(3, grid.getAdapter().getCount());
     }
 
     @Test public void oldWarmupDoesNotOverwriteNewerCatalogOrCacheUnderChangedFilterState() throws Exception {
@@ -264,13 +267,14 @@ public class TvCatalogRefinementTest {
         List<CatalogItem> original = titles(4);
         cacheRaw("movies", original);
         reset();
-        assertEquals(2, io.jobs.size());
+        assertEquals(1, io.jobs.size());
         // Change the current fields before the queued worker starts: its captured request stays default.
         set("sortMode", "rating"); set("favoritesOnly", true); genres().add("Drama"); set("page", 5);
-        io.runNext(); io.runNext(); Shadows.shadowOf(Looper.getMainLooper()).idle();
+        io.runNext(); Shadows.shadowOf(Looper.getMainLooper()).idle();
         List<CatalogItem> cached = PukankiApi.getCachedVisibleTvCatalog(activity, "movies", Collections.emptyList(),
                 "reviews", false, "");
-        assertNotNull(cached); assertEquals(4, cached.size());
+        assertNull("A page fetch must not claim to have a complete validated catalog", cached);
+        assertEquals(4, grid.getAdapter().getCount());
         assertNull(PukankiApi.getCachedVisibleTvCatalog(activity, "movies", Arrays.asList("Drama"),
                 "rating", true, ""));
         // A later load advances the generation; already queued old search callbacks cannot repaint it.
@@ -285,15 +289,53 @@ public class TvCatalogRefinementTest {
         List<CatalogItem> original = titles(4);
         cacheRaw("movies", original);
         reset();
-        assertEquals(2, io.jobs.size());
+        assertEquals(1, io.jobs.size());
         set("sortMode", "rating"); set("favoritesOnly", true); genres().add("Drama");
         PukankiApi.cacheVisibleTvCatalog(activity, "movies", genres(), "rating", true, "",
                 original.subList(0, 2));
         invoke("loadTvPage");
         assertEquals(2, get("total"));
-        io.runNext(); io.runNext(); Shadows.shadowOf(Looper.getMainLooper()).idle();
+        io.runNext(); Shadows.shadowOf(Looper.getMainLooper()).idle();
         assertEquals(2, get("total")); assertEquals(2, grid.getAdapter().getCount());
         assertEquals("rating", get("sortMode")); assertEquals(true, get("favoritesOnly"));
+    }
+
+    @Test public void rapidTypingDebouncesAndOnlyLatestQueryIsLoaded() throws Exception {
+        for (String section : new String[]{"movies", "series"}) {
+            if (activity != null) { invoke("onDestroy"); activity = null; }
+            catalog(section, false); cacheRaw(section, titles(8));
+            search().setText("M");
+            Shadows.shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(200));
+            search().setText("Movie 4");
+            Shadows.shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(319));
+            assertTrue(io.jobs.isEmpty());
+            Shadows.shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(1));
+            assertEquals(1, io.jobs.size());
+            io.runNext(); Shadows.shadowOf(Looper.getMainLooper()).idle();
+            assertEquals(1, grid.getAdapter().getCount());
+            assertEquals("Movie 4", ((CatalogItem)grid.getAdapter().getItem(0)).title);
+        }
+    }
+
+    @Test public void responseQueuedBeforeNextKeystrokeCannotReplaceVisibleQuery() throws Exception {
+        catalog("movies", false); cacheRaw("movies", titles(8));
+        search().setText("Movie 1"); invoke("handleSearchChanged");
+        io.runNext(); // Response is queued on main, not applied yet.
+        search().setText("Movie 4");
+        Shadows.shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(0, grid.getAdapter().getCount());
+        invoke("handleSearchChanged"); io.runNext(); Shadows.shadowOf(Looper.getMainLooper()).idle();
+        assertEquals("Movie 4", ((CatalogItem)grid.getAdapter().getItem(0)).title);
+    }
+
+    @Test public void stalledRequestShowsFocusableRetryInsteadOfEndlessLoading() throws Exception {
+        catalog("movies", false); cacheRaw("movies", titles(8)); invoke("loadTvPage");
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(24));
+        assertEquals(View.GONE, ((View)get("loading")).getVisibility());
+        assertEquals(View.VISIBLE, ((View)get("catalogRetry")).getVisibility());
+        assertTrue(((View)get("catalogRetry")).isFocusable());
+        io.runNext(); Shadows.shadowOf(Looper.getMainLooper()).idle();
+        assertEquals(View.VISIBLE, ((View)get("catalogRetry")).getVisibility());
     }
 
     @Test public void movieSelectionAndRecycledHoverChooseExactArtworkAndPassItToDetail() throws Exception {

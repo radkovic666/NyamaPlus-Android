@@ -137,7 +137,7 @@ public class ActivationUiTest {
 
     @Test public void tvRenewalQrUsesExactPersonalizedUrl() throws Exception {
         tv(); ActivationActivity activity = welcome(); expired(activity);
-        assertEquals(PAYMENT, decode(bitmap(activity))); assertTrue(button(activity, "Проверка на плащането").isFocusable());
+        assertEquals(PAYMENT, decode(bitmap(activity))); assertTrue(button(activity, "Проверка за плащане").isFocusable());
         assertFalse(text(activity).contains("synthetic-account-token"));
     }
 

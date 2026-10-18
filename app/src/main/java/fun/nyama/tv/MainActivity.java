@@ -196,7 +196,8 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         }
         boolean returning = returnFromOnDemand;
         returnFromOnDemand = false;
-        boolean forceStartupPlaylistRefresh = startupPlaylistRefreshPending && !returning;
+        boolean playerReturn = !config.isPhoneMode() && PlaylistReturnRefresh.consumeReturn();
+        boolean forceStartupPlaylistRefresh = startupPlaylistRefreshPending && !returning && !playerReturn;
         startupPlaylistRefreshPending = false;
         if (!returning || !resumeLoadedLiveChannel()) loadAndRefresh(forceStartupPlaylistRefresh);
         startForegroundRefreshLoop();
@@ -462,7 +463,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
             // never delay cached playback or the first attempt to obtain channels.
             if (forcePlaylistRefresh || cached.isEmpty() || config.playlistLastRefresh() == 0L
                     || age >= Config.PLAYLIST_REFRESH_MS) {
-                refreshPlaylistNow();
+                if (!PlaylistReturnRefresh.inFlight()) refreshPlaylistNow();
             }
 
             boolean epgParseFailed = false;
@@ -792,6 +793,25 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
                 activity.player.setPlayWhenReady(true);
             }
         });
+    }
+
+    static void applyReturnedPlaylist(List<Channel> fresh) {
+        MainActivity activity = activeInstance.get();
+        if (activity == null || activity.isFinishing() || activity.player == null || fresh == null || fresh.isEmpty()) return;
+        activity.runOnUiThread(() -> {
+            if (!activity.isDestroyed() && activity.player != null && ActivationAccess.playbackAllowed(activity))
+                activity.applyChannels(fresh, true);
+        });
+    }
+
+    /** A player exit is an explicit event, not an arbitrary Activity resume. */
+    static void refreshPlaylistAfterOnDemand(Context context) {
+        MainActivity activity = activeInstance.get();
+        if (activity == null || activity.isFinishing() || activity.config == null) {
+            PlaylistReturnRefresh.request(context); return;
+        }
+        if (activity.config.isPhoneMode() || !ActivationAccess.playbackAllowed(activity)) return;
+        activity.refreshPlaylistNow(); // Existing in-flight guard and last-good-cache behavior.
     }
 
     private void gracefulExit() {
