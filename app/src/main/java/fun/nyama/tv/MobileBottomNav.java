@@ -107,6 +107,14 @@ final class MobileBottomNav extends LinearLayout {
         MobileBottomNav nav = new MobileBottomNav(activity, active, listener);
         screen.addView(nav, new LayoutParams(-1, -2));
         ViewCompat.setOnApplyWindowInsetsListener(screen, (view, insets) -> {
+            if (AppSidebar.SECTION_TV.equals(active)) {
+                // Live playback uses the real safe rectangle, including when the app bar is GONE.
+                // Hidden system bars must not leave stale top/side offsets around the picture.
+                androidx.core.graphics.Insets safe = PlayerVideoFit.safeInsets(insets);
+                screen.setPadding(safe.left, safe.top, safe.right, safe.bottom);
+                nav.setPadding(nav.dp(4), nav.dp(4), nav.dp(4), nav.dp(4));
+                return insets.inset(safe.left, safe.top, safe.right, safe.bottom);
+            }
             int types = WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout();
             // Older WebView/Android hosts can omit stable navigation insets. Honor visible bars too.
             androidx.core.graphics.Insets bars = androidx.core.graphics.Insets.max(

@@ -3,6 +3,7 @@ package fun.nyama.tv;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.Context;
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Bitmap;
 import android.graphics.Typeface;
@@ -32,6 +33,10 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -152,6 +157,10 @@ public final class MoviePlayerActivity extends Activity {
     private View buildUi() {
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
+        root.setLayoutParams(new FrameLayout.LayoutParams(-1, -1));
+        // Own the safe playback rectangle once. Children must not apply these insets again.
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        ViewCompat.setOnApplyWindowInsetsListener(root, PlayerVideoFit::applyInsets);
 
         long webViewStartedAt = android.os.SystemClock.elapsedRealtime();
         webView = tvMode ? new WebView(this) : new WebView(this) {
@@ -240,8 +249,29 @@ public final class MoviePlayerActivity extends Activity {
 
     private void immersive() {
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
-        getWindow().getDecorView().setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            WindowManager.LayoutParams attributes = getWindow().getAttributes();
+            attributes.layoutInDisplayCutoutMode = android.os.Build.VERSION.SDK_INT >= 30
+                    ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                    : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            getWindow().setAttributes(attributes);
+        }
+        WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+        controller.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        controller.hide(WindowInsetsCompat.Type.systemBars());
+        if (root != null) ViewCompat.requestApplyInsets(root);
+    }
+
+    @Override public void onConfigurationChanged(Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        // The manifest retains this WebView/customView across rotation: resize, never reload it.
+        immersive();
+        if (root != null) root.requestLayout();
+    }
+
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus && root != null) immersive();
     }
 
     private void configureWebView(WebView view) {
@@ -282,6 +312,7 @@ public final class MoviePlayerActivity extends Activity {
 
             @Override public void onPageCommitVisible(WebView v, String url) {
                 super.onPageCommitVisible(v, url);
+                if (v == webView && isSelectedMainDocument(url)) v.evaluateJavascript(PlayerVideoFit.script(), null);
                 if (v == webView && (tvMode ? isSelectedMainDocument(url) : loadedPlayerUrl.equals(url))) {
                     Log.d(TAG, (tvMode ? "TV" : "Mobile") + " initialization document_committed since_load_ms="
                             + (android.os.SystemClock.elapsedRealtime() - tvDocumentLoadAt)
@@ -338,6 +369,7 @@ public final class MoviePlayerActivity extends Activity {
                     }
                 }
                 hardenEmbedPage();
+                if (v == webView && isSelectedMainDocument(url)) v.evaluateJavascript(PlayerVideoFit.script(), null);
                 if (tvMode) {
                     // A finished outer wrapper is not evidence that its cross-origin media is ready.
                     Log.d(TAG, "TV initialization document_finished");

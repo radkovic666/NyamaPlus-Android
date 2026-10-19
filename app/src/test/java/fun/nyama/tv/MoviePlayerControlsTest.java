@@ -485,6 +485,85 @@ public class MoviePlayerControlsTest {
         } finally { RuntimeEnvironment.getApplication().getApplicationInfo().flags = flags; }
     }
 
+    private void sizePlayback(View root, int width, int height) {
+        root.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY));
+        root.layout(0, 0, width, height);
+    }
+    private void assertPlaybackRectangle(View child, int width, int height, int left, int top, int right, int bottom) {
+        assertEquals(ViewGroup.LayoutParams.MATCH_PARENT, child.getLayoutParams().width);
+        assertEquals(ViewGroup.LayoutParams.MATCH_PARENT, child.getLayoutParams().height);
+        assertEquals(left, child.getLeft()); assertEquals(top, child.getTop());
+        assertEquals(width - right, child.getRight()); assertEquals(height - bottom, child.getBottom());
+        assertEquals(0f, child.getTranslationX(), 0f); assertEquals(0f, child.getTranslationY(), 0f);
+        assertEquals(1f, child.getScaleX(), 0f); assertEquals(1f, child.getScaleY(), 0f);
+    }
+    @Test @Config(sdk = 30) public void bothProvidersKeepFullSafeBoundsAndExactSelectionAcrossInsetsRotationAndCustomFullscreen() throws Exception {
+        fun.nyama.tv.Config config = new fun.nyama.tv.Config(RuntimeEnvironment.getApplication());
+        for (boolean phone : new boolean[]{true, false}) for (String provider : new String[]{fun.nyama.tv.Config.PLAYER_1, fun.nyama.tv.Config.PLAYER_2}) {
+            config.setMovieSeriesPlayer(provider);
+            for (Intent selected : new Intent[]{title("movies", MOVIE), episode(2, 3)}) {
+                ActivityController<MoviePlayerActivity> lifecycle = open(phone, selected);
+                MoviePlayerActivity activity = lifecycle.get(); WebView browser = web(activity); String url = url(activity);
+                ViewGroup root = (ViewGroup) field("root").get(activity);
+                assertEquals(-1, root.getLayoutParams().width); assertEquals(-1, root.getLayoutParams().height);
+                WebChromeClient chrome = Shadows.shadowOf(browser).getWebChromeClient();
+                android.widget.FrameLayout fullscreen = (android.widget.FrameLayout) field("fullscreenContainer").get(activity);
+                View custom = new View(activity); chrome.onShowCustomView(custom, () -> {});
+                for (int[] bounds : new int[][]{{360,800,0,28,0,0}, {800,360,28,0,0,24}, {1280,800,0,0,0,0}, {1920,1080,0,0,0,0}, {360,800,0,0,0,0}}) {
+                    int width=bounds[0], height=bounds[1], left=bounds[2], top=bounds[3], right=bounds[4], bottom=bounds[5];
+                    android.content.res.Configuration configuration = new android.content.res.Configuration(activity.getResources().getConfiguration());
+                    configuration.orientation = width > height ? android.content.res.Configuration.ORIENTATION_LANDSCAPE : android.content.res.Configuration.ORIENTATION_PORTRAIT;
+                    configuration.screenWidthDp=width; configuration.screenHeightDp=height; activity.onConfigurationChanged(configuration);
+                    androidx.core.view.WindowInsetsCompat insets = new androidx.core.view.WindowInsetsCompat.Builder()
+                            .setInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars(), androidx.core.graphics.Insets.of(0,0,0,bottom))
+                            .setDisplayCutout(new androidx.core.view.DisplayCutoutCompat(new android.graphics.Rect(left,top,right,0),
+                                    Collections.singletonList(new android.graphics.Rect(0,0,Math.max(1,left),Math.max(1,top)))))
+                            .setInsets(androidx.core.view.WindowInsetsCompat.Type.displayCutout(),androidx.core.graphics.Insets.of(left,top,right,0))
+                            .setInsetsIgnoringVisibility(androidx.core.view.WindowInsetsCompat.Type.displayCutout(),androidx.core.graphics.Insets.of(left,top,right,0))
+                            .build();
+                    assertEquals("Synthetic cutout", top, insets.getInsetsIgnoringVisibility(androidx.core.view.WindowInsetsCompat.Type.displayCutout()).top);
+                    androidx.core.view.ViewCompat.dispatchApplyWindowInsets(root,insets); sizePlayback(root,width,height);
+                    assertEquals("Root safe top", top, root.getPaddingTop());
+                    assertPlaybackRectangle(browser,width,height,left,top,right,bottom);
+                    assertPlaybackRectangle(fullscreen,width,height,left,top,right,bottom);
+                    assertEquals(fullscreen.getWidth(),custom.getWidth()); assertEquals(fullscreen.getHeight(),custom.getHeight());
+                    assertSame(browser,web(activity)); assertEquals(url,url(activity)); assertSame(custom,field("customView").get(activity));
+                }
+                chrome.onHideCustomView(); assertSame(browser,web(activity)); assertEquals(url,url(activity));
+                destroy(lifecycle);
+            }
+        }
+    }
+
+    @Test @Config(sdk = {28, 30}) public void visibleSystemBarsAreReservedOnceAndHiddenBarsLeaveNoStalePadding() throws Exception {
+        MoviePlayerActivity activity = open(true,"movies").get(); View root=(View)field("root").get(activity);
+        androidx.core.graphics.Insets bars = androidx.core.graphics.Insets.of(20,24,12,32);
+        androidx.core.view.WindowInsetsCompat visible = new androidx.core.view.WindowInsetsCompat.Builder()
+                .setSystemWindowInsets(bars).setStableInsets(bars)
+                .setInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars(),bars)
+                .setInsetsIgnoringVisibility(androidx.core.view.WindowInsetsCompat.Type.systemBars(),bars).build();
+        for(int repeat=0;repeat<2;repeat++) {
+            // SDK 28's synthetic dispatch loses the root stable-inset metadata. Exercise the
+            // same bound handler directly there; SDK 30 also checks platform dispatch above.
+            PlayerVideoFit.applyInsets(root,visible);sizePlayback(root,800,360);
+            assertPlaybackRectangle(web(activity),800,360,20,24,12,32);
+        }
+        PlayerVideoFit.applyInsets(root,new androidx.core.view.WindowInsetsCompat.Builder().build());
+        sizePlayback(root,360,800);assertPlaybackRectangle(web(activity),360,800,0,0,0,0);
+    }
+
+    @Test public void fitScriptInstallsOnlyForCurrentSelectedDocumentAndDoesNotReplaceTouchOrSubtitlePolicy() throws Exception {
+        MoviePlayerActivity activity = open(true, episode(2,3)).get(); WebView browser=web(activity);
+        WebViewClient client=Shadows.shadowOf(browser).getWebViewClient();
+        client.onPageCommitVisible(browser,url(activity));
+        assertEquals(PlayerVideoFit.script(),Shadows.shadowOf(browser).getLastEvaluatedJavascript());
+        assertTrue(PlayerVideoFit.script().contains("object-fit:contain")); assertFalse(PlayerVideoFit.script().contains("object-fit:cover"));
+        browser.evaluateJavascript("sentinel",null);
+        client.onPageCommitVisible(browser,"https://ads.invalid/embed/movie/"+MOVIE);
+        assertEquals("sentinel",Shadows.shadowOf(browser).getLastEvaluatedJavascript());
+    }
+
     @Test public void phoneMovieAndSeriesUseTheSavedDefaultPlayer() throws Exception {
         for (String type : new String[] { "movies", "series" }) {
             ActivityController<MoviePlayerActivity> lifecycle = open(true, type);

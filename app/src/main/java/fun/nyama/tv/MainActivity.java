@@ -24,6 +24,8 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 import androidx.core.widget.NestedScrollView;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
 
 import androidx.annotation.OptIn;
 import androidx.media3.common.MediaItem;
@@ -36,6 +38,7 @@ import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.ui.PlayerView;
+import androidx.media3.ui.AspectRatioFrameLayout;
 
 
 import java.lang.ref.WeakReference;
@@ -271,8 +274,14 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     private void buildUi() {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
+        if (!compactUi) {
+            WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+            ViewCompat.setOnApplyWindowInsetsListener(root, PlayerVideoFit::applyInsets);
+            ViewCompat.requestApplyInsets(root);
+        }
 
         playerView = new PlayerView(this);
+        playerView.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT);
         playerView.setUseController(false);
         playerView.setKeepScreenOn(true);
         root.addView(playerView, new FrameLayout.LayoutParams(-1, -1));
@@ -372,6 +381,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         root.addView(epgGuide, new FrameLayout.LayoutParams(-1, -1));
 
         cornerClock = new OutlineTextView(this);
+        cornerClock.setSingleLine(true);
         cornerClock.setTextColor(Color.WHITE);
         cornerClock.setTextSize(UiTheme.sp(this, 15) * config.clockScale());
         cornerClock.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
@@ -1086,7 +1096,9 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         else if (Config.CLOCK_BOTTOM_RIGHT.equals(position)) gravity = Gravity.BOTTOM | Gravity.END;
         else gravity = Gravity.TOP | Gravity.START;
 
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(width, height, gravity);
+        // Retain the normal clock footprint, but allow system font scaling to grow it safely.
+        cornerClock.setMinWidth(width); cornerClock.setMinHeight(height);
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(-2, -2, gravity);
         int horizontal = dp(18);
         int vertical = dp(16);
         if ((gravity & Gravity.END) == Gravity.END) params.rightMargin = horizontal; else params.leftMargin = horizontal;

@@ -72,6 +72,40 @@ public class MobileLiveNavigationTest {
     private void showBrowser() throws Exception {
         Method show = MainActivity.class.getDeclaredMethod("showChannelBrowser", boolean.class); show.setAccessible(true); show.invoke(activity, false);
     }
+    private void assertLivePictureFits(boolean phone) throws Exception {
+        build(phone);
+        PlayerView video = (PlayerView) get("playerView");
+        androidx.media3.ui.AspectRatioFrameLayout picture = video.findViewById(androidx.media3.ui.R.id.exo_content_frame);
+        assertEquals(androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT, video.getResizeMode());
+        for (int[] size : new int[][]{{360, 800}, {800, 360}, {1280, 800}, {1920, 1080}, {1080, 1920}}) {
+            for (float ratio : new float[]{16f / 9, 4f / 3, 2.35f, 2.39f}) {
+                picture.setAspectRatio(ratio); layout(size[0], size[1]);
+                assertTrue(picture.getWidth() <= video.getWidth()); assertTrue(picture.getHeight() <= video.getHeight());
+                assertEquals(Math.min(video.getWidth(), video.getHeight() * ratio), picture.getWidth(), 2f);
+                assertEquals(Math.min(video.getHeight(), video.getWidth() / ratio), picture.getHeight(), 2f);
+                assertEquals(video.getWidth() / 2f, picture.getLeft() + picture.getWidth() / 2f, 1f);
+                assertEquals(video.getHeight() / 2f, picture.getTop() + picture.getHeight() / 2f, 1f);
+            }
+        }
+    }
+    @Test public void mobileLivePictureContainsWideClassicAndCinemaFramesAfterResize() throws Exception { assertLivePictureFits(true); }
+    @Test public void tvLivePictureContainsWideClassicAndCinemaFramesAfterResize() throws Exception { assertLivePictureFits(false); }
+    private void assertClockFitsAtLargeSystemFont(boolean phone) throws Exception {
+        RuntimeEnvironment.setFontScale(2.5f);
+        try {
+            new fun.nyama.tv.Config(RuntimeEnvironment.getApplication()).setClockScale(1.8f);build(phone);layout(800,360);
+            assertClockBounds();
+        } finally { RuntimeEnvironment.setFontScale(1f); }
+    }
+    private void assertClockBounds() throws Exception {
+        OutlineTextView clock=(OutlineTextView)get("cornerClock");clock.setText("88:88");layout(800,360);
+        android.graphics.Paint.FontMetrics metrics=clock.getPaint().getFontMetrics();
+        assertTrue("Clock glyph height clipped",metrics.bottom-metrics.top<=clock.getHeight()-clock.getPaddingTop()-clock.getPaddingBottom());
+        assertTrue("Clock width clipped",clock.getPaint().measureText("88:88")<=clock.getWidth()-clock.getPaddingLeft()-clock.getPaddingRight());
+        assertTrue(clock.getTop()>=0);assertTrue(clock.getBottom()<=((View)clock.getParent()).getHeight());
+    }
+    @Test public void mobileClockGrowsToFitLargeSystemFontWithoutClipping() throws Exception { assertClockFitsAtLargeSystemFont(true); }
+    @Test public void tvClockGrowsToFitLargeSystemFontWithoutClipping() throws Exception { assertClockFitsAtLargeSystemFont(false); }
     @Test public void portraitAndLandscapeHideWhileWatchingAndReserveSpaceOnlyWhenRevealed() throws Exception {
         build(true);
         MobileBottomNav nav = (MobileBottomNav) get("mobileNavigation");

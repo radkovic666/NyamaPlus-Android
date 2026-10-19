@@ -85,7 +85,8 @@ public class MobileBottomNavTest {
         for (int i = 0; i < 2; i++) {
             ViewCompat.dispatchApplyWindowInsets(screen, insets);
             assertEquals(24, screen.getPaddingLeft()); assertEquals(30, screen.getPaddingTop());
-            assertEquals(36, screen.getPaddingRight()); assertEquals(24, bar.getPaddingBottom());
+            assertEquals(36, screen.getPaddingRight()); assertEquals(20, screen.getPaddingBottom());
+            assertEquals(4, bar.getPaddingBottom());
         }
     }
     @Test public void liveTvOptInStartsHiddenResetsOnTouchFocusAndCancelsOnExit() {
@@ -108,6 +109,21 @@ public class MobileBottomNavTest {
         bar.revealTemporarily(); bar.hideNow();
         Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(5));
         assertEquals(View.GONE, bar.getVisibility());
+    }
+    @Test @Config(sdk = 30) public void liveTvHiddenBarsDoNotLeaveTopOffsetsAndCutoutSafetySurvivesHiddenNavigation() {
+        Activity activity = Robolectric.buildActivity(Activity.class).get(); View content=new FrameLayout(activity);
+        View screen=MobileBottomNav.wrap(activity,content,"tv",new Actions());activity.setContentView(screen);
+        MobileBottomNav bar=screen.findViewWithTag("mobile-bottom-navigation");bar.enableAutoHide();
+        WindowInsetsCompat insets = new WindowInsetsCompat.Builder()
+                .setInsets(WindowInsetsCompat.Type.systemBars(),Insets.NONE)
+                .setInsetsIgnoringVisibility(WindowInsetsCompat.Type.systemBars(),Insets.of(0,30,0,24))
+                .setVisible(WindowInsetsCompat.Type.systemBars(),false)
+                .setInsets(WindowInsetsCompat.Type.displayCutout(),Insets.of(28,0,0,12))
+                .setInsetsIgnoringVisibility(WindowInsetsCompat.Type.displayCutout(),Insets.of(28,0,0,12)).build();
+        ViewCompat.dispatchApplyWindowInsets(screen,insets);
+        screen.measure(View.MeasureSpec.makeMeasureSpec(800,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(360,View.MeasureSpec.EXACTLY));screen.layout(0,0,800,360);
+        assertEquals(View.GONE,bar.getVisibility());assertEquals(28,content.getLeft());assertEquals(0,content.getTop());
+        assertEquals(348,content.getBottom());assertEquals(0,screen.getPaddingTop());
     }
     @Test public void catalogsAndSettingsNeverOptIntoAutoHide() {
         Activity activity = Robolectric.buildActivity(Activity.class).get();
