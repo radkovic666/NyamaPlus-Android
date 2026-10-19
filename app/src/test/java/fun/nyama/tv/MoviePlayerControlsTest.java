@@ -421,18 +421,17 @@ public class MoviePlayerControlsTest {
         assertEquals(View.VISIBLE, controls(activity).getVisibility());
     }
 
-    @Test public void phoneMovieAndSeriesRoutesRemainUnchangedWithoutVidApiParameters() throws Exception {
+    @Test public void phoneMovieAndSeriesUseTheSavedDefaultPlayer() throws Exception {
         for (String type : new String[] { "movies", "series" }) {
             ActivityController<MoviePlayerActivity> lifecycle = open(true, type);
-            assertEquals("series".equals(type) ? "https://streamimdb.ru/embed/tv/" + SERIES
-                    : "https://streamimdb.ru/embed/movie/" + MOVIE, url(lifecycle.get()));
+            assertVapRoute(lifecycle.get(), "series".equals(type) ? "/embed/tv/" + SERIES : "/embed/movie/" + MOVIE, "en");
             destroy(lifecycle);
         }
     }
 
-    @Test public void phoneIgnoresTvEpisodeExtrasAndRetainsItsExistingSeriesPlayer() throws Exception {
+    @Test public void phoneHonorsExactEpisodeExtrasWithTheSavedPlayer() throws Exception {
         MoviePlayerActivity activity = open(true, episode(2, 3)).get();
-        assertEquals("https://streamimdb.ru/embed/tv/" + SERIES, url(activity));
+        assertVapRoute(activity, "/embed/tv/" + SERIES + "/2/3", "en");
         assertNotNull(controls(activity));
     }
 
@@ -464,9 +463,9 @@ public class MoviePlayerControlsTest {
         assertVapRoute(activity, "/embed/tv/" + SERIES + "/0/1", "en");
     }
 
-    @Test public void genericSeriesFallbackKeepsTheExistingProviderSelectorWithoutGuessedEpisode() throws Exception {
+    @Test public void genericSeriesUsesSelectedProviderWithoutGuessedEpisode() throws Exception {
         MoviePlayerActivity activity = open(false, "series").get();
-        assertEquals("https://streamimdb.ru/embed/tv/" + SERIES, url(activity));
+        assertVapRoute(activity, "/embed/tv/" + SERIES, "en");
         assertNoTvPlaybackBar(activity);
     }
 
@@ -686,6 +685,83 @@ public class MoviePlayerControlsTest {
         assertNoTvPlaybackBar(activity);
     }
 
+    @Test public void bothPlayersRouteMoviesAndExactEpisodesOnBothDeviceModes() throws Exception {
+        fun.nyama.tv.Config config = new fun.nyama.tv.Config(RuntimeEnvironment.getApplication());
+        for (String provider : new String[]{fun.nyama.tv.Config.PLAYER_1, fun.nyama.tv.Config.PLAYER_2}) {
+            config.setMovieSeriesPlayer(provider);
+            for (boolean phone : new boolean[]{false, true}) {
+                for (Intent selection : new Intent[]{title("movies", MOVIE), episode(3, 7)}) {
+                    ActivityController<MoviePlayerActivity> lifecycle = open(phone, selection);
+                    MoviePlayerActivity activity = lifecycle.get();
+                    Uri selected = Uri.parse(url(activity));
+                    assertEquals("https", selected.getScheme());
+                    assertEquals(fun.nyama.tv.Config.PLAYER_1.equals(provider) ? "vidrock.to" : "vaplayer.ru", selected.getHost());
+                    assertEquals(selection.hasExtra("episode") ? "/embed/tv/" + SERIES + "/3/7" : "/embed/movie/" + MOVIE, selected.getPath());
+                    if (fun.nyama.tv.Config.PLAYER_1.equals(provider)) {
+                        assertNull(selected.getQuery());
+                        assertNull(field("episodeProgress").get(activity)); // Never trust Player 1 as a Player 2 bridge origin.
+                    } else assertEquals("en", selected.getQueryParameter("ds_lang"));
+                    assertFalse(views(activity.getWindow().getDecorView()).stream()
+                            .anyMatch(view -> "mobile-bottom-navigation".equals(view.getTag())));
+                    if (!phone) {
+                        RecordingWebView recording = recordProviderKeys(activity);
+                        press(activity, KeyEvent.KEYCODE_DPAD_CENTER); assertKeyPair(recording, KeyEvent.KEYCODE_SPACE);
+                        press(activity, KeyEvent.KEYCODE_DPAD_LEFT); assertKeyPair(recording, KeyEvent.KEYCODE_DPAD_LEFT);
+                        press(activity, KeyEvent.KEYCODE_DPAD_RIGHT); assertKeyPair(recording, KeyEvent.KEYCODE_DPAD_RIGHT);
+                    }
+                    destroy(lifecycle);
+                }
+            }
+        }
+    }
+
+    @Test public void playerChoiceChangesNextPlaybackWithoutRetargetingAnOpenSession() throws Exception {
+        fun.nyama.tv.Config config = new fun.nyama.tv.Config(RuntimeEnvironment.getApplication());
+        for (boolean phone : new boolean[]{false, true}) {
+            config.setMovieSeriesPlayer(fun.nyama.tv.Config.PLAYER_2);
+            ActivityController<MoviePlayerActivity> first = open(phone, "movies");
+            String original = url(first.get());
+            config.setMovieSeriesPlayer(fun.nyama.tv.Config.PLAYER_1);
+            assertEquals(original, url(first.get()));
+            WebView target = web(first.get());
+            assertTrue(Shadows.shadowOf(target).getWebViewClient().shouldOverrideUrlLoading(target, "https://vidrock.to/embed/movie/" + MOVIE));
+            destroy(first);
+            ActivityController<MoviePlayerActivity> second = open(phone, episode(2, 3));
+            assertEquals("https://vidrock.to/embed/tv/" + SERIES + "/2/3", url(second.get()));
+            destroy(second);
+        }
+    }
+
+    @Test public void selectedOriginAndExplicitIdentityCannotBeBroadenedByRedirects() throws Exception {
+        fun.nyama.tv.Config config = new fun.nyama.tv.Config(RuntimeEnvironment.getApplication());
+        for (String provider : new String[]{fun.nyama.tv.Config.PLAYER_1, fun.nyama.tv.Config.PLAYER_2}) {
+            config.setMovieSeriesPlayer(provider);
+            String host = fun.nyama.tv.Config.PLAYER_1.equals(provider) ? "vidrock.to" : "vaplayer.ru";
+            String other = fun.nyama.tv.Config.PLAYER_1.equals(provider) ? "vaplayer.ru" : "vidrock.to";
+            for (boolean phone : new boolean[]{false, true}) {
+                ActivityController<MoviePlayerActivity> lifecycle = open(phone, episode(2, 3));
+                WebView target = web(lifecycle.get()); WebViewClient client = Shadows.shadowOf(target).getWebViewClient();
+                String path = "/embed/tv/" + SERIES + "/2/3";
+                assertFalse(client.shouldOverrideUrlLoading(target, "https://" + host + path));
+                for (String blocked : new String[]{"http://" + host + path, "https://" + other + path,
+                        "https://user@" + host + path, "https://" + host + ":8443" + path,
+                        "https://sub." + host + path, "https://" + host + ".evil.invalid" + path,
+                        "https://" + host + "/embed/tv/" + SERIES + "/2/4", "https://" + host + "/embed/tv/" + SERIES})
+                    assertTrue(blocked, client.shouldOverrideUrlLoading(target, blocked));
+                destroy(lifecycle);
+            }
+        }
+    }
+
+    @Test public void explicitInvalidMobileEpisodeCannotFallBackToGenericOrOtherTitle() throws Exception {
+        new fun.nyama.tv.Config(RuntimeEnvironment.getApplication()).setDeviceMode(fun.nyama.tv.Config.MODE_PHONE);
+        for (Intent bad : new Intent[]{episode(2, 3).putExtra("series_imdb_id", "tt0903747"), episode(2, -1)}) {
+            ActivityController<MoviePlayerActivity> lifecycle = Robolectric.buildActivity(MoviePlayerActivity.class, bad).create();
+            assertNull(url(lifecycle.get())); assertTrue(lifecycle.get().isFinishing());
+            lifecycle.destroy();
+        }
+    }
+
     @Test public void topLevelNavigationOnlyAllowsTheSelectedProvider() throws Exception {
         MoviePlayerActivity tv = open(false, "movies").get();
         WebView tvWeb = web(tv);
@@ -696,8 +772,8 @@ public class MoviePlayerControlsTest {
         MoviePlayerActivity phone = open(true, "movies").get();
         WebView phoneWeb = web(phone);
         WebViewClient phoneClient = Shadows.shadowOf(phoneWeb).getWebViewClient();
-        assertFalse(phoneClient.shouldOverrideUrlLoading(phoneWeb, "https://streamimdb.ru/embed/movie/" + MOVIE));
-        assertTrue(phoneClient.shouldOverrideUrlLoading(phoneWeb, "https://vaplayer.ru/embed/movie/" + MOVIE));
+        assertFalse(phoneClient.shouldOverrideUrlLoading(phoneWeb, "https://vaplayer.ru/embed/movie/" + MOVIE));
+        assertTrue(phoneClient.shouldOverrideUrlLoading(phoneWeb, "https://streamimdb.ru/embed/movie/" + MOVIE));
     }
     @Test public void genericSeriesRouteKeepsProviderSubtitleControlsWithoutGuessingEpisode() throws Exception {
         MoviePlayerActivity activity = open(false, "series").get();
@@ -877,13 +953,13 @@ public class MoviePlayerControlsTest {
         }
     }
 
-    @Test public void mobileNavigatesDuringCreateBeforeResumeOrLayoutAndKeepsSeriesChooser() throws Exception {
+    @Test public void mobileNavigatesDuringCreateBeforeResumeOrLayoutWithSavedProvider() throws Exception {
         new fun.nyama.tv.Config(RuntimeEnvironment.getApplication()).setDeviceMode(fun.nyama.tv.Config.MODE_PHONE);
         for (String type : new String[]{"movies", "series"}) {
             ActivityController<MoviePlayerActivity> lifecycle = Robolectric.buildActivity(MoviePlayerActivity.class,
                     title(type, "movies".equals(type) ? MOVIE : SERIES)).create();
             MoviePlayerActivity activity = lifecycle.get();
-            assertEquals("https://streamimdb.ru/embed/" + ("movies".equals(type) ? "movie/" + MOVIE : "tv/" + SERIES), url(activity));
+            assertVapRoute(activity, "movies".equals(type) ? "/embed/movie/" + MOVIE : "/embed/tv/" + SERIES, "en");
             assertEquals(0, web(activity).getWidth());
             lifecycle.start().resume().visible(); activities.add(lifecycle);
         }
@@ -935,7 +1011,7 @@ public class MoviePlayerControlsTest {
         assertFalse(Shadows.shadowOf(target).getWebViewClient().onRenderProcessGone(target, null));
         assertSame(target, web(activity));
         assertFalse(Shadows.shadowOf(target).wasDestroyCalled());
-        assertEquals("https://streamimdb.ru/embed/movie/" + MOVIE, url(activity));
+        assertVapRoute(activity, "/embed/movie/" + MOVIE, "en");
         assertNotNull(controls(activity));
     }
 

@@ -170,6 +170,7 @@
     <string name="cast">Актьори</string>
     <string name="genre">Жанр</string>
     <string name="released">Премиера</string>
+    <string name="movies_series_player">Плеър за филми и сериали</string>
     <string name="player_1">Плеър 1</string>
     <string name="player_2">Плеър 2</string>
     <string name="pukanki_url">Pukanki.Fun API адрес</string>

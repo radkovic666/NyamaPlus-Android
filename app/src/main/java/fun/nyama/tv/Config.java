@@ -28,6 +28,7 @@ public final class Config {
     private static final String K_CLOCK_SCALE = "corner_clock_scale";
     private static final String K_CLOCK_POSITION = "corner_clock_position";
     private static final String K_DEVICE_MODE = "device_mode";
+    private static final String K_MOVIE_SERIES_PLAYER = "movie_series_player";
 
     public static final String DEFAULT_EPG_URL = "https://is.gd/fullepg";
     public static final String DEFAULT_PUKANKI_URL = "https://pukanki.fun";
@@ -40,6 +41,9 @@ public final class Config {
     public static final String THEME_ORANGE = "orange";
     public static final String THEME_GREEN = "green";
     public static final String THEME_BLUE = "blue";
+    public static final String PLAYER_1 = "player_1";
+    public static final String PLAYER_2 = "player_2";
+
     public static final String MODE_TV = "tv";
     public static final String MODE_PHONE = "phone";
     public static final String CLOCK_TOP_LEFT = "top_left";
@@ -178,6 +182,15 @@ public final class Config {
 
     public void setLanguage(String language) {
         prefs.edit().putString(K_LANGUAGE, LANG_EN.equals(language) ? LANG_EN : LANG_BG).apply();
+    }
+
+    /** One provider preference for Movies and Series on every device mode. */
+    public String movieSeriesPlayer() {
+        return PLAYER_1.equals(prefs.getString(K_MOVIE_SERIES_PLAYER, PLAYER_2)) ? PLAYER_1 : PLAYER_2;
+    }
+
+    public void setMovieSeriesPlayer(String player) {
+        prefs.edit().putString(K_MOVIE_SERIES_PLAYER, PLAYER_1.equals(player) ? PLAYER_1 : PLAYER_2).apply();
     }
 
     public String colorTheme() {

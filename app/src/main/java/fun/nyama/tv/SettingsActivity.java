@@ -189,6 +189,24 @@ public final class SettingsActivity extends Activity {
         general.addView(themes);
         addSection(root, getString(R.string.general_settings), general);
 
+        LinearLayout playerCard = card();
+        RadioGroup players = new RadioGroup(this);
+        players.setTag("movie-series-player");
+        players.setOrientation(phone ? RadioGroup.VERTICAL : RadioGroup.HORIZONTAL);
+        RadioButton player1 = radio(getString(R.string.player_1), false);
+        RadioButton player2 = radio(getString(R.string.player_2), false);
+        player1.setId(View.generateViewId()); player2.setId(View.generateViewId());
+        player1.setTag("movie-series-player-1"); player2.setTag("movie-series-player-2");
+        players.addView(player1, new RadioGroup.LayoutParams(phone ? -1 : 0, dp(52), phone ? 0f : 1f));
+        players.addView(player2, new RadioGroup.LayoutParams(phone ? -1 : 0, dp(52), phone ? 0f : 1f));
+        players.check(Config.PLAYER_1.equals(config.movieSeriesPlayer()) ? player1.getId() : player2.getId());
+        players.setOnCheckedChangeListener((group, checkedId) -> {
+            if (checkedId == player1.getId()) config.setMovieSeriesPlayer(Config.PLAYER_1);
+            else if (checkedId == player2.getId()) config.setMovieSeriesPlayer(Config.PLAYER_2);
+        });
+        playerCard.addView(players);
+        addSection(root, getString(R.string.movies_series_player), playerCard);
+
         // Clock settings card.
         LinearLayout clockCard = card();
         Switch showClock = new Switch(this);

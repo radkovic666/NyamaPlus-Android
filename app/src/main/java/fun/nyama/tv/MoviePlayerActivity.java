@@ -40,16 +40,14 @@ import org.json.JSONTokener;
 /**
  * Internal Movies/Series player wrapper.
  *
- * TV uses a minimal fullscreen surface and documented exact-episode embeds. Phone routes,
- * controls, touch handling and session state retain their existing behavior.
+ * Both device modes use the saved provider and shared exact-episode routes. Their existing
+ * fullscreen surfaces, controls, touch handling and session behavior remain separate.
  */
 public final class MoviePlayerActivity extends Activity {
     static final String EXTRA_TV_WATCH_STARTED_AT = "tv_watch_started_at";
     static final String EXTRA_RETURN_TO_CATALOG = "return_to_catalog";
     static final String EXTRA_CONFIRMED_TV_EXIT = "confirmed_tv_exit";
     private static final String TAG = "NyamaPlayer";
-    private static final String PLAYER_HOST = "streamimdb.ru";
-    private static final String PLAYER_BASE = "https://streamimdb.ru/embed/";
     private static final long BACK_CONFIRM_MS = 2500L;
     private static final long BACK_DUPLICATE_GUARD_MS = 250L;
     private static final long CONTROLS_HIDE_MS = 5000L;
@@ -80,7 +78,8 @@ public final class MoviePlayerActivity extends Activity {
     private boolean leavingPlayback;
     private boolean playlistReturnRequested;
     private String loadedPlayerUrl = "";
-    private String selectedPlaybackHost = PLAYER_HOST;
+    private String selectedPlaybackHost = "";
+    private boolean exactEpisodeSelection;
     private View playbackError;
     private boolean tvForeground;
     private boolean rendererRecoveryUsed;
@@ -304,7 +303,7 @@ public final class MoviePlayerActivity extends Activity {
                     if (!isSelectedMainDocument(url)) {
                         // A completed same-provider redirect to a restriction/error route is a
                         // different document, not the selected episode. Do not mask it forever.
-                        if (url != null && isAllowedMainFrame(Uri.parse(url)))
+                        if (url != null && isSelectedProviderOrigin(Uri.parse(url)))
                             showPlaybackError(tvText("Източникът не отвори избраното видео. Опитайте отново.",
                                     "The source did not open the selected video. Try again."));
                         return;
@@ -365,14 +364,16 @@ public final class MoviePlayerActivity extends Activity {
         });
     }
 
+    private boolean isSelectedProviderOrigin(Uri uri) {
+        return uri != null && "https".equals(uri.getScheme()) && uri.getUserInfo() == null && uri.getPort() == -1
+                && !selectedPlaybackHost.isEmpty() && selectedPlaybackHost.equals(uri.getHost());
+    }
+
     private boolean isAllowedMainFrame(Uri uri) {
-        if (uri == null) return false;
-        String scheme = safe(uri.getScheme()).toLowerCase(java.util.Locale.ROOT);
-        if (!("https".equals(scheme) || "http".equals(scheme))) return false;
-        String host = safe(uri.getHost()).toLowerCase(java.util.Locale.ROOT);
-        if (tvMode) return "https".equals(scheme)
-                && (selectedPlaybackHost.equals(host) || host.endsWith("." + selectedPlaybackHost));
-        return PLAYER_HOST.equals(host) || host.endsWith("." + PLAYER_HOST);
+        if (!isSelectedProviderOrigin(uri)) return false;
+        // An explicit selection cannot redirect into a different title/episode or generic chooser.
+        return !(exactEpisodeSelection || "movies".equals(type))
+                || (!loadedPlayerUrl.isEmpty() && Uri.parse(loadedPlayerUrl).getPath().equals(uri.getPath()));
     }
 
     private void hardenEmbedPage() {
@@ -419,29 +420,31 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     private void loadPlayer() {
-        String path = "series".equals(type) ? "tv" : "movie";
-        if (!tvMode) {
-            loadedPlayerUrl = PLAYER_BASE + path + "/" + Uri.encode(id);
-            recordDocumentLoad();
-            webView.loadUrl(loadedPlayerUrl);
-            return;
-        }
         try {
+            // Read once per new playback. A running session keeps its selected origin immutable.
+            String player = config.movieSeriesPlayer();
             boolean selection = getIntent().hasExtra("season") || getIntent().hasExtra("episode") || returnToSeries;
-            if ("series".equals(type) && selection) {
+            exactEpisodeSelection = "series".equals(type) && selection;
+            if (exactEpisodeSelection) {
                 loadedPlayerUrl = TvPlaybackSource.episode(id, safe(getIntent().getStringExtra("series_imdb_id")),
-                        getIntent().getIntExtra("season", -1), getIntent().getIntExtra("episode", -1), config.language(), UiTheme.accent(this));
+                        getIntent().getIntExtra("season", -1), getIntent().getIntExtra("episode", -1),
+                        config.language(), UiTheme.accent(this), player);
             } else if ("movies".equals(type)) {
-                loadedPlayerUrl = TvPlaybackSource.movie(id, config.language(), UiTheme.accent(this));
+                loadedPlayerUrl = TvPlaybackSource.movie(id, config.language(), UiTheme.accent(this), player);
             } else {
-                // No accurate episode metadata: preserve the existing series route, never invent S1E1.
-                loadedPlayerUrl = PLAYER_BASE + "tv/" + Uri.encode(id);
+                loadedPlayerUrl = TvPlaybackSource.series(id, config.language(), UiTheme.accent(this), player);
             }
             selectedPlaybackHost = Uri.parse(loadedPlayerUrl).getHost();
-            startSelectedTvDocument();
+            if (tvMode) startSelectedTvDocument();
+            else {
+                recordDocumentLoad();
+                webView.loadUrl(loadedPlayerUrl);
+            }
         } catch (IllegalArgumentException invalidIdentity) {
-            showPlaybackError(tvText("Избраният епизод или идентификатор не е валиден. Изберете епизода отново.",
-                    "The selected episode or title identity is invalid. Select the episode again."));
+            String message = tvText("Избраният епизод или идентификатор не е валиден. Изберете епизода отново.",
+                    "The selected episode or title identity is invalid. Select the episode again.");
+            if (tvMode) showPlaybackError(message);
+            else { Toast.makeText(this, message, Toast.LENGTH_LONG).show(); finish(); }
         }
     }
 
@@ -552,7 +555,9 @@ public final class MoviePlayerActivity extends Activity {
 
     private boolean isPlaybackDocumentUrl(Uri uri) {
         return uri != null && "https".equals(uri.getScheme()) && !loadedPlayerUrl.isEmpty()
-                && (selectedPlaybackHost.equals(uri.getHost()) || "nextgencloudfabric.com".equals(uri.getHost()))
+                && uri.getUserInfo() == null && uri.getPort() == -1
+                && (selectedPlaybackHost.equals(uri.getHost())
+                || (TvPlaybackSource.HOST.equals(selectedPlaybackHost) && "nextgencloudfabric.com".equals(uri.getHost())))
                 && Uri.parse(loadedPlayerUrl).getPath().equals(uri.getPath());
     }
 

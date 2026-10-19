@@ -3,6 +3,11 @@ package fun.nyama.tv;
 import android.app.Activity;
 import android.app.Application;
 import android.view.View;
+import android.view.MotionEvent;
+import android.os.Looper;
+import org.robolectric.Shadows;
+import org.robolectric.annotation.LooperMode;
+import java.time.Duration;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -21,6 +26,7 @@ import static org.junit.Assert.*;
 
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 28, application = Application.class, qualifiers = "mdpi")
+@LooperMode(LooperMode.Mode.PAUSED)
 public class MobileBottomNavTest {
     @Before public void before() {
         RuntimeEnvironment.getApplication().getSharedPreferences("nyama_tv_private", 0).edit().clear().commit();
@@ -78,6 +84,37 @@ public class MobileBottomNavTest {
             ViewCompat.dispatchApplyWindowInsets(screen, insets);
             assertEquals(24, screen.getPaddingLeft()); assertEquals(30, screen.getPaddingTop());
             assertEquals(36, screen.getPaddingRight()); assertEquals(24, bar.getPaddingBottom());
+        }
+    }
+    @Test public void liveTvOptInStartsHiddenResetsOnTouchFocusAndCancelsOnExit() {
+        Activity activity = Robolectric.buildActivity(Activity.class).get();
+        View screen = MobileBottomNav.wrap(activity, new FrameLayout(activity), "tv", new Actions());
+        activity.setContentView(screen);
+        MobileBottomNav bar = screen.findViewWithTag("mobile-bottom-navigation");
+        bar.enableAutoHide(); assertEquals(View.GONE, bar.getVisibility());
+        bar.revealTemporarily(); assertEquals(View.VISIBLE, bar.getVisibility());
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(2500));
+        MotionEvent touch = MotionEvent.obtain(0, 2500, MotionEvent.ACTION_DOWN, 4, 4, 0);
+        bar.dispatchTouchEvent(touch); touch.recycle();
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(2500));
+        assertEquals(View.VISIBLE, bar.getVisibility());
+        bar.getChildAt(1).requestFocus();
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(2500));
+        assertEquals(View.VISIBLE, bar.getVisibility());
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(501));
+        assertEquals(View.GONE, bar.getVisibility());
+        bar.revealTemporarily(); bar.hideNow();
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(5));
+        assertEquals(View.GONE, bar.getVisibility());
+    }
+    @Test public void catalogsAndSettingsNeverOptIntoAutoHide() {
+        Activity activity = Robolectric.buildActivity(Activity.class).get();
+        for (String section : new String[]{"movies", "series", "settings"}) {
+            View screen = MobileBottomNav.wrap(activity, new FrameLayout(activity), section, new Actions());
+            MobileBottomNav bar = screen.findViewWithTag("mobile-bottom-navigation");
+            bar.revealTemporarily(); bar.hideNow();
+            Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(4));
+            assertEquals(View.VISIBLE, bar.getVisibility());
         }
     }
 }

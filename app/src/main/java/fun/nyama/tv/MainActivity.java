@@ -105,6 +105,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     private TextView programmeInfoTime;
     private TextView programmeInfoDescription;
     private ChannelBrowserOverlay browser;
+    private MobileBottomNav mobileNavigation;
     private EpgGuideOverlay epgGuide;
     private LinearLayout exitPrompt;
     private boolean exitArmed = false;
@@ -183,6 +184,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         resumed = true;
         suppressNextUserLeaveHint = false;
         immersive();
+        if (mobileNavigation != null) mobileNavigation.hideNow();
 
         if (!uiSignatureAtCreate.equals(config.uiSignature())) {
             recreate();
@@ -236,6 +238,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     }
 
     @Override protected void onPause() {
+        if (mobileNavigation != null) mobileNavigation.hideNow();
         super.onPause();
         resumed = false;
         if (refreshTask != null) refreshTask.cancel(false);
@@ -251,6 +254,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     }
 
     @Override protected void onDestroy() {
+        if (mobileNavigation != null) mobileNavigation.hideNow();
         MainActivity active = activeInstance.get();
         if (active == this) activeInstance.clear();
         super.onDestroy();
@@ -399,12 +403,16 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
 
         setContentView(config.isPhoneMode() ? MobileBottomNav.wrap(this, root, AppSidebar.SECTION_TV,
                 new AppSidebar.Listener() {
-                    public void onTv() { browser.show(channels, currentIndex); }
+                    public void onTv() { showChannelBrowser(false); }
                     public void onMovies() { onRequestMovies(); }
                     public void onSeries() { onRequestSeries(); }
                     public void onSettings() { onRequestSettings(); }
                 }) : root);
-        if (config.isPhoneMode()) installPhoneTouchControls();
+        if (config.isPhoneMode()) {
+            mobileNavigation = findViewById(android.R.id.content).findViewWithTag("mobile-bottom-navigation");
+            mobileNavigation.enableAutoHide();
+            installPhoneTouchControls();
+        }
         refreshCornerClock();
     }
 
@@ -864,6 +872,16 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         showStatus(getString(favorite ? R.string.added_favorite : R.string.removed_favorite, channel.name), 2200);
     }
 
+    @Override public boolean dispatchTouchEvent(MotionEvent event) {
+        // Reuse the existing tap-to-channel-browser gesture. Its overlay stays navigable
+        // after the bar times out, without swallowing channel-list or EPG touches.
+        if (mobileNavigation != null && event.getActionMasked() == MotionEvent.ACTION_DOWN
+                && (mobileNavigation.getVisibility() == View.VISIBLE
+                || (browser != null && browser.isOpen()) || (epgGuide != null && epgGuide.isOpen())))
+            mobileNavigation.revealTemporarily();
+        return super.dispatchTouchEvent(event);
+    }
+
     private void installPhoneTouchControls() {
         final GestureDetector detector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onDown(MotionEvent e) { return true; }
@@ -920,6 +938,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
 
     private void showChannelBrowser(boolean focusCategories, boolean focusSidebar) {
         cancelExitPrompt();
+        if (mobileNavigation != null) mobileNavigation.revealTemporarily();
         if (channels.isEmpty()) {
             showStatus(getString(R.string.no_channels_loaded), 2000);
             return;
@@ -984,11 +1003,17 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         startActivity(new Intent(this, SettingsActivity.class));
     }
 
-    @Override public void onPlayChannel(int sourceIndex) { playChannel(sourceIndex, false); }
+    @Override public void onPlayChannel(int sourceIndex) {
+        if (mobileNavigation != null) mobileNavigation.hideNow();
+        playChannel(sourceIndex, false);
+    }
     @Override public void onRequestMovies() { openCatalogFromTv("movies"); }
     @Override public void onRequestSeries() { openCatalogFromTv("series"); }
     @Override public void onRequestSettings() { openSettings(); }
-    @Override public void onClosed() { immersive(); refreshCornerClock(); }
+    @Override public void onClosed() {
+        if (mobileNavigation != null) mobileNavigation.hideNow();
+        immersive(); refreshCornerClock();
+    }
     @Override public void onFavoriteChanged(Channel channel, boolean favorite) {
         showStatus(getString(favorite ? R.string.added_favorite : R.string.removed_favorite, channel.name), 2200);
     }

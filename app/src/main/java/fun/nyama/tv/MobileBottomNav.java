@@ -9,6 +9,10 @@ import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.KeyEvent;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.View;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -22,6 +26,11 @@ import androidx.core.widget.TextViewCompat;
 // This view requires a destination listener and is never inflated from XML.
 @android.annotation.SuppressLint("ViewConstructor")
 final class MobileBottomNav extends LinearLayout {
+    private static final long HIDE_DELAY_MS = 3000L;
+    private final Handler main = new Handler(Looper.getMainLooper());
+    private final Runnable hide = () -> setVisibility(GONE);
+    private boolean autoHide;
+
     MobileBottomNav(Context context, String active, AppSidebar.Listener listener) {
         super(context);
         setTag("mobile-bottom-navigation");
@@ -42,6 +51,7 @@ final class MobileBottomNav extends LinearLayout {
             item.setOrientation(VERTICAL); item.setGravity(Gravity.CENTER);
             item.setPadding(dp(2), dp(5), dp(2), dp(4));
             item.setMinimumHeight(dp(56)); item.setFocusable(true); item.setClickable(true);
+            item.setOnFocusChangeListener((view, focused) -> { if (focused) revealTemporarily(); });
             item.setSelected(selected); item.setTag("mobile-nav-" + keys[i]); item.setContentDescription(labels[i]);
             ImageView icon = new ImageView(context); icon.setImageResource(icons[i]);
             icon.setColorFilter(selected ? accent : 0xFFB8C0CB);
@@ -60,6 +70,36 @@ final class MobileBottomNav extends LinearLayout {
             LayoutParams lp = new LayoutParams(0, -2, 1f); lp.setMargins(dp(2), 0, dp(2), 0); addView(item, lp);
         }
     }
+    /** Opted into only by Live TV; catalogs and Settings keep their persistent bar. */
+    void enableAutoHide() { autoHide = true; hideNow(); }
+
+    void revealTemporarily() {
+        if (!autoHide) return;
+        setVisibility(VISIBLE);
+        main.removeCallbacks(hide);
+        main.postDelayed(hide, HIDE_DELAY_MS);
+    }
+
+    void hideNow() {
+        main.removeCallbacks(hide);
+        if (autoHide) setVisibility(GONE);
+    }
+
+    @Override public boolean dispatchTouchEvent(MotionEvent event) {
+        if (getVisibility() == VISIBLE) revealTemporarily();
+        return super.dispatchTouchEvent(event);
+    }
+
+    @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_DOWN) revealTemporarily();
+        return super.dispatchKeyEvent(event);
+    }
+
+    @Override protected void onDetachedFromWindow() {
+        hideNow();
+        super.onDetachedFromWindow();
+    }
+
     static View wrap(Activity activity, View content, String active, AppSidebar.Listener listener) {
         WindowCompat.setDecorFitsSystemWindows(activity.getWindow(), false);
         LinearLayout screen = new LinearLayout(activity); screen.setOrientation(VERTICAL);
@@ -87,6 +127,7 @@ final class MobileBottomNav extends LinearLayout {
                         : AppSidebar.SECTION_SETTINGS.equals(section) ? new Intent(activity, SettingsActivity.class)
                         : new Intent(activity, CatalogActivity.class).putExtra(CatalogActivity.EXTRA_SECTION, section);
                 intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                if (activity instanceof SettingsActivity) ((SettingsActivity) activity).suppressNextUserLeaveHintOnce();
                 activity.startActivity(intent); activity.finish();
             }
             public void onTv() { open(AppSidebar.SECTION_TV); }
