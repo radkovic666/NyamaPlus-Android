@@ -60,8 +60,10 @@ public class MobileBottomNavTest {
                 assertEquals(24, item.getChildAt(0).getWidth());
                 TextView label = (TextView) item.getChildAt(1);
                 assertEquals(labels[i], label.getText().toString());
-                assertTrue(label.getTextSize() >= 8); assertTrue(label.getTextSize() <= 11);
-                assertTrue(label.getPaint().measureText(labels[i]) <= label.getWidth());
+                assertEquals(12f, label.getTextSize(), 0.01f);
+                assertTrue(label.getLineCount() <= 2);
+                assertNotNull(label.getLayout());
+                assertTrue(label.getLayout().getLineBottom(label.getLineCount() - 1) <= label.getHeight());
                 assertTrue(label.getBottom() <= item.getHeight());
             }
         }

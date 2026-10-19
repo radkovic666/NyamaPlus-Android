@@ -115,6 +115,20 @@ public class MobileLiveNavigationTest {
         }
         activity.onClosed(); assertEquals(View.GONE, nav.getVisibility());
     }
+    @Test public void mobileMultilineProgrammeDescriptionUsesScrollableNaturalHeight() throws Exception {
+        build(true);
+        android.widget.LinearLayout info=(android.widget.LinearLayout)get("programmeInfo");
+        android.widget.TextView description=(android.widget.TextView)get("programmeInfoDescription");
+        description.setText("Long programme description\n".repeat(100));
+        ((android.widget.TextView)get("programmeInfoTitle")).setText("Programme title ".repeat(6));
+        info.setVisibility(View.VISIBLE);layout(640,320);
+        androidx.core.widget.NestedScrollView scroll=info.findViewWithTag("mobile-programme-info-scroll");
+        assertNotNull(scroll);assertTrue("Scroll height="+scroll.getHeight()+" info visibility="+info.getVisibility(),scroll.getHeight()>0);
+        assertTrue("Content="+scroll.getChildAt(0).getHeight()+" scroll="+scroll.getHeight(),scroll.getChildAt(0).getHeight()>scroll.getHeight());
+        assertNull(description.getEllipsize());assertEquals(Integer.MAX_VALUE,description.getMaxLines());
+        scroll.scrollTo(0,scroll.getChildAt(0).getHeight());assertTrue(scroll.getScrollY()>0);
+    }
+
     @Test public void tvKeepsOriginalRootAndSidebarWithoutAutoHideNavigation() throws Exception {
         build(false);
         assertNull(get("mobileNavigation"));

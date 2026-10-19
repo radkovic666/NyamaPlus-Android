@@ -10,6 +10,7 @@ import android.net.http.SslError;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.ValueCallback;
@@ -419,6 +420,69 @@ public class MoviePlayerControlsTest {
         assertNotNull(phoneButton(activity, activity.getString(R.string.player_fullscreen)));
         press(activity, KeyEvent.KEYCODE_DPAD_UP);
         assertEquals(View.VISIBLE, controls(activity).getVisibility());
+    }
+
+    private static class TouchWebView extends WebView {
+        final List<Integer> actions = new ArrayList<>();
+        TouchWebView(Context context) { super(context); }
+        @Override public boolean onTouchEvent(MotionEvent event) { actions.add(event.getActionMasked()); return true; }
+    }
+    private static class TouchFullscreenView extends View {
+        final List<Integer> actions = new ArrayList<>();
+        TouchFullscreenView(Context context) { super(context); }
+        @Override public boolean onTouchEvent(MotionEvent event) { actions.add(event.getActionMasked()); return true; }
+    }
+    private static void fingerGesture(MoviePlayerActivity activity, int x, int y) {
+        long now = SystemClock.uptimeMillis();
+        for (int action : new int[]{MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP}) {
+            MotionEvent event = MotionEvent.obtain(now, now + action * 10, action, x, y, 0);
+            activity.dispatchTouchEvent(event); event.recycle();
+        }
+    }
+    @Test public void bothMobileProvidersReceiveFingerSequencesInPageAndCustomFullscreenWithoutOverlayInterception() throws Exception {
+        fun.nyama.tv.Config config = new fun.nyama.tv.Config(RuntimeEnvironment.getApplication());
+        for (String provider : new String[]{fun.nyama.tv.Config.PLAYER_1, fun.nyama.tv.Config.PLAYER_2}) {
+            config.setMovieSeriesPlayer(provider);
+            for (Intent selected : new Intent[]{title("movies", MOVIE), episode(2, 3)}) {
+                ActivityController<MoviePlayerActivity> lifecycle = open(true, selected);
+                MoviePlayerActivity activity = lifecycle.get();
+                WebView old = web(activity); WebChromeClient chrome = Shadows.shadowOf(old).getWebChromeClient();
+                ViewGroup parent = (ViewGroup) old.getParent();
+                int index = parent.indexOfChild(old); ViewGroup.LayoutParams params = old.getLayoutParams();
+                parent.removeView(old); old.destroy();
+                TouchWebView receiver = new TouchWebView(activity); parent.addView(receiver, index, params); field("webView").set(activity, receiver);
+                layoutPlayer(activity);
+                fingerGesture(activity, 400, 300);
+                assertEquals(java.util.Arrays.asList(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP), receiver.actions);
+                TouchFullscreenView fullscreen = new TouchFullscreenView(activity);
+                chrome.onShowCustomView(fullscreen, () -> {}); layoutPlayer(activity);
+                fingerGesture(activity, 400, 300);
+                assertEquals(java.util.Arrays.asList(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP), fullscreen.actions);
+                assertEquals(3, receiver.actions.size());
+                chrome.onHideCustomView(); layoutPlayer(activity);
+                fingerGesture(activity, 400, 300); assertEquals(6, receiver.actions.size());
+                assertEquals(View.GONE, controls(activity).getVisibility());
+                destroy(lifecycle);
+            }
+        }
+    }
+    @Test public void mobilePolicyLeavesProviderDomHandlersAndWindowOpenIntactWhileTvPolicyIsUnchanged() throws Exception {
+        int flags = RuntimeEnvironment.getApplication().getApplicationInfo().flags;
+        RuntimeEnvironment.getApplication().getApplicationInfo().flags |= android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE;
+        try {
+            MoviePlayerActivity phone = open(true, "movies").get();
+            ReflectionHelpers.callInstanceMethod(phone, "hardenEmbedPage");
+            String script = Shadows.shadowOf(web(phone)).getLastEvaluatedJavascript();
+            assertNotNull(script); assertTrue(script.contains("passive:true"));
+            assertFalse(script.contains("stopImmediatePropagation")); assertFalse(script.contains("preventDefault")); assertFalse(script.contains("window.open="));
+            WebView target = web(phone);
+            assertFalse(target.getSettings().supportMultipleWindows());
+            assertFalse(Shadows.shadowOf(target).getWebChromeClient().onCreateWindow(target, false, true, null));
+            MoviePlayerActivity tv = open(false, "movies").get();
+            ReflectionHelpers.callInstanceMethod(tv, "hardenEmbedPage");
+            String tvScript = Shadows.shadowOf(web(tv)).getLastEvaluatedJavascript();
+            assertTrue(tvScript.contains("window.open=function(){return null;};")); assertTrue(tvScript.contains("stopImmediatePropagation"));
+        } finally { RuntimeEnvironment.getApplication().getApplicationInfo().flags = flags; }
     }
 
     @Test public void phoneMovieAndSeriesUseTheSavedDefaultPlayer() throws Exception {

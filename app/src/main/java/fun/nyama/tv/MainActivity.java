@@ -23,6 +23,7 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import androidx.core.widget.NestedScrollView;
 
 import androidx.annotation.OptIn;
 import androidx.media3.common.MediaItem;
@@ -328,9 +329,9 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         copy.addView(hudNow);
         copy.addView(hudProgress, new LinearLayout.LayoutParams(-1, dp(7)));
         copy.addView(hudNext);
-        hud.addView(copy, new LinearLayout.LayoutParams(0, -1, 1f));
-
-        FrameLayout.LayoutParams hp = new FrameLayout.LayoutParams(-1, dp(compactUi ? 132 : 186), Gravity.BOTTOM);
+        hud.addView(copy, new LinearLayout.LayoutParams(0, compactUi ? -2 : -1, 1f));
+        if (compactUi) hud.setMinimumHeight(dp(132));
+        FrameLayout.LayoutParams hp = new FrameLayout.LayoutParams(-1, compactUi ? -2 : dp(186), Gravity.BOTTOM);
         root.addView(hud, hp);
 
         programmeInfo = new LinearLayout(this);
@@ -345,13 +346,23 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         programmeInfoDescription = new TextView(this);
         programmeInfoDescription.setTextColor(0xFFE1E4E8);
         programmeInfoDescription.setTextSize(UiTheme.sp(this, compactUi ? 14 : 17));
-        programmeInfoDescription.setMaxLines(compactUi ? 3 : 5);
-        programmeInfoDescription.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        programmeInfo.addView(infoLabel);
-        programmeInfo.addView(programmeInfoTitle);
-        programmeInfo.addView(programmeInfoTime);
-        programmeInfo.addView(programmeInfoDescription, new LinearLayout.LayoutParams(-1, 0, 1f));
-        FrameLayout.LayoutParams ip = new FrameLayout.LayoutParams(-1, dp(compactUi ? 180 : 250), Gravity.BOTTOM);
+        if (compactUi) {
+            programmeInfoTitle.setSingleLine(false); programmeInfoTime.setSingleLine(false);
+            programmeInfoTitle.setEllipsize(null); programmeInfoTime.setEllipsize(null);
+            programmeInfoDescription.setMaxLines(Integer.MAX_VALUE);
+            LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL);
+            content.addView(infoLabel); content.addView(programmeInfoTitle); content.addView(programmeInfoTime);
+            content.addView(programmeInfoDescription, new LinearLayout.LayoutParams(-1, -2));
+            NestedScrollView scroll = new NestedScrollView(this); scroll.setTag("mobile-programme-info-scroll");
+            scroll.addView(content, new NestedScrollView.LayoutParams(-1, -2));
+            programmeInfo.addView(scroll, new LinearLayout.LayoutParams(-1, -2));
+        } else {
+            programmeInfoDescription.setMaxLines(5);
+            programmeInfoDescription.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            programmeInfo.addView(infoLabel); programmeInfo.addView(programmeInfoTitle); programmeInfo.addView(programmeInfoTime);
+            programmeInfo.addView(programmeInfoDescription, new LinearLayout.LayoutParams(-1, 0, 1f));
+        }
+        FrameLayout.LayoutParams ip = new FrameLayout.LayoutParams(-1, compactUi ? -2 : dp(250), Gravity.BOTTOM);
         root.addView(programmeInfo, ip);
 
         browser = new ChannelBrowserOverlay(this, this);

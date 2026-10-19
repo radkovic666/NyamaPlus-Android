@@ -149,7 +149,8 @@ public final class SettingsActivity extends Activity {
         autostart.setFocusable(true);
         autostart.setPadding(0, dp(4), 0, dp(4));
         autostart.setOnCheckedChangeListener((buttonView, isChecked) -> config.setAutoStart(isChecked));
-        general.addView(autostart, new LinearLayout.LayoutParams(-1, dp(54)));
+        if (phone) autostart.setMinimumHeight(dp(54));
+        general.addView(autostart, new LinearLayout.LayoutParams(-1, phone ? -2 : dp(54)));
         general.addView(description(getString(R.string.autostart_desc)));
         general.addView(divider());
 
@@ -172,8 +173,8 @@ public final class SettingsActivity extends Activity {
         languages.setOrientation(phone ? RadioGroup.VERTICAL : RadioGroup.HORIZONTAL);
         RadioButton bg = radio(getString(R.string.language_bg), Config.LANG_BG.equals(config.language()));
         RadioButton en = radio(getString(R.string.language_en), Config.LANG_EN.equals(config.language()));
-        languages.addView(bg, new RadioGroup.LayoutParams(phone ? -1 : 0, dp(52), phone ? 0f : 1f));
-        languages.addView(en, new RadioGroup.LayoutParams(phone ? -1 : 0, dp(52), phone ? 0f : 1f));
+        languages.addView(bg, new RadioGroup.LayoutParams(phone ? -1 : 0, phone ? -2 : dp(52), phone ? 0f : 1f));
+        languages.addView(en, new RadioGroup.LayoutParams(phone ? -1 : 0, phone ? -2 : dp(52), phone ? 0f : 1f));
         bg.setOnClickListener(v -> setLanguage(Config.LANG_BG));
         en.setOnClickListener(v -> setLanguage(Config.LANG_EN));
         general.addView(languages);
@@ -197,8 +198,8 @@ public final class SettingsActivity extends Activity {
         RadioButton player2 = radio(getString(R.string.player_2), false);
         player1.setId(View.generateViewId()); player2.setId(View.generateViewId());
         player1.setTag("movie-series-player-1"); player2.setTag("movie-series-player-2");
-        players.addView(player1, new RadioGroup.LayoutParams(phone ? -1 : 0, dp(52), phone ? 0f : 1f));
-        players.addView(player2, new RadioGroup.LayoutParams(phone ? -1 : 0, dp(52), phone ? 0f : 1f));
+        players.addView(player1, new RadioGroup.LayoutParams(phone ? -1 : 0, phone ? -2 : dp(52), phone ? 0f : 1f));
+        players.addView(player2, new RadioGroup.LayoutParams(phone ? -1 : 0, phone ? -2 : dp(52), phone ? 0f : 1f));
         players.check(Config.PLAYER_1.equals(config.movieSeriesPlayer()) ? player1.getId() : player2.getId());
         players.setOnCheckedChangeListener((group, checkedId) -> {
             if (checkedId == player1.getId()) config.setMovieSeriesPlayer(Config.PLAYER_1);
@@ -217,7 +218,8 @@ public final class SettingsActivity extends Activity {
         showClock.setFocusable(true);
         showClock.setPadding(0, dp(4), 0, dp(4));
         showClock.setOnCheckedChangeListener((buttonView, isChecked) -> config.setShowClock(isChecked));
-        clockCard.addView(showClock, new LinearLayout.LayoutParams(-1, dp(54)));
+        if (phone) showClock.setMinimumHeight(dp(54));
+        clockCard.addView(showClock, new LinearLayout.LayoutParams(-1, phone ? -2 : dp(54)));
         clockCard.addView(description(getString(R.string.show_clock_desc)));
         clockCard.addView(divider());
 
@@ -258,7 +260,7 @@ public final class SettingsActivity extends Activity {
         LinearLayout updateCard = card();
         Button update = professionalButton(getString(R.string.check_for_updates));
         update.setOnClickListener(v -> updateManager.checkForUpdate());
-        updateCard.addView(update, new LinearLayout.LayoutParams(-1, dp(56)));
+        updateCard.addView(update, new LinearLayout.LayoutParams(-1, phone ? -2 : dp(56)));
         addSection(root, getString(R.string.app_update), updateCard);
 
         // Administrator card.
@@ -266,7 +268,7 @@ public final class SettingsActivity extends Activity {
         adminCard.addView(description(getString(R.string.admin_desc)));
         Button admin = professionalButton(getString(R.string.open_admin));
         admin.setOnClickListener(v -> askAdminPin());
-        LinearLayout.LayoutParams adminParams = new LinearLayout.LayoutParams(-1, dp(56));
+        LinearLayout.LayoutParams adminParams = new LinearLayout.LayoutParams(-1, phone ? -2 : dp(56));
         adminParams.setMargins(0, dp(6), 0, 0);
         adminCard.addView(admin, adminParams);
         addSection(root, getString(R.string.admin_section), adminCard);
@@ -290,7 +292,7 @@ public final class SettingsActivity extends Activity {
             suppressNextUserLeaveHint = true;
             finish();
         });
-        LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(-1, dp(54));
+        LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(-1, phone ? -2 : dp(54));
         cp.setMargins(0, dp(22), 0, 0);
         root.addView(close, cp);
 
@@ -342,7 +344,7 @@ public final class SettingsActivity extends Activity {
             }
         });
         group.addView(button, config.isPhoneMode()
-                ? new RadioGroup.LayoutParams(-1, dp(50))
+                ? new RadioGroup.LayoutParams(-1, -2)
                 : new RadioGroup.LayoutParams(0, dp(52), 1f));
     }
 
@@ -361,7 +363,7 @@ public final class SettingsActivity extends Activity {
             }
         });
         group.addView(button, config.isPhoneMode()
-                ? new RadioGroup.LayoutParams(-1, dp(50))
+                ? new RadioGroup.LayoutParams(-1, -2)
                 : new RadioGroup.LayoutParams(0, dp(52), 1f));
     }
 
@@ -532,6 +534,7 @@ public final class SettingsActivity extends Activity {
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         button.setFocusable(true);
         button.setAllCaps(false);
+        if (config.isPhoneMode()) button.setMinimumHeight(dp(56));
         button.setPadding(dp(14), 0, dp(14), 0);
         button.setBackground(buttonBackground());
         return button;
@@ -553,6 +556,7 @@ public final class SettingsActivity extends Activity {
         r.setTextSize(UiTheme.sp(this, 15));
         r.setChecked(checked);
         r.setFocusable(true);
+        if (config.isPhoneMode()) r.setMinimumHeight(dp(52));
         return r;
     }
 

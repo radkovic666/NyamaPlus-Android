@@ -20,7 +20,6 @@ import android.widget.TextView;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowCompat;
-import androidx.core.widget.TextViewCompat;
 
 /** Phone/tablet-only bottom navigation, measured below content rather than overlaid on it. */
 // This view requires a destination listener and is never inflated from XML.
@@ -59,9 +58,9 @@ final class MobileBottomNav extends LinearLayout {
             item.addView(icon, new LayoutParams(dp(24), dp(24)));
             TextView label = new TextView(context); label.setText(labels[i]);
             label.setTextColor(selected ? accent : 0xFFB8C0CB); label.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-            label.setGravity(Gravity.CENTER); label.setSingleLine(true); label.setIncludeFontPadding(false);
-            TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(label, 8, 11, 1, TypedValue.COMPLEX_UNIT_SP);
-            LayoutParams text = new LayoutParams(-1, dp(18)); text.topMargin = dp(3); item.addView(label, text);
+            label.setGravity(Gravity.CENTER); label.setMaxLines(2); label.setIncludeFontPadding(false);
+            label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12); label.setMinimumHeight(dp(18));
+            LayoutParams text = new LayoutParams(-1, -2); text.topMargin = dp(3); item.addView(label, text);
             StateListDrawable states = new StateListDrawable();
             states.addState(new int[]{android.R.attr.state_pressed}, background(accent, true));
             states.addState(new int[]{android.R.attr.state_focused}, background(accent, true));

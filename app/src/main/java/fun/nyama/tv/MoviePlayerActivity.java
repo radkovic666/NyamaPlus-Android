@@ -13,6 +13,9 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import android.view.Gravity;
+import android.view.MotionEvent;
+import android.content.pm.ApplicationInfo;
+import android.webkit.ConsoleMessage;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -127,12 +130,37 @@ public final class MoviePlayerActivity extends Activity {
         loadPlayer();
     }
 
+    private boolean mobileDiagnostics() {
+        return !tvMode && (getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+    }
+
+    private void traceMobileTouch(String surface, MotionEvent event, boolean handled) {
+        if (!mobileDiagnostics() || (event.getActionMasked() != MotionEvent.ACTION_DOWN
+                && event.getActionMasked() != MotionEvent.ACTION_UP)) return;
+        Log.d(TAG, "Mobile touch surface=" + surface + " action="
+                + (event.getActionMasked() == MotionEvent.ACTION_DOWN ? "down" : "up")
+                + " handled=" + handled + " webview_focus=" + (webView != null && webView.hasFocus())
+                + " fullscreen=" + (customView != null));
+    }
+
+    @Override public boolean dispatchTouchEvent(MotionEvent event) {
+        boolean handled = super.dispatchTouchEvent(event);
+        traceMobileTouch("activity", event, handled);
+        return handled;
+    }
+
     private View buildUi() {
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
 
         long webViewStartedAt = android.os.SystemClock.elapsedRealtime();
-        webView = new WebView(this);
+        webView = tvMode ? new WebView(this) : new WebView(this) {
+            @Override public boolean dispatchTouchEvent(MotionEvent event) {
+                boolean handled = super.dispatchTouchEvent(event);
+                traceMobileTouch("webview", event, handled);
+                return handled;
+            }
+        };
         configureWebView(webView);
         Log.d(TAG, (tvMode ? "TV" : "Mobile") + " initialization webview_configured elapsed_ms="
                 + (android.os.SystemClock.elapsedRealtime() - webViewStartedAt));
@@ -332,7 +360,16 @@ public final class MoviePlayerActivity extends Activity {
                 return tvDefaultVideoPoster;
             }
 
+            @Override public boolean onConsoleMessage(ConsoleMessage message) {
+                if (mobileDiagnostics() && message != null && message.message() != null && message.message().matches(
+                        "NYAMA_TOUCH:(pointerdown|pointerup|click):(BUTTON|VIDEO|A|INPUT|IFRAME|OTHER)")) {
+                    Log.d(TAG, message.message()); return true;
+                }
+                return super.onConsoleMessage(message);
+            }
+
             @Override public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, android.os.Message resultMsg) {
+                if (mobileDiagnostics()) Log.d(TAG, "Mobile popup blocked user_gesture=" + isUserGesture);
                 return false;
             }
 
@@ -345,6 +382,7 @@ public final class MoviePlayerActivity extends Activity {
                 if (customView != null) { callback.onCustomViewHidden(); return; }
                 customView = view;
                 customViewCallback = callback;
+                if (mobileDiagnostics()) Log.d(TAG, "Mobile fullscreen shown");
                 view.setFocusable(true);
                 view.setFocusableInTouchMode(true);
                 if (tvMode && android.os.Build.VERSION.SDK_INT >= 26) {
@@ -370,14 +408,23 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     private boolean isAllowedMainFrame(Uri uri) {
-        if (!isSelectedProviderOrigin(uri)) return false;
+        boolean origin = isSelectedProviderOrigin(uri);
         // An explicit selection cannot redirect into a different title/episode or generic chooser.
-        return !(exactEpisodeSelection || "movies".equals(type))
-                || (!loadedPlayerUrl.isEmpty() && Uri.parse(loadedPlayerUrl).getPath().equals(uri.getPath()));
+        boolean allowed = origin && (!(exactEpisodeSelection || "movies".equals(type))
+                || (!loadedPlayerUrl.isEmpty() && Uri.parse(loadedPlayerUrl).getPath().equals(uri.getPath())));
+        if (!allowed && mobileDiagnostics()) Log.d(TAG, "Mobile navigation blocked reason=" + (origin ? "identity" : "origin"));
+        return allowed;
     }
 
     private void hardenEmbedPage() {
         if (webView == null) return;
+        if (!tvMode) {
+            // Native origin/identity checks, disabled windows and TLS rejection still protect
+            // navigation. Do not cancel the provider's DOM clicks or replace window.open:
+            // capture-phase cancellation can prevent the provider's own play/menu handlers.
+            if (mobileDiagnostics()) webView.evaluateJavascript(mobileTouchTraceScript(), null);
+            return;
+        }
         String js = "(function(){try{" +
                 "window.open=function(){return null;};" +
                 "document.addEventListener('click',function(e){" +
@@ -396,6 +443,21 @@ public final class MoviePlayerActivity extends Activity {
                 "if(!document.getElementById('__nyama_tv_edge_fix')){var st=document.createElement('style');st.id='__nyama_tv_edge_fix';st.textContent='html,body,iframe,video{outline:none!important;}';(document.head||document.documentElement).appendChild(st);}" +
                 "return '1';}catch(e){return '0';}})();";
         webView.evaluateJavascript(js, null);
+    }
+
+    private static String mobileTouchTraceScript() {
+        return """
+            (function(){try{
+              if(window.__nyamaTouchTrace)return;window.__nyamaTouchTrace=true;
+              ['pointerdown','pointerup','click'].forEach(function(kind){
+                window.addEventListener(kind,function(e){
+                  var name=e.target&&e.target.tagName||'OTHER';
+                  if(!/^(BUTTON|VIDEO|A|INPUT|IFRAME)$/.test(name))name='OTHER';
+                  console.debug('NYAMA_TOUCH:'+kind+':'+name);
+                },{capture:true,passive:true});
+              });
+            }catch(e){}})();
+            """;
     }
 
     /** Prefer an actually available app-language HTML5 track once, without touching protected frames. */
@@ -1133,6 +1195,7 @@ public final class MoviePlayerActivity extends Activity {
 
     private void hideCustomView() {
         if (customView == null) return;
+        if (mobileDiagnostics()) Log.d(TAG, "Mobile fullscreen hidden");
         fullscreenContainer.removeAllViews();
         fullscreenContainer.setVisibility(View.GONE);
         if (customViewCallback != null) customViewCallback.onCustomViewHidden();
