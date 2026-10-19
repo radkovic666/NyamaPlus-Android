@@ -38,7 +38,7 @@ public class CatalogRowsTest {
         for (CatalogRows.Row row : rows) for (CatalogItem item : row.items) ids.add(row.key + ":" + item.id);
         return ids;
     }
-    @Test public void moviesAndSeriesUseRelevantGenresPreferSevenPlusAndAvoidRepeatsWhenAvailable() {
+    @Test public void moviesAndSeriesUseRelevantDailyGenresAndAvoidRepeatsWhenAvailable() {
         for (String section : new String[]{"movies", "series"}) {
             List<CatalogRows.Row> rows = CatalogRows.observeAndRead(context, section, candidates(), now);
             assertEquals(7, rows.size()); assertEquals("featured", rows.get(0).key);
@@ -48,7 +48,6 @@ public class CatalogRowsTest {
                 for (CatalogItem item : row.items) {
                     assertTrue(CatalogRows.matches(item, row.key));
                     assertTrue("Repeated despite plentiful alternatives", seen.add(item.id));
-                    if (row.key.equals("featured")) assertTrue(Double.parseDouble(item.rating) >= 7.0);
                 }
             }
             Set<String> keys = new HashSet<>(); for (CatalogRows.Row row : rows) keys.add(row.key);
@@ -70,7 +69,19 @@ public class CatalogRowsTest {
         String key = new fun.nyama.tv.Config(context).pukankiBaseUrl() + "|movies:pool";
         assertEquals(240, new JSONObject(context.getSharedPreferences("nyama_catalog_rows", 0).getString(key, "{}")).length());
         assertTrue(CatalogRows.observeAndRead(context, "movies", Collections.emptyList(), now + CatalogRows.TTL_MS + 1).isEmpty());
-        assertTrue(CatalogRows.observeAndRead(context, "series", Arrays.asList(title(1, "", "N/A"), title(2, "", "")), now).isEmpty());
+        List<CatalogRows.Row> unrated=CatalogRows.observeAndRead(context,"series",Arrays.asList(title(1,"","N/A"),title(2,"","")),now);
+        assertEquals(1,unrated.size());assertEquals("featured",unrated.get(0).key);
+        assertTrue(unrated.get(0).items.stream().anyMatch(item->"N/A".equals(item.rating)));
+    }
+    @Test public void mixedFeaturedDoesNotGateOnRatingsAndSameDaySelectionsSurvivePoolTurnover() {
+        List<CatalogItem> pool=new ArrayList<>();
+        for(int i=0;i<100;i++)pool.add(title(i,i%2==0?"Comedy":"Drama",i%2==0?"5.2":"N/A"));
+        List<String> first=ids(CatalogRows.observeAndRead(context,"movies",pool,now));assertFalse(first.isEmpty());
+        List<CatalogItem> replacements=new ArrayList<>();
+        for(int i=200;i<600;i++)replacements.add(title(i,"Action, Horror, Family, Thriller","9.9"));
+        List<CatalogRows.Row> after=CatalogRows.observeAndRead(context,"movies",replacements,now+1000);
+        List<String> retained=new ArrayList<>();for(String id:ids(after))if(id.startsWith("featured:")||id.startsWith("comedy:")||id.startsWith("drama:"))retained.add(id);
+        assertEquals(first,retained);
     }
     @Test public void aliasesAndSparsePoolsDoNotProduceIdenticalRowsOrFabricateCandidates() {
         assertTrue(CatalogRows.matches(title(1, "Екшън, Комедия", ""), "action"));

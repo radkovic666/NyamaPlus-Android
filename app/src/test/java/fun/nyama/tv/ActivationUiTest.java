@@ -105,8 +105,8 @@ public class ActivationUiTest {
         assertTrue(config.isPhoneMode()); config.setDeviceMode(fun.nyama.tv.Config.MODE_TV); phone(); assertFalse(config.isPhoneMode());
     }
 
-    @Test public void phoneWelcomeQrEncodesRegistrationLocally() throws Exception {
-        ActivationActivity activity = welcome(); assertEquals(PairingControllerTest.QR, decode(bitmap(activity)));
+    @Test @Config(sdk={24,28}) public void phoneWelcomeNeverRendersQrAndUsesRegistrationAction() throws Exception {
+        ActivationActivity activity = welcome(); assertFalse(views(activity.getWindow().getDecorView()).stream().anyMatch(v->v instanceof ImageView));
         assertTrue(text(activity).contains("Добре дошли в Nyama+")); assertTrue(text(activity).contains("Очакваме регистрация"));
     }
 
@@ -121,6 +121,24 @@ public class ActivationUiTest {
         ActivationActivity activity = welcome(); button(activity, "Регистрация").performClick();
         Intent intent = Shadows.shadowOf(activity).getNextStartedActivity();
         assertEquals(Intent.ACTION_VIEW, intent.getAction()); assertEquals(PairingControllerTest.QR, intent.getDataString());
+    }
+    @Test public void mobileRegistrationWaitsForBackendUrlWithoutDisplayingQr() throws Exception {
+        PairingUiTest.Harness h=new PairingUiTest.Harness();
+        assertFalse(button(h.activity,"Регистрация").isEnabled());
+        assertFalse(views(h.activity.getWindow().getDecorView()).stream().anyMatch(v->v instanceof ImageView));
+        h.respond(PairingControllerTest.start());assertTrue(button(h.activity,"Регистрация").isEnabled());
+        assertNotNull(h.activity.findViewById(android.R.id.content).findViewWithTag("activation-path-separator"));
+        button(h.activity,"Регистрация").performClick();
+        assertEquals(PairingControllerTest.QR,Shadows.shadowOf(h.activity).getNextStartedActivity().getDataString());
+    }
+    @Test @Config(qualifiers="w1280dp-h720dp-land-mdpi") public void tvWelcomeUsesLargerScannableQrAndSeparateExistingUserPath() throws Exception {
+        tv();ActivationActivity activity=welcome();
+        View frame=activity.findViewById(android.R.id.content).findViewWithTag("welcome-registration-qr");
+        assertNotNull(frame);assertTrue(frame.getLayoutParams().width>320);
+        assertEquals(frame.getLayoutParams().width,frame.getLayoutParams().height);
+        assertEquals(PairingControllerTest.QR,decode(bitmap(activity)));
+        assertNotNull(activity.findViewById(android.R.id.content).findViewWithTag("activation-path-separator"));
+        assertTrue(button(activity,"I am registered already").isFocusable());
     }
 
     @Test public void emailScreenNeverAsksWebsitePasswordAndDoesNotSaveInputState() {
@@ -236,7 +254,7 @@ public class ActivationUiTest {
 
     @Test @Config(sdk = 24, application = Application.class)
     public void enrollmentUiWorksAtMinimumSdk24() throws Exception {
-        ActivationActivity activity = welcome(); assertEquals(PairingControllerTest.QR, decode(bitmap(activity)));
+        tv();ActivationActivity activity = welcome(); assertEquals(PairingControllerTest.QR, decode(bitmap(activity)));
         button(activity, "I am registered already").performClick(); assertTrue(text(activity).contains("Вашият имейл адрес"));
     }
 }

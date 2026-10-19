@@ -29,6 +29,7 @@ final class MobileBottomNav extends LinearLayout {
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Runnable hide = () -> setVisibility(GONE);
     private boolean autoHide;
+    private boolean menuOpen;
 
     MobileBottomNav(Context context, String active, AppSidebar.Listener listener) {
         super(context);
@@ -76,11 +77,19 @@ final class MobileBottomNav extends LinearLayout {
         if (!autoHide) return;
         setVisibility(VISIBLE);
         main.removeCallbacks(hide);
-        main.postDelayed(hide, HIDE_DELAY_MS);
+        if (!menuOpen) main.postDelayed(hide, HIDE_DELAY_MS);
+    }
+
+    void setMenuOpen(boolean open) {
+        if (!autoHide) return;
+        menuOpen = open;
+        main.removeCallbacks(hide);
+        setVisibility(open ? VISIBLE : GONE);
     }
 
     void hideNow() {
         main.removeCallbacks(hide);
+        menuOpen = false;
         if (autoHide) setVisibility(GONE);
     }
 

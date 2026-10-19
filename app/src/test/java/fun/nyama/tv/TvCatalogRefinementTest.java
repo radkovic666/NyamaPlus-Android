@@ -187,9 +187,14 @@ public class TvCatalogRefinementTest {
         activity.getSharedPreferences("nyama_catalog_rows", 0).edit().clear().commit();
         List<CatalogRows.Row> rows = CatalogRows.observeAndRead(activity, "movies", observed, System.currentTimeMillis());
         Method render = CatalogActivity.class.getDeclaredMethod("renderRows", List.class); render.setAccessible(true);
+        adapterItems(cached);
         render.invoke(activity, rows); layout();
         View home = (View) get("homeRows");
-        assertEquals(View.VISIBLE, home.getVisibility()); assertEquals(View.GONE, grid.getVisibility());
+        assertEquals(View.VISIBLE, home.getVisibility()); assertEquals(View.VISIBLE, grid.getVisibility());
+        LinearLayout stack=(LinearLayout)get("tvBrowseStack");
+        assertSame(get("rowContainer"),stack.getChildAt(0));assertSame(get("moreHeading"),stack.getChildAt(1));
+        assertSame(grid,stack.getChildAt(2));assertEquals("catalog-pagination",stack.getChildAt(3).getTag());
+        assertEquals(18,grid.getCount());assertTrue(grid.getHeight()>grid.getChildAt(0).getHeight());
         @SuppressWarnings("unchecked") List<View> cards = (List<View>) get("rowCards");
         assertTrue(cards.size() > 6 && cards.size() <= 42);
         View first = cards.get(0); assertTrue(first.requestFocus()); layout();
@@ -205,8 +210,16 @@ public class TvCatalogRefinementTest {
         Intent detail = Shadows.shadowOf(activity).getNextStartedActivity();
         assertEquals(rows.get(0).items.get(0).id, detail.getStringExtra("id"));
         assertEquals("movies", detail.getStringExtra("type")); assertEquals("Original", detail.getStringExtra("originalTitle"));
-        set("page", 2); invoke("updateDailyRow");
-        assertEquals(View.GONE, home.getVisibility()); assertEquals(View.VISIBLE, grid.getVisibility());
+        View last=cards.get(cards.size()-1);last.requestFocus();
+        assertTrue(last.dispatchKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN,android.view.KeyEvent.KEYCODE_DPAD_DOWN)));
+        assertTrue(grid.hasFocus());
+        Object sameAdapter=grid.getAdapter();set("tvCatalogReady",true);set("tvVisibleCatalog",titles(35));set("totalPages",2);
+        Button forward=(Button)get("next");forward.setEnabled(true);grid.setSelection(grid.getCount()-1);grid.requestFocus();layout();
+        assertTrue(grid.dispatchKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN,android.view.KeyEvent.KEYCODE_DPAD_DOWN)));
+        assertTrue(forward.hasFocus());forward.performClick();layout();
+        assertEquals(2,get("page"));assertEquals(5,grid.getCount());assertSame(sameAdapter,grid.getAdapter());assertEquals(0,io.jobs.size());
+        assertEquals(View.VISIBLE, home.getVisibility());assertEquals(View.GONE,((View)get("rowContainer")).getVisibility());
+        assertEquals(View.GONE,((View)get("moreHeading")).getVisibility());assertEquals(View.VISIBLE,grid.getVisibility());
     }
 
     @Test public void tvXResetsAllFiltersAndUsesCompleteValidatedCacheWithoutNetwork() throws Exception {

@@ -181,11 +181,18 @@ public class TvDetailPresentationTest {
         assertEquals(enriched, info.getText().toString());
     }
 
-    @Test public void phoneDetailKeepsOriginalScrollAndHasNoCinematicLayer() throws Exception {
+    @Test public void phoneDetailKeepsOriginalScrollAndPersistentNavigationWithoutCinematicLayer() throws Exception {
         TitleDetailActivity detail = detail(true, "movies");
         assertNull(get(detail, "cinematicBackground"));
         ViewGroup content = detail.findViewById(android.R.id.content);
-        assertTrue(content.getChildAt(0) instanceof ScrollView);
+        ViewGroup screen=(ViewGroup)content.getChildAt(0);
+        assertTrue(screen.getChildAt(0) instanceof ScrollView);
+        MobileBottomNav nav=screen.findViewWithTag("mobile-bottom-navigation");assertNotNull(nav);
+        nav.revealTemporarily();nav.hideNow();assertEquals(View.VISIBLE,nav.getVisibility());
+        nav.findViewWithTag("mobile-nav-movies").performClick();
+        Intent destination=Shadows.shadowOf(detail).getNextStartedActivity();
+        assertEquals(CatalogActivity.class.getName(),destination.getComponent().getClassName());
+        assertEquals("movies",destination.getStringExtra(CatalogActivity.EXTRA_SECTION));
         assertFalse(views(content).stream().anyMatch(view -> view instanceof TvCinematicBackground));
     }
 

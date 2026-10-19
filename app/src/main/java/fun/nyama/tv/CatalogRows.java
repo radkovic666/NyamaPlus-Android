@@ -40,8 +40,17 @@ final class CatalogRows {
         try {
             SharedPreferences preferences = context.getSharedPreferences("nyama_catalog_rows", 0);
             String key = new Config(context).pukankiBaseUrl() + "|" + section;
+            String day = new SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).format(new Date(now));
+            JSONObject selection = preferences.getInt(key + ":selection_version", 0) == 2
+                    && day.equals(preferences.getString(key + ":day", ""))
+                    ? new JSONObject(preferences.getString(key + ":selection", "{}")) : new JSONObject();
+            Set<String> pinned = new HashSet<>();
+            for (String row : keys(selection)) {
+                JSONArray saved = selection.optJSONArray(row);
+                if(saved!=null)for(int i=0;i<saved.length();i++)pinned.add(saved.optString(i));
+            }
             JSONObject pool = new JSONObject(preferences.getString(key + ":pool", "{}"));
-            for (String id : keys(pool)) if (now - pool.getJSONObject(id).optLong("at") > TTL_MS) pool.remove(id);
+            for (String id : keys(pool)) if (!pinned.contains(id) && now - pool.getJSONObject(id).optLong("at") > TTL_MS) pool.remove(id);
             for (CatalogItem item : verified) {
                 if (item == null || !TvPlaybackSource.validImdb(item.id)) continue;
                 pool.put(item.id, new JSONObject().put("id", item.id).put("type", item.type).put("title", item.title)
@@ -50,11 +59,9 @@ final class CatalogRows {
                         .put("votes", item.votes).put("seasons", item.seasons).put("episodeCount", item.episodeCount).put("at", now));
             }
             List<String> ids = keys(pool);
-            ids.sort(Comparator.comparingLong(id -> pool.optJSONObject(id).optLong("at")));
+            ids.sort(Comparator.<String>comparingInt(id -> pinned.contains(id)?1:0)
+                    .thenComparingLong(id -> pool.optJSONObject(id).optLong("at")));
             while (ids.size() > MAX_CANDIDATES) pool.remove(ids.remove(0));
-            String day = new SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).format(new Date(now));
-            JSONObject selection = day.equals(preferences.getString(key + ":day", ""))
-                    ? new JSONObject(preferences.getString(key + ":selection", "{}")) : new JSONObject();
             Set<String> used = new HashSet<>();
             for (String[] definition : "series".equals(section) ? SERIES : MOVIES) {
                 List<CatalogItem> chosen = new ArrayList<>();
@@ -73,9 +80,8 @@ final class CatalogRows {
                     }
                     candidates.sort(Comparator.comparing(item -> item.id));
                     Collections.shuffle(candidates, new Random(day.hashCode() * 31L + section.hashCode() * 17L + definition[0].hashCode()));
-                    // Stable sorting preserves the shuffled order within each preference group.
-                    candidates.sort(Comparator.comparingInt(item ->
-                            ("featured".equals(definition[0]) && !DailyTitles.eligible(item) ? 2 : 0) + (used.contains(item.id) ? 1 : 0)));
+                    // Preserve the day's shuffle; ratings are metadata, not an admission gate.
+                    candidates.sort(Comparator.comparingInt(item -> used.contains(item.id) ? 1 : 0));
                     for (CatalogItem item : candidates) {
                         if (used.contains(item.id)) continue;
                         chosen.add(item); if (chosen.size() == 6) break;
@@ -101,13 +107,14 @@ final class CatalogRows {
                 result.add(new Row(definition[0], definition[1], definition[2], chosen));
             }
             preferences.edit().putString(key + ":pool", pool.toString()).putString(key + ":day", day)
+                    .putInt(key + ":selection_version", 2)
                     .putString(key + ":selection", selection.toString()).apply();
         } catch (Exception ignored) { /* Keep normal paginated browsing available. */ }
         return result;
     }
 
     static boolean matches(CatalogItem item, String genre) {
-        if ("featured".equals(genre)) return DailyTitles.eligible(item);
+        if ("featured".equals(genre)) return item != null && TvPlaybackSource.validImdb(item.id);
         String value = item.genres.toLowerCase(Locale.ROOT);
         switch (genre) {
             case "action": return value.contains("action") || value.contains("екшън");

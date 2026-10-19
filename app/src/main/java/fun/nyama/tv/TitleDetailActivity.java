@@ -210,7 +210,7 @@ public final class TitleDetailActivity extends Activity {
 
         if (watch != null) watch.requestFocus();
         else favoriteButton.requestFocus();
-        if (phone) return scroll;
+        if (phone) return MobileBottomNav.wrap(this,scroll,section,MobileBottomNav.destinations(this,""));
         FrameLayout screen = new FrameLayout(this);
         cinematicBackground = new TvCinematicBackground(this);
         screen.addView(cinematicBackground, new FrameLayout.LayoutParams(-1, -1));

@@ -34,6 +34,7 @@ public class PairingUiTest {
         Context c = RuntimeEnvironment.getApplication(); ActivationAccess.deny();
         c.getSharedPreferences("nyama_activation_mode", 0).edit().clear().commit();
         c.getSharedPreferences("nyama_tv_private", 0).edit().clear().commit();
+        new fun.nyama.tv.Config(c).setDeviceMode(fun.nyama.tv.Config.MODE_TV);
     }
 
     static final class ManualExecutor extends AbstractExecutorService {

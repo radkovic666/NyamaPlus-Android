@@ -88,6 +88,7 @@ public final class MoviePlayerActivity extends Activity {
     private String loadedPlayerUrl = "";
     private String selectedPlaybackHost = "";
     private boolean exactEpisodeSelection;
+    private boolean player1StartInstalled, player1StartCancelled;
     private View playbackError;
     private boolean tvForeground;
     private boolean rendererRecoveryUsed;
@@ -149,6 +150,7 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     @Override public boolean dispatchTouchEvent(MotionEvent event) {
+        if(event.getActionMasked()==MotionEvent.ACTION_DOWN) cancelPlayer1InitialStart();
         boolean handled = super.dispatchTouchEvent(event);
         traceMobileTouch("activity", event, handled);
         return handled;
@@ -228,6 +230,7 @@ public final class MoviePlayerActivity extends Activity {
         applyControlStyle(b, false, accent);
         b.setOnFocusChangeListener((v, focused) -> applyControlStyle(b, focused, accent));
         b.setOnClickListener(v -> {
+            cancelPlayer1InitialStart();
             action.run();
             scheduleControlsHide();
         });
@@ -312,6 +315,7 @@ public final class MoviePlayerActivity extends Activity {
 
             @Override public void onPageCommitVisible(WebView v, String url) {
                 super.onPageCommitVisible(v, url);
+                installPlayer1InitialStart(v,url);
                 if (v == webView && isSelectedMainDocument(url)) v.evaluateJavascript(PlayerVideoFit.script(), null);
                 if (v == webView && (tvMode ? isSelectedMainDocument(url) : loadedPlayerUrl.equals(url))) {
                     Log.d(TAG, (tvMode ? "TV" : "Mobile") + " initialization document_committed since_load_ms="
@@ -369,6 +373,7 @@ public final class MoviePlayerActivity extends Activity {
                     }
                 }
                 hardenEmbedPage();
+                installPlayer1InitialStart(v,url);
                 if (v == webView && isSelectedMainDocument(url)) v.evaluateJavascript(PlayerVideoFit.script(), null);
                 if (tvMode) {
                     // A finished outer wrapper is not evidence that its cross-origin media is ready.
@@ -437,6 +442,20 @@ public final class MoviePlayerActivity extends Activity {
     private boolean isSelectedProviderOrigin(Uri uri) {
         return uri != null && "https".equals(uri.getScheme()) && uri.getUserInfo() == null && uri.getPort() == -1
                 && !selectedPlaybackHost.isEmpty() && selectedPlaybackHost.equals(uri.getHost());
+    }
+
+    private void installPlayer1InitialStart(WebView target,String document) {
+        if(target!=webView||player1StartInstalled||player1StartCancelled||leavingPlayback||playbackFailed
+                ||!TvPlaybackSource.PLAYER_1_HOST.equals(selectedPlaybackHost)||!isSelectedMainDocument(document)
+                ||(!"movies".equals(type)&&!exactEpisodeSelection)||Boolean.TRUE.equals(tvRecoveryPaused))return;
+        player1StartInstalled=true;
+        target.evaluateJavascript(Player1InitialStart.script(Uri.parse(loadedPlayerUrl).getPath()),null);
+    }
+
+    private void cancelPlayer1InitialStart() {
+        if(player1StartCancelled||!TvPlaybackSource.PLAYER_1_HOST.equals(selectedPlaybackHost))return;
+        player1StartCancelled=true;
+        if(player1StartInstalled&&webView!=null)webView.evaluateJavascript(Player1InitialStart.cancelScript(),null);
     }
 
     private boolean isAllowedMainFrame(Uri uri) {
@@ -1109,6 +1128,7 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if(event!=null&&event.getAction()==KeyEvent.ACTION_DOWN)cancelPlayer1InitialStart();
         if (tvMode && playbackFailed && event != null
                 && event.getKeyCode() != KeyEvent.KEYCODE_BACK && event.getKeyCode() != KeyEvent.KEYCODE_ESCAPE)
             return super.dispatchKeyEvent(event); // Retry/Return are real focusable error actions, not playback controls.
@@ -1271,6 +1291,7 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     @Override protected void onPause() {
+        cancelPlayer1InitialStart();
         if (tvMode) {
             tvForeground = false;
             closeTvSeekQueue();

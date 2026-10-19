@@ -135,4 +135,11 @@ public class MobileBottomNavTest {
             assertEquals(View.VISIBLE, bar.getVisibility());
         }
     }
+    @Test public void openMenuCancelsExistingTimerAndInteractionCannotRearmIt() {
+        Activity activity=Robolectric.buildActivity(Activity.class).get();
+        MobileBottomNav nav=new MobileBottomNav(activity,"tv",new Actions());nav.enableAutoHide();nav.revealTemporarily();
+        nav.setMenuOpen(true);nav.revealTemporarily();
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMinutes(2));assertEquals(View.VISIBLE,nav.getVisibility());
+        nav.setMenuOpen(false);assertEquals(View.GONE,nav.getVisibility());
+    }
 }

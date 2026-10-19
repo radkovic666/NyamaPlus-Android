@@ -126,11 +126,11 @@ public class ActivationTimersUiTest {
         button(h.activity, "Опитайте отново").performClick(); assertEquals(1, h.executor.queue.size());
     }
 
-    @Test public void expiredQrCannotGenerateNewSessionDuringKnownCooldown() throws Exception {
+    @Test public void expiredMobileRegistrationLinkCannotGenerateNewSessionDuringKnownCooldown() throws Exception {
         PairingUiTest.Harness h = new PairingUiTest.Harness(); h.respond(PairingControllerTest.start().put("expires_in", 5));
         h.advance(3); h.respond(new ActivationApi.Failure("rate_limited", 10)); h.advance(2);
-        assertFalse(button(h.activity, "Генерирай нов QR код").isEnabled()); assertTrue(text(h.activity), text(h.activity).contains("00:08"));
-        h.advance(8); assertTrue(button(h.activity, "Генерирай нов QR код").isEnabled());
+        assertFalse(button(h.activity, "Нова регистрационна връзка").isEnabled()); assertTrue(text(h.activity), text(h.activity).contains("00:08"));
+        h.advance(8); assertTrue(button(h.activity, "Нова регистрационна връзка").isEnabled());
     }
 
     @Test public void lateRateLimitResponseStillProtectsNextActivityFromAnotherRequest() throws Exception {

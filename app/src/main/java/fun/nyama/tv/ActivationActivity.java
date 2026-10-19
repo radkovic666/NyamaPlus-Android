@@ -161,15 +161,9 @@ public final class ActivationActivity extends Activity {
     }
 
     private void qr(String url) {
+        if (config.isPhoneMode()) return;
         try {
-            BitMatrix matrix = new MultiFormatWriter().encode(url, BarcodeFormat.QR_CODE, 640, 640,
-                    Collections.singletonMap(EncodeHintType.MARGIN, 4));
-            int[] pixels = new int[640 * 640];
-            for (int y = 0; y < 640; y++) for (int x = 0; x < 640; x++)
-                pixels[y * 640 + x] = matrix.get(x, y) ? Color.BLACK : Color.WHITE;
-            ImageView view = new ImageView(this);
-            view.setImageBitmap(Bitmap.createBitmap(pixels, 640, 640, Bitmap.Config.ARGB_8888));
-            view.setContentDescription(tr("QR код за регистрация или подновяване", "Registration or renewal QR code"));
+            ImageView view = qrImage(url);
             int available = (int) (getResources().getDisplayMetrics().widthPixels / getResources().getDisplayMetrics().density) - 56;
             int height = (int) (getResources().getDisplayMetrics().heightPixels / getResources().getDisplayMetrics().density);
             int size = dp(Math.min(available, config.isPhoneMode() ? 260 : Math.max(160, Math.min(320, height - 210))));
@@ -189,6 +183,18 @@ public final class ActivationActivity extends Activity {
         } catch (Exception invalid) { message.setText(tr("QR кодът не може да бъде показан. Опитайте отново.", "Cannot display the QR code. Try again.")); }
     }
 
+    private ImageView qrImage(String url) throws Exception {
+        BitMatrix matrix = new MultiFormatWriter().encode(url, BarcodeFormat.QR_CODE, 640, 640,
+                Collections.singletonMap(EncodeHintType.MARGIN, 4));
+        int[] pixels = new int[640 * 640];
+        for (int y = 0; y < 640; y++) for (int x = 0; x < 640; x++)
+            pixels[y * 640 + x] = matrix.get(x, y) ? Color.BLACK : Color.WHITE;
+        ImageView view = new ImageView(this);
+        view.setImageBitmap(Bitmap.createBitmap(pixels, 640, 640, Bitmap.Config.ARGB_8888));
+        view.setContentDescription(tr("QR код за регистрация или подновяване", "Registration or renewal QR code"));
+        return view;
+    }
+
     private void welcome() {
         stopPairing();
         pairing = null;
@@ -201,20 +207,73 @@ public final class ActivationActivity extends Activity {
     }
 
     private void renderPairing() {
+        boolean phone = config.isPhoneMode();
+        // Presentation only: pairing, polling, URLs and secure storage remain unchanged.
         layout(tr("Добре дошли в Nyama+", "Welcome to Nyama+"));
-        text(tr("Сканирайте QR кода, за да се регистрирате и активирате устройството.",
-                "Scan the QR code to register and activate this device."), 18);
-        if (pairing != null) {
-            qr(pairing.qrUrl);
-            // Keep the waiting status below the QR, including the TV side-by-side layout.
-            message = text(pairingStatus.isEmpty() ? tr("Очакваме регистрация и потвърждение...",
-                    "Waiting for registration and confirmation...") : pairingStatus, 17);
-            if (config.isPhoneMode()) button(tr("Регистрация", "Register"), () -> openBrowser(pairing.qrUrl));
-        } else {
-            message.setText(tr("Зареждане на QR кода…", "Loading QR code…"));
-            progress.setVisibility(View.VISIBLE);
+        root.setTag("activation-welcome");
+        root.removeAllViews();
+        TextView brand = text("NYAMA+", phone ? 36 : 40);
+        brand.setTypeface(Typeface.DEFAULT, Typeface.BOLD); brand.setTextColor(UiTheme.accent(this));
+        text(tr("Добре дошли в Nyama+", "Welcome to Nyama+"), phone ? 23 : 26);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(phone ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+        card.setGravity(Gravity.CENTER_VERTICAL); card.setPadding(dp(20), dp(18), dp(20), dp(18));
+        GradientDrawable background = new GradientDrawable(); background.setColor(0xFF111820);
+        background.setCornerRadius(dp(18)); background.setStroke(dp(1), 0xFF293747); card.setBackground(background);
+        LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(-1,-2); cardParams.topMargin=dp(12);
+        root.addView(card,cardParams);
+        if (!phone) {
+            int width = Math.round(getResources().getDisplayMetrics().widthPixels/getResources().getDisplayMetrics().density);
+            int height = Math.round(getResources().getDisplayMetrics().heightPixels/getResources().getDisplayMetrics().density);
+            int qrSize = dp(Math.max(180,Math.min(420,Math.min(Math.round(width*0.38f),height-185))));
+            FrameLayout qrFrame = new FrameLayout(this); qrFrame.setTag("welcome-registration-qr");
+            card.addView(qrFrame,new LinearLayout.LayoutParams(qrSize,qrSize));
+            if (pairing != null) try { qrFrame.addView(qrImage(pairing.qrUrl),new FrameLayout.LayoutParams(-1,-1)); }
+            catch (Exception invalid) {
+                TextView unavailable=new TextView(this);unavailable.setTextColor(Color.WHITE);unavailable.setGravity(Gravity.CENTER);
+                unavailable.setText(tr("QR кодът не може да бъде показан. Опитайте отново.","Cannot display the QR code. Try again."));
+                qrFrame.addView(unavailable,new FrameLayout.LayoutParams(-1,-1));
+            }
         }
-        button("Вече съм регистриран / I am registered already", this::emailScreen).requestFocus();
+        LinearLayout details = new LinearLayout(this); details.setOrientation(LinearLayout.VERTICAL);
+        if (!phone) details.setPadding(dp(28),0,0,0);
+        card.addView(details,phone ? new LinearLayout.LayoutParams(-1,-2) : new LinearLayout.LayoutParams(0,-2,1f));
+        root=details;
+        text(tr("Нов потребител", "New user"),22).setTypeface(Typeface.DEFAULT,Typeface.BOLD);
+        text(phone ? tr("Регистрирайте се и активирайте това устройство в браузъра.",
+                "Register and activate this device in your browser.")
+                : tr("Сканирайте QR кода, за да се регистрирате и активирате устройството.",
+                "Scan the QR code to register and activate this device."),18);
+        Button registration = null;
+        if (phone) {
+            final String target = pairing == null ? "" : pairing.qrUrl;
+            registration=button(tr("Нов потребител / Регистрация", "New user / Register"),()->openBrowser(target));
+            registration.setTag("activation-registration"); registration.setEnabled(pairing!=null); welcomeButton(registration,true);
+        }
+        message=text(pairing == null ? tr("Подготвяме регистрацията…", "Preparing registration…")
+                : pairingStatus.isEmpty() ? tr("Очакваме регистрация и потвърждение...", "Waiting for registration and confirmation...") : pairingStatus,17);
+        progress=new ProgressBar(this);progress.setVisibility(pairing==null?View.VISIBLE:View.GONE);
+        root.addView(progress,new LinearLayout.LayoutParams(dp(36),dp(36)));
+        LinearLayout separator = new LinearLayout(this); separator.setGravity(Gravity.CENTER_VERTICAL);
+        separator.setPadding(0,dp(18),0,dp(12)); separator.setTag("activation-path-separator");
+        for (int i=0;i<3;i++) {
+            if(i==1) { TextView or=new TextView(this);or.setText(tr("или","or"));or.setTextColor(0xFF9FAEBF);or.setPadding(dp(16),0,dp(16),0);separator.addView(or); }
+            else { View line=new View(this);line.setBackgroundColor(0xFF344353);separator.addView(line,new LinearLayout.LayoutParams(0,dp(1),1f)); }
+        }
+        root.addView(separator,new LinearLayout.LayoutParams(-1,-2));
+        Button registered=button("Вече съм регистриран / I am registered already",this::emailScreen);
+        welcomeButton(registered,false);
+        if(registration!=null&&registration.isEnabled()) registration.requestFocus(); else registered.requestFocus();
+    }
+
+    private void welcomeButton(Button button, boolean primary) {
+        View.OnFocusChangeListener style = (view,focused)->{
+            GradientDrawable background=new GradientDrawable();background.setCornerRadius(dp(12));
+            int accent=UiTheme.accent(this); background.setColor(primary?accent:0xFF1B2636);
+            background.setStroke(dp(focused?3:1),focused?Color.WHITE:primary?accent:0xFF405267);
+            view.setBackground(background);button.setTextColor(primary?UiTheme.contrastingTextColor(accent):Color.WHITE);
+        };
+        button.setOnFocusChangeListener(style);style.onFocusChange(button,button.hasFocus());
     }
 
     private ActivationController pairingController() {
@@ -273,6 +332,7 @@ public final class ActivationActivity extends Activity {
                     pairingStatus = "waiting_for_confirmation".equals(result.status)
                             ? tr("Регистрацията е получена!\nПотвърдете имейла си, за да активирате Nyama+.",
                                  "Registration received!\nConfirm your email to activate Nyama+.")
+                            : config.isPhoneMode() ? tr("Отворете регистрацията в браузъра...", "Open registration in your browser...")
                             : tr("Очакваме да сканирате QR кода...", "Waiting for you to scan the QR code...");
                     message.setText(pairingStatus);
                     schedulePoll(result.pollAfter * 1000L);
@@ -358,7 +418,8 @@ public final class ActivationActivity extends Activity {
         progress.setVisibility(View.GONE);
         message.setText(error(code));
         boolean refresh = "pairing_expired".equals(code) || "pairing_invalid".equals(code);
-        Button retryPair = button(refresh ? tr("Генерирай нов QR код", "Generate a new QR code")
+        Button retryPair = button(refresh ? config.isPhoneMode() ? tr("Нова регистрационна връзка", "New registration link")
+                : tr("Генерирай нов QR код", "Generate a new QR code")
                 : tr("Опитайте отново", "Try again"), () -> {
             if (ActivationCooldowns.remaining(ActivationCooldowns.PAIRING, SystemClock.elapsedRealtime()) > 0L) return;
             pairingError = false;
@@ -586,14 +647,18 @@ public final class ActivationActivity extends Activity {
 
     private String error(String code) {
         switch (code) {
-            case "account_not_found": return tr("Няма регистриран акаунт с този имейл. Върнете се към QR кода за регистрация.", "No account with this email. Return to the registration QR.");
+            case "account_not_found": return config.isPhoneMode()
+                    ? tr("Няма регистриран акаунт с този имейл. Върнете се към регистрацията.","No account with this email. Return to registration.")
+                    : tr("Няма регистриран акаунт с този имейл. Върнете се към QR кода за регистрация.", "No account with this email. Return to the registration QR.");
             case "email_unverified": return tr("Потвърдете имейла за регистрация в Nyama.fun, преди да продължите.", "Confirm your Nyama.fun registration email first.");
             case "wrong_code": return tr("Неправилен код. Опитайте отново.", "Incorrect code. Try again.");
             case "code_expired": return tr("Кодът е изтекъл или вече е използван. Поискайте нов код.", "The code expired or was used. Request a new code.");
             case "inactive_account": return tr("Акаунтът е спрян или няма разрешен достъп. Свържете се с администратора.", "This account is blocked or ineligible. Contact the administrator.");
             case "device_limit_reached": return tr("Достигнат е лимитът за активирани устройства. Управлявайте устройствата в акаунта си или използвайте активиране с имейл.", "The device limit has been reached. Manage your account devices or use email activation.");
-            case "pairing_expired": return tr("QR кодът изтече.", "The QR code expired.");
-            case "pairing_invalid": return tr("QR кодът вече не е валиден. Генерирайте нов QR код.", "This QR code is no longer valid. Generate a new QR code.");
+            case "pairing_expired": return config.isPhoneMode()?tr("Регистрационната връзка изтече.","The registration link expired.")
+                    :tr("QR кодът изтече.", "The QR code expired.");
+            case "pairing_invalid": return config.isPhoneMode()?tr("Регистрационната връзка вече не е валидна. Заявете нова връзка.","The registration link is no longer valid. Request a new link.")
+                    :tr("QR кодът вече не е валиден. Генерирайте нов QR код.", "This QR code is no longer valid. Generate a new QR code.");
             case "activation_invalid": return tr("Активирането е невалидно или отменено. Потвърдете имейла отново.", "Activation is invalid or revoked. Verify your email again.");
             case "rate_limited": return tr("Твърде много заявки. Изчакайте, преди да опитате отново.", "Too many requests. Wait before retrying.");
             case "mail_unavailable": return tr("Имейл услугата временно не е достъпна. Опитайте по-късно.", "Email delivery is temporarily unavailable. Try later.");

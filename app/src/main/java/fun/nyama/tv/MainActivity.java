@@ -121,7 +121,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     private final Runnable clearNumber = this::commitNumber;
     private final Runnable hideHud = () -> hud.setVisibility(View.GONE);
     private final Runnable hideStatus = () -> status.setVisibility(View.GONE);
-    private final Runnable hideProgrammeInfo = () -> programmeInfo.setVisibility(View.GONE);
+    private final Runnable hideProgrammeInfo = () -> { programmeInfo.setVisibility(View.GONE); syncMobileNavigation(); };
     private final Runnable disarmExit = this::cancelExitPrompt;
     private final Runnable usageCheckpoint = new Runnable() {
         @Override public void run() {
@@ -188,7 +188,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         resumed = true;
         suppressNextUserLeaveHint = false;
         immersive();
-        if (mobileNavigation != null) mobileNavigation.hideNow();
+        syncMobileNavigation();
 
         if (!uiSignatureAtCreate.equals(config.uiSignature())) {
             recreate();
@@ -258,6 +258,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     }
 
     @Override protected void onDestroy() {
+        resumed=false;
         if (mobileNavigation != null) mobileNavigation.hideNow();
         MainActivity active = activeInstance.get();
         if (active == this) activeInstance.clear();
@@ -432,6 +433,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         if (config.isPhoneMode()) {
             mobileNavigation = findViewById(android.R.id.content).findViewWithTag("mobile-bottom-navigation");
             mobileNavigation.enableAutoHide();
+            syncMobileNavigation();
             installPhoneTouchControls();
         }
         refreshCornerClock();
@@ -463,6 +465,10 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
                 .build();
         playerView.setPlayer(player);
         player.addListener(new Player.Listener() {
+            @Override public void onIsPlayingChanged(boolean isPlaying) {
+                if(resumed)syncMobileNavigation();
+            }
+
             @Override public void onPlaybackStateChanged(int playbackState) {
                 buffering.setVisibility(playbackState == Player.STATE_BUFFERING ? View.VISIBLE : View.GONE);
             }
@@ -480,6 +486,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
                 }, 4000);
             }
         });
+        syncMobileNavigation();
     }
 
     private void loadAndRefresh(boolean forcePlaylistRefresh) {
@@ -782,6 +789,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
             main.removeCallbacks(clearNumber);
             cancelExitPrompt();
             refreshCornerClock();
+            syncMobileNavigation();
         }
         return hidden;
     }
@@ -793,6 +801,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         }
         exitArmed = true;
         if (exitPrompt != null) exitPrompt.setVisibility(View.VISIBLE);
+        syncMobileNavigation();
         main.removeCallbacks(disarmExit);
         main.postDelayed(disarmExit, EXIT_CONFIRM_WINDOW_MS);
     }
@@ -801,6 +810,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         exitArmed = false;
         main.removeCallbacks(disarmExit);
         if (exitPrompt != null) exitPrompt.setVisibility(View.GONE);
+        syncMobileNavigation();
     }
 
     public static void stopPlaybackAndExitIfRunning() {
@@ -894,8 +904,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     }
 
     @Override public boolean dispatchTouchEvent(MotionEvent event) {
-        // Reuse the existing tap-to-channel-browser gesture. Its overlay stays navigable
-        // after the bar times out, without swallowing channel-list or EPG touches.
+        // Menus pin navigation; ordinary playback gestures remain with the existing detector.
         if (mobileNavigation != null && event.getActionMasked() == MotionEvent.ACTION_DOWN
                 && (mobileNavigation.getVisibility() == View.VISIBLE
                 || (browser != null && browser.isOpen()) || (epgGuide != null && epgGuide.isOpen())))
@@ -959,8 +968,8 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
 
     private void showChannelBrowser(boolean focusCategories, boolean focusSidebar) {
         cancelExitPrompt();
-        if (mobileNavigation != null) mobileNavigation.revealTemporarily();
         if (channels.isEmpty()) {
+            syncMobileNavigation();
             showStatus(getString(R.string.no_channels_loaded), 2000);
             return;
         }
@@ -969,6 +978,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         hud.setVisibility(View.GONE);
         programmeInfo.setVisibility(View.GONE);
         browser.show(channels, currentIndex, focusCategories, focusSidebar);
+        syncMobileNavigation();
         refreshCornerClock();
     }
 
@@ -980,6 +990,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         hud.setVisibility(View.GONE);
         programmeInfo.setVisibility(View.GONE);
         epgGuide.show(channels.get(currentIndex));
+        syncMobileNavigation();
         refreshCornerClock();
     }
 
@@ -997,6 +1008,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         }
         hud.setVisibility(View.GONE);
         programmeInfo.setVisibility(View.VISIBLE);
+        syncMobileNavigation();
         main.removeCallbacks(hideProgrammeInfo);
         main.postDelayed(hideProgrammeInfo, 8000L);
     }
@@ -1032,7 +1044,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     @Override public void onRequestSeries() { openCatalogFromTv("series"); }
     @Override public void onRequestSettings() { openSettings(); }
     @Override public void onClosed() {
-        if (mobileNavigation != null) mobileNavigation.hideNow();
+        syncMobileNavigation();
         immersive(); refreshCornerClock();
     }
     @Override public void onFavoriteChanged(Channel channel, boolean favorite) {
@@ -1070,19 +1082,32 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         hud.setVisibility(View.VISIBLE);
         main.removeCallbacks(hideHud);
         main.postDelayed(hideHud, 5000);
+        syncMobileNavigation();
     }
 
     private String time(long ms) { return new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date(ms)); }
 
     private void refreshCornerClock() {
         if (cornerClock == null) return;
-        boolean overlayOpen = (browser != null && browser.isOpen()) || (epgGuide != null && epgGuide.isOpen());
-        if (!config.showClock() || overlayOpen) {
+        // The channel browser already has the existing header clock. EPG has no clock of its
+        // own, so it must not suppress the configured Live TV clock.
+        boolean browserOnTop=browser!=null&&browser.isOpen()&&!(epgGuide!=null&&epgGuide.isOpen());
+        if (!config.showClock() || browserOnTop) {
             cornerClock.setVisibility(View.GONE);
             return;
         }
         cornerClock.setText(new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date()));
         cornerClock.setVisibility(View.VISIBLE);
+    }
+
+    private void syncMobileNavigation() {
+        if (mobileNavigation == null) return;
+        if(!resumed){mobileNavigation.hideNow();return;}
+        boolean menu = (browser != null && browser.isOpen()) || (epgGuide != null && epgGuide.isOpen())
+                || (programmeInfo != null && programmeInfo.getVisibility() == View.VISIBLE)
+                || (exitPrompt != null && exitPrompt.getVisibility() == View.VISIBLE) || channels.isEmpty()
+                || (player!=null&&!player.isPlaying());
+        mobileNavigation.setMenuOpen(menu);
     }
 
     private FrameLayout.LayoutParams clockLayoutParams() {

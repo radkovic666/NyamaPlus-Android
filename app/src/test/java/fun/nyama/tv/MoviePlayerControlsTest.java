@@ -563,6 +563,34 @@ public class MoviePlayerControlsTest {
         client.onPageCommitVisible(browser,"https://ads.invalid/embed/movie/"+MOVIE);
         assertEquals("sentinel",Shadows.shadowOf(browser).getLastEvaluatedJavascript());
     }
+    @Test public void player1InstallsOnlyOneInitialStartForExactMovieOrEpisodeOnBothDeviceModes() throws Exception {
+        new fun.nyama.tv.Config(RuntimeEnvironment.getApplication()).setMovieSeriesPlayer(fun.nyama.tv.Config.PLAYER_1);
+        for(boolean phone:new boolean[]{true,false})for(Intent selected:new Intent[]{title("movies",MOVIE),episode(2,3)}){
+            ActivityController<MoviePlayerActivity> lifecycle=open(phone,selected);MoviePlayerActivity activity=lifecycle.get();
+            WebView browser=web(activity);String selectedUrl=url(activity);
+            assertFalse(flag(activity,"player1StartInstalled"));
+            WebViewClient client=Shadows.shadowOf(browser).getWebViewClient();client.onPageCommitVisible(browser,selectedUrl);
+            assertTrue(flag(activity,"player1StartInstalled"));
+            browser.evaluateJavascript("sentinel",null);
+            ReflectionHelpers.callInstanceMethod(activity,"installPlayer1InitialStart",ReflectionHelpers.ClassParameter.from(WebView.class,browser),ReflectionHelpers.ClassParameter.from(String.class,selectedUrl));
+            assertEquals("sentinel",Shadows.shadowOf(browser).getLastEvaluatedJavascript());
+            assertEquals(selectedUrl,url(activity));destroy(lifecycle);
+        }
+    }
+    @Test public void initialStartIgnoresPlayer2GenericSeriesWrongDocumentsAndUserInteraction() throws Exception {
+        for(String provider:new String[]{fun.nyama.tv.Config.PLAYER_1,fun.nyama.tv.Config.PLAYER_2}){
+            new fun.nyama.tv.Config(RuntimeEnvironment.getApplication()).setMovieSeriesPlayer(provider);
+            for(String type:new String[]{"movies","series"}){
+                ActivityController<MoviePlayerActivity> lifecycle=open(true,type);MoviePlayerActivity activity=lifecycle.get();
+                WebViewClient client=Shadows.shadowOf(web(activity)).getWebViewClient();
+                client.onPageCommitVisible(web(activity),"https://ads.invalid/embed/movie/"+MOVIE);assertFalse(flag(activity,"player1StartInstalled"));
+                if(provider.equals(fun.nyama.tv.Config.PLAYER_1)&&type.equals("movies")){
+                    fingerGesture(activity,400,300);assertTrue(flag(activity,"player1StartCancelled"));
+                }
+                client.onPageCommitVisible(web(activity),url(activity));assertFalse(flag(activity,"player1StartInstalled"));destroy(lifecycle);
+            }
+        }
+    }
 
     @Test public void phoneMovieAndSeriesUseTheSavedDefaultPlayer() throws Exception {
         for (String type : new String[] { "movies", "series" }) {

@@ -56,6 +56,7 @@ public class MobileLiveNavigationTest {
         config.setDeviceMode(phone ? "phone" : "tv");
         controller = Robolectric.buildActivity(MainActivity.class); activity = controller.get();
         set("config", new fun.nyama.tv.Config(activity)); set("compactUi", phone); set("accent", UiTheme.accent(activity));
+        set("resumed",true); // This harness builds only the foreground native UI, without media/HTTP startup.
         set("channels", Collections.singletonList(new Channel(1, "Synthetic channel", "synthetic", "", "", "Group",
                 "https://example.invalid/live.m3u8", null, null))); set("currentIndex", 0);
         Method ui = MainActivity.class.getDeclaredMethod("buildUi"); ui.setAccessible(true); ui.invoke(activity);
@@ -120,6 +121,8 @@ public class MobileLiveNavigationTest {
             assertEquals(resizeMode, video.getResizeMode());
             Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(3001));
             layout(size[0], size[1]);
+            assertEquals(View.VISIBLE, nav.getVisibility());
+            ((ChannelBrowserOverlay)get("browser")).hide();layout(size[0],size[1]);
             assertEquals(View.GONE, nav.getVisibility()); assertEquals(watchingHeight, video.getHeight());
             assertEquals(resizeMode, video.getResizeMode());
         }
@@ -135,7 +138,7 @@ public class MobileLiveNavigationTest {
         assertTrue(((ChannelBrowserOverlay) get("browser")).isOpen());
         MobileBottomNav nav = (MobileBottomNav) get("mobileNavigation"); assertEquals(View.VISIBLE, nav.getVisibility());
         Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(3001));
-        assertEquals(View.GONE, nav.getVisibility());
+        assertEquals(View.VISIBLE, nav.getVisibility());
         now = SystemClock.uptimeMillis();
         MotionEvent menuTouch = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, 120, 200, 0);
         activity.dispatchTouchEvent(menuTouch); menuTouch.recycle();
@@ -147,7 +150,51 @@ public class MobileLiveNavigationTest {
             if (!destination.equals("settings")) assertEquals(destination, intent.getStringExtra(CatalogActivity.EXTRA_SECTION));
             assertEquals(true, get("suppressNextUserLeaveHint"));
         }
-        activity.onClosed(); assertEquals(View.GONE, nav.getVisibility());
+        ((ChannelBrowserOverlay)get("browser")).hide(); assertEquals(View.GONE, nav.getVisibility());
+    }
+    @Test public void guideAndProgrammeMenusPinNavigationUntilTheLastOverlayClosesAndClockReturns() throws Exception {
+        build(true);
+        MobileBottomNav nav=(MobileBottomNav)get("mobileNavigation");
+        Method guide=MainActivity.class.getDeclaredMethod("showCurrentChannelEpg");guide.setAccessible(true);guide.invoke(activity);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(40));
+        assertEquals(View.VISIBLE,nav.getVisibility());assertEquals(View.VISIBLE,((View)get("cornerClock")).getVisibility());
+        ((EpgGuideOverlay)get("epgGuide")).hide();assertEquals(View.GONE,nav.getVisibility());
+        Method info=MainActivity.class.getDeclaredMethod("showCurrentProgrammeDescription");info.setAccessible(true);info.invoke(activity);
+        assertEquals(View.VISIBLE,nav.getVisibility());Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(9));
+        assertEquals(View.GONE,nav.getVisibility());
+        new fun.nyama.tv.Config(activity).setShowClock(false);
+        Method clock=MainActivity.class.getDeclaredMethod("refreshCornerClock");clock.setAccessible(true);clock.invoke(activity);
+        assertEquals(View.GONE,((View)get("cornerClock")).getVisibility());
+        new fun.nyama.tv.Config(activity).setShowClock(true);clock.invoke(activity);
+        assertEquals(View.VISIBLE,((View)get("cornerClock")).getVisibility());
+    }
+    @Test public void tvGuideKeepsExistingClockAndConfiguredCornerAndScale() throws Exception {
+        fun.nyama.tv.Config config=new fun.nyama.tv.Config(RuntimeEnvironment.getApplication());
+        config.setClockPosition(fun.nyama.tv.Config.CLOCK_BOTTOM_RIGHT);config.setClockScale(1.8f);build(false);layout(1920,1080);
+        OutlineTextView clock=(OutlineTextView)get("cornerClock");
+        int gravity=((FrameLayout.LayoutParams)clock.getLayoutParams()).gravity;float size=clock.getTextSize();
+        Method guide=MainActivity.class.getDeclaredMethod("showCurrentChannelEpg");guide.setAccessible(true);guide.invoke(activity);
+        assertEquals(View.VISIBLE,clock.getVisibility());((EpgGuideOverlay)get("epgGuide")).hide();
+        assertEquals(View.VISIBLE,clock.getVisibility());assertEquals(gravity,((FrameLayout.LayoutParams)clock.getLayoutParams()).gravity);
+        assertEquals(size,clock.getTextSize(),0f);assertEquals(android.view.Gravity.BOTTOM|android.view.Gravity.END,gravity);
+        showBrowser();guide.invoke(activity);assertEquals(View.VISIBLE,clock.getVisibility());
+        ((EpgGuideOverlay)get("epgGuide")).hide();assertEquals(View.GONE,clock.getVisibility());
+        ((ChannelBrowserOverlay)get("browser")).hide();assertEquals(View.VISIBLE,clock.getVisibility());
+    }
+    @Test public void navigationHidesOnlyWhenLiveVideoIsPlayingAndNoMenuIsOpen() throws Exception {
+        build(true);boolean[] playing={false};
+        androidx.media3.exoplayer.ExoPlayer player=(androidx.media3.exoplayer.ExoPlayer)java.lang.reflect.Proxy.newProxyInstance(
+                getClass().getClassLoader(),new Class<?>[]{androidx.media3.exoplayer.ExoPlayer.class},(proxy,method,args)->{
+                    if(method.getName().equals("isPlaying"))return playing[0];
+                    return null;
+                });
+        set("player",player);Method sync=MainActivity.class.getDeclaredMethod("syncMobileNavigation");sync.setAccessible(true);
+        MobileBottomNav nav=(MobileBottomNav)get("mobileNavigation");sync.invoke(activity);assertEquals(View.VISIBLE,nav.getVisibility());
+        playing[0]=true;sync.invoke(activity);assertEquals(View.GONE,nav.getVisibility());
+        showBrowser();sync.invoke(activity);assertEquals(View.VISIBLE,nav.getVisibility());
+        ((ChannelBrowserOverlay)get("browser")).hide();assertEquals(View.GONE,nav.getVisibility());
+        playing[0]=false;set("resumed",false);sync.invoke(activity);assertEquals(View.GONE,nav.getVisibility());
+        set("resumed",true);sync.invoke(activity);assertEquals(View.VISIBLE,nav.getVisibility());
     }
     @Test public void mobileMultilineProgrammeDescriptionUsesScrollableNaturalHeight() throws Exception {
         build(true);

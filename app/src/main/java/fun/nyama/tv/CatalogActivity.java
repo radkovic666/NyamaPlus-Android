@@ -79,6 +79,7 @@ public final class CatalogActivity extends Activity {
     private String restoredQuery = "";
     private boolean firstResume = true;
     private boolean firstGridFocus = true;
+    private boolean landingFocusPending = true;
     private AppSidebar sidebar;
     private boolean sidebarExpanded;
     private int lastContentFocus;
@@ -113,6 +114,8 @@ public final class CatalogActivity extends Activity {
     private final Object tvFetchLock = new Object();
     private ScrollView homeRows;
     private LinearLayout rowContainer;
+    private LinearLayout tvBrowseStack;
+    private TextView moreHeading;
     private View lastRowFocus;
     private int rowsGeneration;
     private final List<View> rowCards = new ArrayList<>();
@@ -153,7 +156,7 @@ public final class CatalogActivity extends Activity {
         // CLEAR_TOP | SINGLE_TOP from TV movie playback reveals this same catalogue.
         // Keep its live adapter, query, filters and page rather than fetching them again.
         setIntent(intent);
-        if (homeRows != null && homeRows.getVisibility() == View.VISIBLE && lastRowFocus != null) {
+        if (homeRows != null && rowContainer.getVisibility() == View.VISIBLE && lastContentFocus==3 && lastRowFocus != null) {
             lastRowFocus.requestFocus();
             return;
         }
@@ -395,14 +398,27 @@ public final class CatalogActivity extends Activity {
         root.addView(statusRow, new LinearLayout.LayoutParams(-1, dp(28)));
         if (!phone) {
             homeRows = new ScrollView(this); homeRows.setTag("tv-catalog-rows");
-            homeRows.setVisibility(View.GONE); homeRows.setClipToPadding(false);
+            homeRows.setClipToPadding(false); homeRows.setFocusable(false);
+            homeRows.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
+            tvBrowseStack = new LinearLayout(this); tvBrowseStack.setOrientation(LinearLayout.VERTICAL);
             rowContainer = new LinearLayout(this); rowContainer.setOrientation(LinearLayout.VERTICAL);
-            homeRows.addView(rowContainer, new ScrollView.LayoutParams(-1, -2));
+            rowContainer.setVisibility(View.GONE);
+            tvBrowseStack.addView(rowContainer,new LinearLayout.LayoutParams(-1,-2));
+            moreHeading=text(Config.LANG_EN.equals(config.language())?"More":"Още",18,0xFFC2CCDA,true);
+            moreHeading.setTag("tv-catalog-more");moreHeading.setPadding(dp(8),dp(16),dp(8),dp(8));moreHeading.setVisibility(View.GONE);
+            tvBrowseStack.addView(moreHeading,new LinearLayout.LayoutParams(-1,-2));
+            homeRows.addView(tvBrowseStack, new ScrollView.LayoutParams(-1, -2));
             homeRows.setOnScrollChangeListener((v, x, y, oldX, oldY) -> loadVisibleRowPosters());
             root.addView(homeRows, new LinearLayout.LayoutParams(-1, 0, 1f));
         }
 
-        grid = new GridView(this);
+        grid = phone ? new GridView(this) : new GridView(this) {
+            @Override protected void onMeasure(int width, int height) {
+                // Only the current bounded page is measured; the outer viewport scrolls rows,
+                // this same grid and pagination together. There is no second catalog adapter.
+                super.onMeasure(width, MeasureSpec.makeMeasureSpec(MEASURED_SIZE_MASK, MeasureSpec.AT_MOST));
+            }
+        };
         catalogColumns = phone ? calculateColumns(145, 2, sidebarWidthDp) : calculateColumns(132, 4, SIDEBAR_COLLAPSED_DP);
         if (!phone) catalogColumns = Math.min(6, Math.max(4, catalogColumns));
         if (phone && getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE) catalogColumns = Math.max(catalogColumns, 3);
@@ -417,10 +433,18 @@ public final class CatalogActivity extends Activity {
         adapter = new CatalogAdapter(this);
         grid.setAdapter(adapter);
         grid.setOnFocusChangeListener((v, focused) -> {
+            if(focused&&!phone){
+                lastContentFocus=2;
+                View selected=grid.getSelectedView();
+                if(selected!=null)selected.requestRectangleOnScreen(new Rect(0,0,selected.getWidth(),selected.getHeight()),false);
+            }
             if (focused && !phone) setCatalogSidebarExpanded(false, true);
             if (!phone) updateTvCardHighlights();
         });
-        grid.setOnItemClickListener((parent, view, position, id) -> openDetail(adapter.getItem(position)));
+        grid.setOnItemClickListener((parent, view, position, id) -> {
+            if(!phone)lastContentFocus=2;
+            openDetail(adapter.getItem(position));
+        });
         grid.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             private View previous;
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
@@ -428,6 +452,7 @@ public final class CatalogActivity extends Activity {
                     if (previous != null && previous != view) updateTvCardAppearance(previous);
                     updateTvCardHighlights();
                     if (view != null) updateTvCardAppearance(view);
+                    if (view != null && grid.hasFocus()) view.requestRectangleOnScreen(new Rect(0,0,view.getWidth(),view.getHeight()),false);
                     previous = view;
                     showCatalogArtwork(adapter.getItem(position));
                     return;
@@ -456,7 +481,8 @@ public final class CatalogActivity extends Activity {
                 previous = null;
             }
         });
-        root.addView(grid, new LinearLayout.LayoutParams(-1, 0, 1f));
+        if(phone) root.addView(grid, new LinearLayout.LayoutParams(-1, 0, 1f));
+        else tvBrowseStack.addView(grid,new LinearLayout.LayoutParams(-1,-2));
 
         LinearLayout paging = horizontal();
         prev = smallButton(getString(R.string.previous_page));
@@ -468,9 +494,25 @@ public final class CatalogActivity extends Activity {
         paging.addView(prev, new LinearLayout.LayoutParams(dp(phone ? 88 : 112), dp(38)));
         paging.addView(pageStatus, new LinearLayout.LayoutParams(0, dp(38), 1f));
         paging.addView(next, new LinearLayout.LayoutParams(dp(phone ? 88 : 112), dp(38)));
-        root.addView(paging, new LinearLayout.LayoutParams(-1, dp(phone ? 48 : 40)));
+        paging.setTag("catalog-pagination");
+        if(phone) root.addView(paging, new LinearLayout.LayoutParams(-1, dp(48)));
+        else tvBrowseStack.addView(paging,new LinearLayout.LayoutParams(-1,dp(40)));
 
         if (!phone) {
+            grid.setOnKeyListener((view,key,event)->{
+                if(event.getAction()!=KeyEvent.ACTION_DOWN)return false;
+                int position=grid.getSelectedItemPosition();
+                if(key==KeyEvent.KEYCODE_DPAD_UP && position>=0 && position<catalogColumns
+                        && rowContainer.getVisibility()==View.VISIBLE && !rowCards.isEmpty()) {
+                    rowCards.get(rowCards.size()-1).requestFocus(); return true;
+                }
+                int lastRow=grid.getCount()==0?0:((grid.getCount()-1)/catalogColumns)*catalogColumns;
+                if(key==KeyEvent.KEYCODE_DPAD_DOWN && position>=lastRow) {
+                    if(next.isEnabled()){next.requestFocus();return true;}
+                    if(prev.isEnabled()){prev.requestFocus();return true;}
+                }
+                return false;
+            });
             grid.post(() -> { if (grid.getCount() > 0) grid.requestFocus(); else search.requestFocus(); });
         }
         if (!phone) {
@@ -563,7 +605,7 @@ public final class CatalogActivity extends Activity {
 
     private void focusContentFromSidebar() {
         setCatalogSidebarExpanded(false, true);
-        if (lastContentFocus == 3 && lastRowFocus != null && homeRows.getVisibility() == View.VISIBLE) lastRowFocus.requestFocus();
+        if (lastContentFocus == 3 && lastRowFocus != null && rowContainer.getVisibility() == View.VISIBLE) lastRowFocus.requestFocus();
         else if (lastContentFocus == 1 && filterButton != null) filterButton.requestFocus();
         else if (lastContentFocus == 2 && grid != null && grid.getCount() > 0) grid.requestFocus();
         else if (search != null) search.requestFocus();
@@ -628,7 +670,7 @@ public final class CatalogActivity extends Activity {
     private void openSection(String target) {
         String normalized = "series".equals(target) ? "series" : "movies";
         if (normalized.equals(section)) {
-            if (homeRows != null && homeRows.getVisibility() == View.VISIBLE && lastRowFocus != null) lastRowFocus.requestFocus();
+            if (homeRows != null && rowContainer.getVisibility() == View.VISIBLE && lastContentFocus==3 && lastRowFocus != null) lastRowFocus.requestFocus();
             else if (grid != null && grid.getCount() > 0) grid.requestFocus();
             return;
         }
@@ -927,8 +969,8 @@ public final class CatalogActivity extends Activity {
         if (homeRows == null) return;
         rowsGeneration++;
         boolean show = isRowLanding() && rowContainer.getChildCount() > 0;
-        homeRows.setVisibility(show ? View.VISIBLE : View.GONE);
-        grid.setVisibility(show ? View.GONE : View.VISIBLE);
+        rowContainer.setVisibility(show ? View.VISIBLE : View.GONE);
+        moreHeading.setVisibility(show ? View.VISIBLE : View.GONE);
     }
 
     private void observeRows(List<CatalogItem> verified) {
@@ -947,7 +989,8 @@ public final class CatalogActivity extends Activity {
     }
 
     private void renderRows(List<CatalogRows.Row> rows) {
-        boolean restoreFocus = grid.hasFocus() || homeRows.hasFocus();
+        boolean restoreFocus = rowContainer.hasFocus() || (landingFocusPending && rowCards.isEmpty() && grid.hasFocus()
+                && grid.getSelectedItemPosition()<=0 && homeRows.getScrollY()==0);
         String focusedId = lastRowFocus != null && lastRowFocus.getTag() instanceof Holder
                 ? ((Holder) lastRowFocus.getTag()).item.id : "";
         rowContainer.removeAllViews(); rowCards.clear(); lastRowFocus = null;
@@ -978,10 +1021,15 @@ public final class CatalogActivity extends Activity {
                         v.post(this::loadVisibleRowPosters);
                     }
                 });
-                if (i == 0) card.setOnKeyListener((v, key, event) -> {
-                    if (key == KeyEvent.KEYCODE_DPAD_LEFT && event.getAction() == KeyEvent.ACTION_DOWN) {
+                final int column=i;
+                card.setOnKeyListener((v, key, event) -> {
+                    if (key == KeyEvent.KEYCODE_DPAD_LEFT && column==0 && event.getAction() == KeyEvent.ACTION_DOWN) {
                         lastRowFocus = v; lastContentFocus = 3;
                         setCatalogSidebarExpanded(true, true); sidebar.focusFirst(); return true;
+                    }
+                    if(key==KeyEvent.KEYCODE_DPAD_DOWN && event.getAction()==KeyEvent.ACTION_DOWN
+                            && row==rows.get(rows.size()-1) && grid.getCount()>0) {
+                        lastContentFocus=2;grid.setSelection(Math.min(column,grid.getCount()-1));grid.requestFocus();return true;
                     }
                     return false;
                 });
@@ -990,14 +1038,17 @@ public final class CatalogActivity extends Activity {
         }
         if (lastRowFocus == null && !rowCards.isEmpty()) lastRowFocus = rowCards.get(0);
         boolean show = !rows.isEmpty();
-        homeRows.setVisibility(show ? View.VISIBLE : View.GONE); grid.setVisibility(show ? View.GONE : View.VISIBLE);
+        if(show)landingFocusPending=false;
+        rowContainer.setVisibility(show ? View.VISIBLE : View.GONE);moreHeading.setVisibility(show?View.VISIBLE:View.GONE);
         if (show && restoreFocus && lastRowFocus != null) lastRowFocus.requestFocus();
         homeRows.post(this::loadVisibleRowPosters);
     }
 
     private void loadVisibleRowPosters() {
         Rect visible = new Rect();
-        for (View card : rowCards) {
+        List<View> cards=new ArrayList<>(rowCards);
+        if(grid!=null)for(int i=0;i<grid.getChildCount();i++)cards.add(grid.getChildAt(i));
+        for (View card : cards) {
             Holder holder = (Holder) card.getTag();
             if (!holder.posterRequested && card.isShown() && card.getGlobalVisibleRect(visible)) {
                 holder.posterRequested = true;
@@ -1039,14 +1090,13 @@ public final class CatalogActivity extends Activity {
                     : result.items);
         }
         loading.setVisibility(View.GONE);
-        status.setText(!config.isPhoneMode() && !tvCatalogReady
-                ? result.items.size() + (Config.LANG_EN.equals(config.language()) ? " on this page · Catalog: " : " на тази страница · Каталог: ") + total
-                : getString(R.string.catalog_count, total));
+        status.setText(config.isPhoneMode() ? getString(R.string.catalog_count,total) : "");
         pageStatus.setText(getString(R.string.page_of, page, totalPages));
         prev.setEnabled(page > 1);
         next.setEnabled(page < totalPages);
         updateFilterIndicator();
         if (focusFirstAfterPageChange && !config.isPhoneMode() && !result.items.isEmpty()) {
+            landingFocusPending=false;
             focusFirstAfterPageChange = false;
             firstGridFocus = false;
             restorePosition = -1;
@@ -1271,7 +1321,9 @@ public final class CatalogActivity extends Activity {
                 } else {
                     h.meta.setText(cardMeta(item));
                 }
-                if (!row) PosterLoader.load(CatalogActivity.this, item.id, h.poster);
+                h.posterRequested=false;
+                if (config.isPhoneMode()) PosterLoader.load(CatalogActivity.this, item.id, h.poster);
+                else if(!row && homeRows!=null)homeRows.post(CatalogActivity.this::loadVisibleRowPosters);
             }
             if (!config.isPhoneMode()) updateTvCardAppearance(convertView);
             return convertView;
