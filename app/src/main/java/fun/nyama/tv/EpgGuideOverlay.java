@@ -45,9 +45,8 @@ public final class EpgGuideOverlay extends FrameLayout {
         this.listener = listener;
         Config config = new Config(context);
         this.compact = config.isPhoneMode();
-        int widthDp = Math.round(getResources().getDisplayMetrics().widthPixels / getResources().getDisplayMetrics().density);
-        int heightDp = Math.round(getResources().getDisplayMetrics().heightPixels / getResources().getDisplayMetrics().density);
-        this.portraitPhone = compact && heightDp > widthDp;
+        this.portraitPhone = compact && getResources().getConfiguration().orientation
+                == android.content.res.Configuration.ORIENTATION_PORTRAIT;
         setVisibility(GONE);
         setFocusable(true);
         setFocusableInTouchMode(true);
@@ -169,6 +168,21 @@ public final class EpgGuideOverlay extends FrameLayout {
         if (!events.isEmpty()) list.setSelection(selected);
         list.requestFocus();
         updateDetail();
+    }
+
+    /** Preserve the open guide and selected programme while rebuilding responsive geometry. */
+    EpgGuideOverlay forConfigurationChange() {
+        EpgGuideOverlay next = new EpgGuideOverlay(getContext(), listener);
+        next.channel = channel;
+        next.events.addAll(events);
+        next.selected = selected;
+        next.channelName.setText(channelName.getText());
+        next.logo.setImageDrawable(logo.getDrawable());
+        next.adapter.notifyDataSetChanged();
+        next.list.setSelection(selected);
+        next.updateDetail();
+        next.setVisibility(getVisibility());
+        return next;
     }
 
     public void hide() {

@@ -91,9 +91,8 @@ public final class ChannelBrowserOverlay extends FrameLayout {
         this.config = new Config(context);
         this.accent = UiTheme.accent(context);
         this.compact = config.isPhoneMode();
-        int widthDp = Math.round(getResources().getDisplayMetrics().widthPixels / getResources().getDisplayMetrics().density);
-        int heightDp = Math.round(getResources().getDisplayMetrics().heightPixels / getResources().getDisplayMetrics().density);
-        this.portraitPhone = compact && heightDp > widthDp;
+        this.portraitPhone = compact && getResources().getConfiguration().orientation
+                == android.content.res.Configuration.ORIENTATION_PORTRAIT;
         setVisibility(GONE);
         setFocusable(true);
         setFocusableInTouchMode(true);
@@ -339,6 +338,24 @@ public final class ChannelBrowserOverlay extends FrameLayout {
         LinearLayout.LayoutParams channels = (LinearLayout.LayoutParams) channelPane.getLayoutParams();
         channels.height = Math.max(dp(180), Math.round(usable * 0.48f));
         channelPane.setLayoutParams(channels);
+    }
+
+    /** Rebuild only orientation-dependent menu geometry; never reload the live session. */
+    ChannelBrowserOverlay forConfigurationChange() {
+        if (foldAnimator != null) foldAnimator.cancel();
+        ChannelBrowserOverlay next = new ChannelBrowserOverlay(getContext(), listener);
+        next.source.addAll(source);
+        next.rebuildCategories();
+        String category = categories.isEmpty() ? "all" : categories.get(selectedCategory).key;
+        next.selectedCategory = Math.max(0, next.findCategoryByKey(category));
+        next.selectedChannel = selectedChannel;
+        next.applyCategory(false);
+        next.categoryList.setSelection(next.selectedCategory);
+        next.channelList.setSelection(next.selectedChannel);
+        next.setFoldStage(foldStage, false);
+        next.setVisibility(getVisibility());
+        next.updateClock();
+        return next;
     }
 
     public boolean isOpen() { return getVisibility() == VISIBLE; }

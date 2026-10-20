@@ -415,8 +415,8 @@ public final class TitleDetailActivity extends Activity {
         i.putExtra(MoviePlayerActivity.EXTRA_TV_WATCH_STARTED_AT, android.os.SystemClock.elapsedRealtime());
         if (!config.isPhoneMode()) {
             i.putExtra(MoviePlayerActivity.EXTRA_RETURN_TO_CATALOG, true).putExtra("origin_section", section);
-            startActivityForResult(i, TV_MOVIE_PLAYBACK_REQUEST);
-        } else startActivity(i);
+            launchOnDemand(i, true);
+        } else launchOnDemand(i, false);
     }
 
     private void openEpisode(TvSeriesMetadata.Episode episode) {
@@ -425,12 +425,23 @@ public final class TitleDetailActivity extends Activity {
                 || !id.matches("tt[0-9]{7,10}") || seriesSelection == null
                 || seriesSelection.selectedEpisode() != episode) return;
         restoreSeriesFocus = true;
-        startActivity(new Intent(this, MoviePlayerActivity.class)
+        launchOnDemand(new Intent(this, MoviePlayerActivity.class)
                 .putExtra("id", id).putExtra("type", section).putExtra("title", title)
                 .putExtra("series_imdb_id", id).putExtra("season", episode.season)
                 .putExtra("episode", episode.number).putExtra("return_to_series", true)
                 .putExtra("origin_section", section)
-                .putExtra(MoviePlayerActivity.EXTRA_TV_WATCH_STARTED_AT, android.os.SystemClock.elapsedRealtime()));
+                .putExtra(MoviePlayerActivity.EXTRA_TV_WATCH_STARTED_AT, android.os.SystemClock.elapsedRealtime()), false);
+    }
+
+    private void launchOnDemand(Intent intent, boolean forResult) {
+        long reservation = MainActivity.beginOnDemandPlayback();
+        try {
+            if (forResult) startActivityForResult(intent, TV_MOVIE_PLAYBACK_REQUEST);
+            else startActivity(intent);
+        } catch (RuntimeException failure) {
+            MainActivity.resumePlaybackAfterOnDemand(reservation);
+            throw failure;
+        }
     }
 
     private void openMetadataSource(String value) {

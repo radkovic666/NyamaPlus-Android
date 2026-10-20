@@ -2,10 +2,12 @@ package fun.nyama.tv;
 
 import android.app.Activity;
 import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.os.Bundle;
@@ -16,6 +18,9 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.SurfaceView;
+import android.view.SurfaceHolder;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -62,6 +67,9 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     public static final String EXTRA_EMBEDDED_IN_NYAMA_PLUS = "nyama_plus_embedded";
     public static final String EXTRA_RETURN_FROM_ON_DEMAND = "return_from_on_demand";
     private boolean returnFromOnDemand;
+    private static volatile boolean onDemandPlaybackActive;
+    private static long onDemandSession;
+    private boolean liveSourceRefreshPending;
     private String loadedPlaylistUrl = "";
     private static WeakReference<MainActivity> activeInstance = new WeakReference<>(null);
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -103,6 +111,13 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     private TextView status;
     private ProgressBar buffering;
     private OutlineTextView cornerClock;
+    private FrameLayout playbackOverlays;
+    private View refreshSuccessDot;
+    private final Runnable restorePlaybackOverlays = this::refreshCornerClock;
+    private final Runnable fadeRefreshSuccess = () -> {
+        if (refreshSuccessDot != null) refreshSuccessDot.animate().alpha(0f).setDuration(600L)
+                .withEndAction(() -> refreshSuccessDot.setVisibility(View.GONE)).start();
+    };
     private boolean compactUi;
     private LinearLayout programmeInfo;
     private TextView programmeInfoTitle;
@@ -201,17 +216,47 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
             startActivity(new Intent(this, AdminSettingsActivity.class));
             return;
         }
-        boolean returning = returnFromOnDemand;
-        returnFromOnDemand = false;
-        boolean playerReturn = !config.isPhoneMode() && PlaylistReturnRefresh.consumeReturn();
-        boolean forceStartupPlaylistRefresh = startupPlaylistRefreshPending && !returning && !playerReturn;
-        startupPlaylistRefreshPending = false;
-        if (!returning || !resumeLoadedLiveChannel()) loadAndRefresh(forceStartupPlaylistRefresh);
+        if (onDemandPlaybackActive) pausePlaybackForOnDemand();
+        else {
+            boolean returning = returnFromOnDemand;
+            returnFromOnDemand = false;
+            boolean playerReturn = !config.isPhoneMode() && PlaylistReturnRefresh.consumeReturn();
+            boolean forceStartupPlaylistRefresh = startupPlaylistRefreshPending && !returning && !playerReturn;
+            startupPlaylistRefreshPending = false;
+            if (!returning || !resumeLoadedLiveChannel()) loadAndRefresh(forceStartupPlaylistRefresh);
+        }
         startForegroundRefreshLoop();
         main.removeCallbacks(updateClock);
         main.post(updateClock);
         main.removeCallbacks(usageCheckpoint);
         main.post(usageCheckpoint);
+    }
+
+    @Override public void onConfigurationChanged(Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        if (playerView == null) return;
+        // Keep the player, channels, network callback and refresh deadlines. Only menus have
+        // orientation-specific geometry; rebuild those views while retaining their selection.
+        if (config.isPhoneMode()) {
+            ViewGroup root = (ViewGroup) browser.getParent();
+            int index = root.indexOfChild(browser);
+            ChannelBrowserOverlay replacement = browser.forConfigurationChange();
+            root.removeView(browser);
+            root.addView(replacement, index, browser.getLayoutParams());
+            browser = replacement;
+            index = root.indexOfChild(epgGuide);
+            EpgGuideOverlay guide = epgGuide.forConfigurationChange();
+            root.removeView(epgGuide);
+            root.addView(guide, index, epgGuide.getLayoutParams());
+            epgGuide = guide;
+        }
+        cornerClock.setLayoutParams(clockLayoutParams());
+        immersive();
+        View screen = findViewById(android.R.id.content);
+        ViewCompat.requestApplyInsets(screen);
+        screen.requestLayout();
+        syncMobileNavigation();
+        refreshCornerClock();
     }
 
     @Override protected void onNewIntent(Intent intent) {
@@ -221,7 +266,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     }
 
     private boolean resumeLoadedLiveChannel() {
-        if (!ActivationAccess.playbackAllowed(this) || player == null || player.getMediaItemCount() == 0
+        if (onDemandPlaybackActive || !ActivationAccess.playbackAllowed(this) || player == null || player.getMediaItemCount() == 0
                 || !loadedPlaylistUrl.equals(config.playlistUrl())) return false;
         if (player.getPlaybackState() == Player.STATE_IDLE) player.prepare();
         player.setPlayWhenReady(true);
@@ -243,6 +288,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     }
 
     @Override protected void onPause() {
+        hideRefreshSuccess();
         if (mobileNavigation != null) mobileNavigation.hideNow();
         super.onPause();
         resumed = false;
@@ -259,6 +305,8 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     }
 
     @Override protected void onDestroy() {
+        hideRefreshSuccess();
+        main.removeCallbacks(restorePlaybackOverlays);
         resumed=false;
         if (mobileNavigation != null) mobileNavigation.hideNow();
         MainActivity active = activeInstance.get();
@@ -287,6 +335,24 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         playerView.setUseController(false);
         playerView.setKeepScreenOn(true);
         root.addView(playerView, new FrameLayout.LayoutParams(-1, -1));
+        // Keep Media3's existing SurfaceView and FIT sizing. Its separate surface must stay
+        // behind the application window, so ordinary Android overlay views remain visible.
+        if (playerView.getVideoSurfaceView() instanceof SurfaceView) {
+            SurfaceView surface = (SurfaceView) playerView.getVideoSurfaceView();
+            surface.setZOrderOnTop(false);
+            surface.setZOrderMediaOverlay(false);
+            surface.getHolder().addCallback(new SurfaceHolder.Callback() {
+                public void surfaceCreated(SurfaceHolder holder) { restore(); }
+                public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) { restore(); }
+                public void surfaceDestroyed(SurfaceHolder holder) { }
+                private void restore() {
+                    main.removeCallbacks(restorePlaybackOverlays);
+                    main.post(restorePlaybackOverlays);
+                }
+            });
+        }
+        playbackOverlays = new FrameLayout(this);
+        playbackOverlays.setElevation(dp(4));
 
         buffering = new ProgressBar(this);
         buffering.setVisibility(View.GONE);
@@ -392,7 +458,14 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         cornerClock.setBackgroundColor(Color.TRANSPARENT);
         cornerClock.setStrokeColor(Color.BLACK);
         cornerClock.setStrokeWidth(getResources().getDisplayMetrics().density * 1.6f);
-        root.addView(cornerClock, clockLayoutParams());
+        playbackOverlays.addView(cornerClock, clockLayoutParams());
+        cornerClock.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> positionRefreshSuccess());
+        refreshSuccessDot = new View(this);
+        refreshSuccessDot.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        GradientDrawable dot = new GradientDrawable(); dot.setShape(GradientDrawable.OVAL); dot.setColor(0xFF4CAF50);
+        refreshSuccessDot.setBackground(dot);
+        refreshSuccessDot.setVisibility(View.GONE);
+        playbackOverlays.addView(refreshSuccessDot, new FrameLayout.LayoutParams(dp(10), dp(10), Gravity.TOP | Gravity.END));
 
         exitPrompt = new LinearLayout(this);
         exitPrompt.setOrientation(LinearLayout.VERTICAL);
@@ -420,6 +493,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         FrameLayout.LayoutParams xp = new FrameLayout.LayoutParams(
                 compactUi ? dp(300) : dp(430), -2, Gravity.CENTER);
         root.addView(exitPrompt, xp);
+        root.addView(playbackOverlays, new FrameLayout.LayoutParams(-1, -1));
 
         // TV navigation lives inside the normal channel browser; phones use a measured bottom bar.
         // There is intentionally no floating NY+ handle or separate TV navigation overlay.
@@ -467,6 +541,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         playerView.setPlayer(player);
         player.addListener(new Player.Listener() {
             @Override public void onPlaybackStateChanged(int playbackState) {
+                refreshCornerClock();
                 buffering.setVisibility(playbackState == Player.STATE_BUFFERING ? View.VISIBLE : View.GONE);
             }
 
@@ -527,11 +602,13 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
 
     private void startForegroundRefreshLoop() {
         if (refreshTask != null) refreshTask.cancel(false);
-        refreshTask = scheduler.scheduleAtFixedRate(this::refreshPlaylistNow,
+        refreshTask = scheduler.scheduleAtFixedRate(() -> refreshPlaylistNow(true),
                 Config.PLAYLIST_REFRESH_MS, Config.PLAYLIST_REFRESH_MS, TimeUnit.MILLISECONDS);
     }
 
-    private void refreshPlaylistNow() {
+    private void refreshPlaylistNow() { refreshPlaylistNow(false); }
+
+    private void refreshPlaylistNow(boolean scheduled) {
         if (!playlistRefreshInFlight.compareAndSet(false, true)) return;
         io.execute(() -> {
             try {
@@ -540,10 +617,13 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
                 hasUsablePlaylist = true;
                 startupRetryAttempt = 0;
                 cancelPlaylistRetry();
-                main.post(() -> applyChannels(fresh, true));
+                main.post(() -> applyChannels(fresh, true, scheduled));
             } catch (Exception e) {
                 NetworkDiagnostics.logFailure(this, "playlist refresh", e);
-                main.post(() -> showStatus(getString(R.string.playlist_refresh_failed), 3500));
+                main.post(() -> {
+                    if (scheduled) hideRefreshSuccess();
+                    showStatus(getString(R.string.playlist_refresh_failed), 3500);
+                });
                 if (!hasUsablePlaylist) scheduleStartupPlaylistRetry();
             } finally {
                 playlistRefreshInFlight.set(false);
@@ -606,7 +686,9 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         }
     }
 
-    private void applyChannels(List<Channel> fresh, boolean fromRefresh) {
+    private void applyChannels(List<Channel> fresh, boolean fromRefresh) { applyChannels(fresh, fromRefresh, false); }
+
+    private void applyChannels(List<Channel> fresh, boolean fromRefresh, boolean scheduled) {
         if (fresh == null || fresh.isEmpty()) return;
         String oldKey = currentIndex >= 0 && currentIndex < channels.size() ? channels.get(currentIndex).stableKey() : config.lastChannelKey();
         String oldUrl = currentIndex >= 0 && currentIndex < channels.size() ? channels.get(currentIndex).url : "";
@@ -618,11 +700,16 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         boolean sourceChanged = fromRefresh && currentIndex >= 0 && !oldUrl.isEmpty() && !oldUrl.equals(newChannel.url);
         currentIndex = newIndex;
 
-        if (player.getMediaItemCount() == 0 || sourceChanged) {
-            playChannel(currentIndex, fromRefresh);
-        } else if (fromRefresh) {
+        if (onDemandPlaybackActive) {
+            liveSourceRefreshPending |= sourceChanged || player.getMediaItemCount() == 0;
+            return;
+        }
+        if (player.getMediaItemCount() == 0 || sourceChanged || liveSourceRefreshPending) {
+            playChannel(currentIndex, fromRefresh && !scheduled, !scheduled);
+        } else if (fromRefresh && !scheduled) {
             showStatus(getString(R.string.playlist_updated, channels.size()), 2200);
         }
+        if (scheduled) showRefreshSuccess();
     }
 
     private int findByKey(String key) {
@@ -631,8 +718,10 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         return -1;
     }
 
-    private void playChannel(int index, boolean refreshed) {
-        if (!ActivationAccess.playbackAllowed(this)) return;
+    private void playChannel(int index, boolean refreshed) { playChannel(index, refreshed, true); }
+
+    private void playChannel(int index, boolean refreshed, boolean showOverlay) {
+        if (onDemandPlaybackActive || !ActivationAccess.playbackAllowed(this)) return;
         loadedPlaylistUrl = config.playlistUrl();
         cancelExitPrompt();
         if (channels.isEmpty()) return;
@@ -651,8 +740,10 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         player.setMediaItem(MediaItem.fromUri(channel.url));
         player.prepare();
         player.setPlayWhenReady(true);
+        liveSourceRefreshPending = false;
 
-        showChannelOverlay(channel, refreshed ? getString(R.string.playlist_refreshed) : null);
+        if (showOverlay) showChannelOverlay(channel, refreshed ? getString(R.string.playlist_refreshed) : null);
+        refreshCornerClock();
     }
 
     private void channelNext() { if (!channels.isEmpty()) playChannel(currentIndex + 1, false); }
@@ -816,24 +907,49 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         activity.runOnUiThread(activity::gracefulExit);
     }
 
-    /** Pause live TV only while an on-demand movie/episode is actually playing. */
+    /** Own the live playback gate before constructing/loading the VOD document. */
+    static long beginOnDemandPlayback() {
+        onDemandPlaybackActive = true;
+        long session = ++onDemandSession;
+        pausePlaybackForOnDemand();
+        return session;
+    }
+
+    /** Also used by authorization routing to pause live media without acquiring a VOD session. */
     public static void pausePlaybackForOnDemand() {
         MainActivity activity = activeInstance.get();
         if (activity == null || activity.isFinishing()) return;
         activity.runOnUiThread(() -> {
-            if (activity.player != null) activity.player.setPlayWhenReady(false);
+            activity.playGeneration++; // Invalidate any queued live-channel error retry.
+            if (activity.player != null) {
+                activity.player.setPlayWhenReady(false);
+                activity.player.pause();
+            }
+            activity.hideRefreshSuccess();
+            activity.refreshCornerClock();
         });
     }
 
     /** Resume the still-loaded live channel after leaving the on-demand player. */
+    static void resumePlaybackAfterOnDemand(long session) {
+        if (!onDemandPlaybackActive || session != onDemandSession) return; // A stale Activity cannot release a newer player session.
+        resumePlaybackAfterOnDemand();
+    }
+
     public static void resumePlaybackAfterOnDemand() {
+        onDemandPlaybackActive = false;
         MainActivity activity = activeInstance.get();
         if (activity == null || activity.isFinishing()) return;
         if (!ActivationAccess.playbackAllowed(activity)) return;
         activity.runOnUiThread(() -> {
-            if (activity.player != null && activity.player.getMediaItemCount() > 0) {
-                activity.player.setPlayWhenReady(true);
+            if (onDemandPlaybackActive || activity.isDestroyed()) return;
+            if (activity.liveSourceRefreshPending) activity.playChannel(activity.currentIndex, false);
+            else if (activity.player != null && activity.player.getMediaItemCount() > 0) activity.player.setPlayWhenReady(true);
+            else if (activity.resumed && activity.config != null && activity.config.isConfigured()) {
+                activity.loadAndRefresh(activity.startupPlaylistRefreshPending);
+                activity.startupPlaylistRefreshPending = false;
             }
+            activity.refreshCornerClock();
         });
     }
 
@@ -1080,13 +1196,45 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         // The channel browser already has the existing header clock. EPG has no clock of its
         // own, so it must not suppress the configured Live TV clock.
         boolean browserOnTop=browser!=null&&browser.isOpen()&&!(epgGuide!=null&&epgGuide.isOpen());
-        if (!config.showClock() || browserOnTop) {
+        if (!config.showClock() || browserOnTop || onDemandPlaybackActive) {
             cornerClock.setVisibility(View.GONE);
+            positionRefreshSuccess();
             return;
         }
         cornerClock.setText(new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date()));
         cornerClock.setVisibility(View.VISIBLE);
         cornerClock.bringToFront();
+        playbackOverlays.bringToFront();
+        positionRefreshSuccess();
+    }
+
+    private void positionRefreshSuccess() {
+        if (refreshSuccessDot == null) return;
+        int top = dp(16);
+        if (cornerClock.getVisibility() == View.VISIBLE && Config.CLOCK_TOP_RIGHT.equals(config.clockPosition()))
+            top += Math.max(cornerClock.getHeight(), cornerClock.getMinimumHeight()) + dp(8);
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) refreshSuccessDot.getLayoutParams();
+        if (lp.topMargin != top || lp.rightMargin != dp(18)) {
+            lp.topMargin = top; lp.rightMargin = dp(18); refreshSuccessDot.setLayoutParams(lp);
+        }
+    }
+
+    private void showRefreshSuccess() {
+        if (!resumed || onDemandPlaybackActive || isFinishing() || isDestroyed()) return;
+        hideRefreshSuccess();
+        positionRefreshSuccess();
+        refreshSuccessDot.setAlpha(1f);
+        refreshSuccessDot.setVisibility(View.VISIBLE);
+        refreshSuccessDot.bringToFront(); playbackOverlays.bringToFront();
+        main.postDelayed(fadeRefreshSuccess, 2400L);
+    }
+
+    private void hideRefreshSuccess() {
+        main.removeCallbacks(fadeRefreshSuccess);
+        if (refreshSuccessDot == null) return;
+        refreshSuccessDot.animate().cancel();
+        refreshSuccessDot.setAlpha(0f);
+        refreshSuccessDot.setVisibility(View.GONE);
     }
 
     private void syncMobileNavigation() {

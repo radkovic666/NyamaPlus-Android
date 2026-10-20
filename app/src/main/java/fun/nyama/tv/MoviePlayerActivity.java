@@ -80,6 +80,7 @@ public final class MoviePlayerActivity extends Activity {
     private String title;
     private boolean closeArmed;
     private boolean resumeTvWhenClosing;
+    private long livePlaybackSession;
     private boolean providerMenuMode;
     private boolean returnToSeries;
     private boolean playbackFailed;
@@ -122,6 +123,7 @@ public final class MoviePlayerActivity extends Activity {
         long createdAt = android.os.SystemClock.elapsedRealtime();
         super.onCreate(state);
         config = new Config(this);
+        livePlaybackSession = MainActivity.beginOnDemandPlayback();
         if (!ActivationAccess.require(this)) return;
         tvMode = !config.isPhoneMode();
         tvActivityCreatedAt = createdAt;
@@ -131,7 +133,6 @@ public final class MoviePlayerActivity extends Activity {
         title = safe(getIntent().getStringExtra("title"));
         returnToSeries = tvMode && "series".equals(type) && getIntent().getBooleanExtra("return_to_series", false);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        MainActivity.pausePlaybackForOnDemand();
         setContentView(buildUi());
         loadPlayer();
     }
@@ -1335,7 +1336,7 @@ public final class MoviePlayerActivity extends Activity {
         resumeTvWhenClosing = false;
         // Resume the existing Live TV audio only after the VOD surface has been destroyed.
         // Browsing stays on the original catalog/detail Activity instead of opening MainActivity.
-        MainActivity.resumePlaybackAfterOnDemand();
+        MainActivity.resumePlaybackAfterOnDemand(livePlaybackSession);
         if (returnToSeries) {
             finish();
         } else if (getIntent().getBooleanExtra(EXTRA_RETURN_TO_CATALOG, false)) {
@@ -1384,7 +1385,7 @@ public final class MoviePlayerActivity extends Activity {
         main.removeCallbacks(hideControls);
         releaseMovieWebView();
         if (tvMode && isFinishing()) requestReturnPlaylistRefresh();
-        if (resumeTvWhenClosing) MainActivity.resumePlaybackAfterOnDemand();
+        if (resumeTvWhenClosing || isFinishing()) MainActivity.resumePlaybackAfterOnDemand(livePlaybackSession);
         super.onDestroy();
     }
 
