@@ -18,7 +18,9 @@ final class ActivationResponse {
         authorizationToken = token;
         if (!body.optBoolean("ok")) throw new ActivationApi.Failure(body.optString("error", "server_unavailable"), 0);
         JSONObject capabilities = body.optJSONObject("capabilities");
-        revokeCurrentDeviceSupported = capabilities != null && Boolean.TRUE.equals(capabilities.opt("revoke_current_device"));
+        revokeCurrentDeviceSupported = capabilities != null
+                && Boolean.TRUE.equals(capabilities.opt("revoke_current_device"))
+                && Boolean.TRUE.equals(capabilities.opt("atomic_device_deactivation"));
         subscription = SubscriptionInfo.from(body, 0L);
         String status = body.optString("access_status");
         active = "active".equals(status);

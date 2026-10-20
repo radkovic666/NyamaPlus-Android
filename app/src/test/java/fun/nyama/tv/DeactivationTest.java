@@ -39,7 +39,7 @@ public class DeactivationTest {
     }
     private void authorize(boolean supported) throws Exception {
         context.getSharedPreferences("nyama_activation_mode",0).edit().putBoolean("managed",true).commit();
-        ActivationAccess.accept(context,new ActivationResponse(response().put("capabilities",new JSONObject().put("revoke_current_device",supported))));
+        ActivationAccess.accept(context,new ActivationResponse(response().put("capabilities",new JSONObject().put("revoke_current_device",supported).put("atomic_device_deactivation",supported))));
     }
     @Test public void revokeSendsOnlyExistingIdAndBearerAndRequiresBothServerConfirmations() throws Exception {
         Memory memory=new Memory();
@@ -63,6 +63,18 @@ public class DeactivationTest {
         }
         ActivationController.Revocation stale=new ActivationController((a,b,t)->{throw new ActivationApi.Failure("activation_invalid",0);},memory).revokeCurrentDevice();
         assertEquals(TOKEN,stale.token);assertEquals(TOKEN,memory.token);assertEquals(0,memory.writes);
+    }
+    @Test public void oldPartialServerAndCoercedAtomicCapabilityCannotEnableDeactivation() throws Exception {
+        JSONObject capabilities = new JSONObject().put("revoke_current_device", true);
+        assertFalse(new ActivationResponse(response().put("capabilities", capabilities)).revokeCurrentDeviceSupported);
+        for (Object invalid : new Object[]{"true", 1, false, JSONObject.NULL}) {
+            capabilities.put("atomic_device_deactivation", invalid);
+            assertFalse(new ActivationResponse(response().put("capabilities", capabilities)).revokeCurrentDeviceSupported);
+        }
+        capabilities.put("atomic_device_deactivation", true);
+        assertTrue(new ActivationResponse(response().put("capabilities", capabilities)).revokeCurrentDeviceSupported);
+        capabilities.put("revoke_current_device", false);
+        assertFalse(new ActivationResponse(response().put("capabilities", capabilities)).revokeCurrentDeviceSupported);
     }
     @Test public void capabilitiesFailClosedAndLegacyHasNoDeactivateSection() throws Exception {
         assertFalse(new ActivationResponse(response()).revokeCurrentDeviceSupported);
