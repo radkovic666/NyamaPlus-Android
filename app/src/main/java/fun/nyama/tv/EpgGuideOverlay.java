@@ -14,6 +14,7 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.TextView;
+import androidx.core.widget.NestedScrollView;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -44,9 +45,8 @@ public final class EpgGuideOverlay extends FrameLayout {
         this.listener = listener;
         Config config = new Config(context);
         this.compact = config.isPhoneMode();
-        int widthDp = Math.round(getResources().getDisplayMetrics().widthPixels / getResources().getDisplayMetrics().density);
-        int heightDp = Math.round(getResources().getDisplayMetrics().heightPixels / getResources().getDisplayMetrics().density);
-        this.portraitPhone = compact && heightDp > widthDp;
+        this.portraitPhone = compact && getResources().getConfiguration().orientation
+                == android.content.res.Configuration.ORIENTATION_PORTRAIT;
         setVisibility(GONE);
         setFocusable(true);
         setFocusableInTouchMode(true);
@@ -62,7 +62,8 @@ public final class EpgGuideOverlay extends FrameLayout {
         top.setGravity(Gravity.CENTER_VERTICAL);
         top.setPadding(dp(compact ? 12 : 30), dp(compact ? 6 : 10), dp(compact ? 12 : 30), dp(compact ? 6 : 10));
         top.setBackgroundColor(0xC00D0F13);
-        root.addView(top, new LinearLayout.LayoutParams(-1, dp(compact ? 60 : 74)));
+        if (compact) top.setMinimumHeight(dp(60));
+        root.addView(top, new LinearLayout.LayoutParams(-1, compact ? -2 : dp(74)));
 
         logo = new ImageView(context);
         logo.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
@@ -70,12 +71,14 @@ public final class EpgGuideOverlay extends FrameLayout {
 
         channelName = text("", compact ? 18 : 23, Color.WHITE, true);
         channelName.setPadding(dp(16), 0, 0, 0);
-        top.addView(channelName, new LinearLayout.LayoutParams(0, -1, 1f));
+        if (compact) { channelName.setSingleLine(true); channelName.setEllipsize(android.text.TextUtils.TruncateAt.END); }
+        top.addView(channelName, new LinearLayout.LayoutParams(0, compact ? -2 : -1, 1f));
 
         TextView help = text(context.getString(R.string.epg_guide_help), compact ? 11 : 13, 0xFFB8BEC8, false);
         help.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
         help.setVisibility(portraitPhone ? GONE : VISIBLE);
-        top.addView(help, new LinearLayout.LayoutParams(dp(compact ? 190 : 280), -1));
+        top.addView(help, compact ? new LinearLayout.LayoutParams(0, -2, 0.6f)
+                : new LinearLayout.LayoutParams(dp(280), -1));
 
         LinearLayout body = new LinearLayout(context);
         body.setOrientation(portraitPhone ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
@@ -97,7 +100,12 @@ public final class EpgGuideOverlay extends FrameLayout {
         detail.setOrientation(LinearLayout.VERTICAL);
         detail.setPadding(dp(compact ? 14 : 30), dp(compact ? 10 : 24), dp(compact ? 14 : 30), dp(compact ? 10 : 24));
         detail.setBackgroundColor(0xC00D0F13);
-        body.addView(detail, portraitPhone ? new LinearLayout.LayoutParams(-1, 0, 0.42f) : new LinearLayout.LayoutParams(0, -1, 0.44f));
+        if (compact) {
+            NestedScrollView detailScroll = new NestedScrollView(context); detailScroll.setTag("mobile-epg-detail-scroll");
+            detailScroll.setFillViewport(true); detailScroll.addView(detail, new NestedScrollView.LayoutParams(-1, -2));
+            body.addView(detailScroll, portraitPhone ? new LinearLayout.LayoutParams(-1, 0, 0.42f)
+                    : new LinearLayout.LayoutParams(0, -1, 0.44f));
+        } else body.addView(detail, new LinearLayout.LayoutParams(0, -1, 0.44f));
 
         status = text("", 13, UiTheme.accent(context), true);
         detail.addView(status);
@@ -109,7 +117,8 @@ public final class EpgGuideOverlay extends FrameLayout {
         detail.addView(title);
         description = text("", compact ? 13 : 17, 0xFFD3D7DE, false);
         description.setGravity(Gravity.TOP | Gravity.START);
-        detail.addView(description, new LinearLayout.LayoutParams(-1, 0, 1f));
+        detail.addView(description, compact ? new LinearLayout.LayoutParams(-1, -2)
+                : new LinearLayout.LayoutParams(-1, 0, 1f));
 
         list.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(android.widget.AdapterView<?> parent, View view, int pos, long id) {
@@ -159,6 +168,21 @@ public final class EpgGuideOverlay extends FrameLayout {
         if (!events.isEmpty()) list.setSelection(selected);
         list.requestFocus();
         updateDetail();
+    }
+
+    /** Preserve the open guide and selected programme while rebuilding responsive geometry. */
+    EpgGuideOverlay forConfigurationChange() {
+        EpgGuideOverlay next = new EpgGuideOverlay(getContext(), listener);
+        next.channel = channel;
+        next.events.addAll(events);
+        next.selected = selected;
+        next.channelName.setText(channelName.getText());
+        next.logo.setImageDrawable(logo.getDrawable());
+        next.adapter.notifyDataSetChanged();
+        next.list.setSelection(selected);
+        next.updateDetail();
+        next.setVisibility(getVisibility());
+        return next;
     }
 
     public void hide() {
@@ -289,12 +313,12 @@ public final class EpgGuideOverlay extends FrameLayout {
                 row.setPadding(dp(compact ? 8 : 14), dp(compact ? 4 : 7), dp(compact ? 8 : 14), dp(compact ? 4 : 7));
                 row.setMinimumHeight(dp(compact ? 50 : 64));
                 when = text("", compact ? 12 : 15, 0xFFBCC2CB, true);
-                row.addView(when, new LinearLayout.LayoutParams(dp(compact ? 100 : 128), -1));
+                row.addView(when, new LinearLayout.LayoutParams(dp(compact ? 78 : 128), compact ? -2 : -1));
                 name = text("", compact ? 14 : 18, Color.WHITE, false);
-                row.addView(name, new LinearLayout.LayoutParams(0, -1, 1f));
+                row.addView(name, new LinearLayout.LayoutParams(0, compact ? -2 : -1, 1f));
                 state = text("", compact ? 10 : 12, 0xFF9EA4AD, true);
                 state.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-                row.addView(state, new LinearLayout.LayoutParams(dp(compact ? 72 : 100), -1));
+                row.addView(state, new LinearLayout.LayoutParams(dp(compact ? 60 : 100), compact ? -2 : -1));
             }
 
             EpgEvent event = events.get(position);

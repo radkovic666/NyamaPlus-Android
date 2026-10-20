@@ -170,6 +170,7 @@ Install the new version now?</string>
     <string name="cast">Cast</string>
     <string name="genre">Genre</string>
     <string name="released">Released</string>
+    <string name="movies_series_player">Movies &amp; Series Player</string>
     <string name="player_1">Player 1</string>
     <string name="player_2">Player 2</string>
     <string name="pukanki_url">Pukanki.Fun API URL</string>
@@ -188,4 +189,11 @@ Install the new version now?</string>
     <string name="card_seasons_short">%1$s seasons</string>
     <string name="card_episodes_short">%1$s ep.</string>
     <string name="card_votes_short">%1$s votes</string>
+    <string name="deactivate">Deactivate</string>
+    <string name="deactivate_title">Deactivate this device</string>
+    <string name="deactivate_message">This will remove this device from your account and free a slot for another device. Your subscription will not be cancelled.</string>
+    <string name="deactivating">Deactivating…</string>
+    <string name="deactivate_unavailable">Deactivation is available after the server confirms support for releasing both device slots.</string>
+    <string name="deactivate_error">Could not complete deactivation. Please retry.</string>
+    <string name="deactivate_link_error">The device link could not be verified. Retry after an ordinary playlist refresh or contact support.</string>
 </resources>

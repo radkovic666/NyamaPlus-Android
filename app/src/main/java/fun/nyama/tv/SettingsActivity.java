@@ -30,6 +30,14 @@ public final class SettingsActivity extends Activity {
     private TextView textScaleValue;
     private TextView clockScaleValue;
     private TextView dataUsageValue;
+    private TextView subscriptionValue, subscriptionExpiry;
+    private final android.os.Handler accountUi = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable subscriptionTick = this::updateSubscription;
+    private boolean accountVisible;
+    private Button deactivateButton;
+    private TextView deactivateStatus;
+    private android.widget.ProgressBar deactivateProgress;
+    private final DeviceDeactivation.Listener deactivationListener = this::updateDeactivationState;
     private UpdateManager updateManager;
     private boolean suppressNextUserLeaveHint;
 
@@ -46,8 +54,16 @@ public final class SettingsActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        suppressNextUserLeaveHint = true;
+        if (isFinishing() || !ActivationAccess.require(this)) return;
         suppressNextUserLeaveHint = false;
         updateDataUsage();
+        DeviceDeactivation.instance().observe(deactivationListener);
+        accountVisible = true;
+        updateSubscription();
+        if (ActivationStore.managed(this)) ActivationAccess.refreshAccount(this, () -> {
+            if (accountVisible && !isFinishing()) { updateSubscription(); updateDeactivationState(); }
+        });
         if (updateManager != null) updateManager.onResume();
     }
 
@@ -71,7 +87,17 @@ public final class SettingsActivity extends Activity {
         super.onBackPressed();
     }
 
+    @Override protected void onPause() {
+        DeviceDeactivation.instance().forget(deactivationListener);
+        accountVisible = false;
+        accountUi.removeCallbacks(subscriptionTick);
+        super.onPause();
+    }
+
     @Override protected void onDestroy() {
+        DeviceDeactivation.instance().forget(deactivationListener);
+        accountVisible = false;
+        accountUi.removeCallbacksAndMessages(null);
         if (updateManager != null) updateManager.destroy();
         super.onDestroy();
     }
@@ -109,6 +135,17 @@ public final class SettingsActivity extends Activity {
         accountParams.setMargins(0, 0, 0, dp(18));
         root.addView(account, accountParams);
 
+        // Entitlement details belong to Settings, with no playback overlay or per-second HTTP.
+        if (ActivationStore.managed(this)) {
+            LinearLayout accountCard = card();
+            subscriptionValue = label("", 17, Color.WHITE, true);
+            subscriptionExpiry = label("", 15, 0xFFAAB3BF, false);
+            accountCard.addView(subscriptionValue);
+            accountCard.addView(subscriptionExpiry);
+            addSection(root, Config.LANG_EN.equals(config.language()) ? "Subscription" : "Абонамент", accountCard);
+            updateSubscription();
+        }
+
         // General settings card.
         LinearLayout general = card();
         Switch autostart = new Switch(this);
@@ -119,7 +156,8 @@ public final class SettingsActivity extends Activity {
         autostart.setFocusable(true);
         autostart.setPadding(0, dp(4), 0, dp(4));
         autostart.setOnCheckedChangeListener((buttonView, isChecked) -> config.setAutoStart(isChecked));
-        general.addView(autostart, new LinearLayout.LayoutParams(-1, dp(54)));
+        if (phone) autostart.setMinimumHeight(dp(54));
+        general.addView(autostart, new LinearLayout.LayoutParams(-1, phone ? -2 : dp(54)));
         general.addView(description(getString(R.string.autostart_desc)));
         general.addView(divider());
 
@@ -142,8 +180,8 @@ public final class SettingsActivity extends Activity {
         languages.setOrientation(phone ? RadioGroup.VERTICAL : RadioGroup.HORIZONTAL);
         RadioButton bg = radio(getString(R.string.language_bg), Config.LANG_BG.equals(config.language()));
         RadioButton en = radio(getString(R.string.language_en), Config.LANG_EN.equals(config.language()));
-        languages.addView(bg, new RadioGroup.LayoutParams(phone ? -1 : 0, dp(52), phone ? 0f : 1f));
-        languages.addView(en, new RadioGroup.LayoutParams(phone ? -1 : 0, dp(52), phone ? 0f : 1f));
+        languages.addView(bg, new RadioGroup.LayoutParams(phone ? -1 : 0, phone ? -2 : dp(52), phone ? 0f : 1f));
+        languages.addView(en, new RadioGroup.LayoutParams(phone ? -1 : 0, phone ? -2 : dp(52), phone ? 0f : 1f));
         bg.setOnClickListener(v -> setLanguage(Config.LANG_BG));
         en.setOnClickListener(v -> setLanguage(Config.LANG_EN));
         general.addView(languages);
@@ -159,6 +197,24 @@ public final class SettingsActivity extends Activity {
         general.addView(themes);
         addSection(root, getString(R.string.general_settings), general);
 
+        LinearLayout playerCard = card();
+        RadioGroup players = new RadioGroup(this);
+        players.setTag("movie-series-player");
+        players.setOrientation(phone ? RadioGroup.VERTICAL : RadioGroup.HORIZONTAL);
+        RadioButton player1 = radio(getString(R.string.player_1), false);
+        RadioButton player2 = radio(getString(R.string.player_2), false);
+        player1.setId(View.generateViewId()); player2.setId(View.generateViewId());
+        player1.setTag("movie-series-player-1"); player2.setTag("movie-series-player-2");
+        players.addView(player1, new RadioGroup.LayoutParams(phone ? -1 : 0, phone ? -2 : dp(52), phone ? 0f : 1f));
+        players.addView(player2, new RadioGroup.LayoutParams(phone ? -1 : 0, phone ? -2 : dp(52), phone ? 0f : 1f));
+        players.check(Config.PLAYER_1.equals(config.movieSeriesPlayer()) ? player1.getId() : player2.getId());
+        players.setOnCheckedChangeListener((group, checkedId) -> {
+            if (checkedId == player1.getId()) config.setMovieSeriesPlayer(Config.PLAYER_1);
+            else if (checkedId == player2.getId()) config.setMovieSeriesPlayer(Config.PLAYER_2);
+        });
+        playerCard.addView(players);
+        addSection(root, getString(R.string.movies_series_player), playerCard);
+
         // Clock settings card.
         LinearLayout clockCard = card();
         Switch showClock = new Switch(this);
@@ -169,7 +225,8 @@ public final class SettingsActivity extends Activity {
         showClock.setFocusable(true);
         showClock.setPadding(0, dp(4), 0, dp(4));
         showClock.setOnCheckedChangeListener((buttonView, isChecked) -> config.setShowClock(isChecked));
-        clockCard.addView(showClock, new LinearLayout.LayoutParams(-1, dp(54)));
+        if (phone) showClock.setMinimumHeight(dp(54));
+        clockCard.addView(showClock, new LinearLayout.LayoutParams(-1, phone ? -2 : dp(54)));
         clockCard.addView(description(getString(R.string.show_clock_desc)));
         clockCard.addView(divider());
 
@@ -210,7 +267,7 @@ public final class SettingsActivity extends Activity {
         LinearLayout updateCard = card();
         Button update = professionalButton(getString(R.string.check_for_updates));
         update.setOnClickListener(v -> updateManager.checkForUpdate());
-        updateCard.addView(update, new LinearLayout.LayoutParams(-1, dp(56)));
+        updateCard.addView(update, new LinearLayout.LayoutParams(-1, phone ? -2 : dp(56)));
         addSection(root, getString(R.string.app_update), updateCard);
 
         // Administrator card.
@@ -218,22 +275,85 @@ public final class SettingsActivity extends Activity {
         adminCard.addView(description(getString(R.string.admin_desc)));
         Button admin = professionalButton(getString(R.string.open_admin));
         admin.setOnClickListener(v -> askAdminPin());
-        LinearLayout.LayoutParams adminParams = new LinearLayout.LayoutParams(-1, dp(56));
+        LinearLayout.LayoutParams adminParams = new LinearLayout.LayoutParams(-1, phone ? -2 : dp(56));
         adminParams.setMargins(0, dp(6), 0, 0);
         adminCard.addView(admin, adminParams);
         addSection(root, getString(R.string.admin_section), adminCard);
+
+        if (!phone) {
+            boolean english = Config.LANG_EN.equals(config.language());
+            LinearLayout information = card();
+            information.addView(description(english ? "Series metadata: TVmaze · CC BY-SA"
+                    : "Метаданни за сериали: TVmaze · CC BY-SA"));
+            Button source = professionalButton("TVmaze ↗");
+            source.setOnClickListener(v -> openInformationLink("https://www.tvmaze.com"));
+            information.addView(source, new LinearLayout.LayoutParams(-1, dp(52)));
+            Button license = professionalButton("CC BY-SA ↗");
+            license.setOnClickListener(v -> openInformationLink("https://creativecommons.org/licenses/by-sa/4.0/"));
+            information.addView(license, new LinearLayout.LayoutParams(-1, dp(52)));
+            addSection(root, english ? "Information" : "Информация", information);
+        }
 
         Button close = professionalButton(getString(R.string.close));
         close.setOnClickListener(v -> {
             suppressNextUserLeaveHint = true;
             finish();
         });
-        LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(-1, dp(54));
+        LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(-1, phone ? -2 : dp(54));
         cp.setMargins(0, dp(22), 0, 0);
         root.addView(close, cp);
 
+        if (ActivationStore.managed(this)) {
+            LinearLayout deactivateCard = card();
+            deactivateCard.setTag("deactivation-section");
+            deactivateCard.addView(description(getString(R.string.deactivate_message)));
+            deactivateButton = professionalButton(getString(R.string.deactivate));
+            deactivateButton.setTag("deactivate-device");
+            deactivateButton.setOnClickListener(v -> confirmDeactivation());
+            deactivateCard.addView(deactivateButton, new LinearLayout.LayoutParams(-1, phone ? -2 : dp(56)));
+            deactivateProgress = new android.widget.ProgressBar(this);
+            deactivateCard.addView(deactivateProgress, new LinearLayout.LayoutParams(dp(28), dp(28)));
+            deactivateStatus = description("");
+            deactivateCard.addView(deactivateStatus);
+            addSection(root, getString(R.string.deactivate), deactivateCard);
+            updateDeactivationState();
+        }
+
         autostart.requestFocus();
-        return scroll;
+        return phone ? MobileBottomNav.wrap(this, scroll, AppSidebar.SECTION_SETTINGS,
+                MobileBottomNav.destinations(this, AppSidebar.SECTION_SETTINGS)) : scroll;
+    }
+
+    private void confirmDeactivation() {
+        if (!ActivationStore.managed(this) || !ActivationAccess.supportsDeviceRevoke() || DeviceDeactivation.instance().busy()) return;
+        new AlertDialog.Builder(this).setTitle(R.string.deactivate_title).setMessage(R.string.deactivate_message)
+                .setNegativeButton(R.string.cancel, null)
+                .setPositiveButton(R.string.deactivate, (dialog, which) -> DeviceDeactivation.instance().start(this)).show();
+    }
+
+    private void updateDeactivationState() {
+        if (deactivateButton == null) return;
+        DeviceDeactivation operation = DeviceDeactivation.instance();
+        boolean supported = ActivationAccess.supportsDeviceRevoke();
+        deactivateButton.setEnabled(supported && !operation.busy());
+        deactivateButton.setText(operation.busy() ? R.string.deactivating : R.string.deactivate);
+        deactivateProgress.setVisibility(operation.busy() ? View.VISIBLE : View.GONE);
+        String error = operation.error();
+        int text = !supported ? R.string.deactivate_unavailable
+                : ("device_link_required".equals(error) || "device_link_conflict".equals(error) || "device_link_ambiguous".equals(error))
+                ? R.string.deactivate_link_error : R.string.deactivate_error;
+        deactivateStatus.setText(!supported || !error.isEmpty() ? getString(text) : "");
+        deactivateStatus.setVisibility(!supported || !error.isEmpty() ? View.VISIBLE : View.GONE);
+    }
+
+    private void openInformationLink(String url) {
+        suppressNextUserLeaveHint = true;
+        try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))); }
+        catch (android.content.ActivityNotFoundException missingBrowser) {
+            suppressNextUserLeaveHint = false;
+            Toast.makeText(this, Config.LANG_EN.equals(config.language())
+                    ? "No browser installed" : "Няма инсталиран браузър", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void updateDataUsage() {
@@ -269,7 +389,7 @@ public final class SettingsActivity extends Activity {
             }
         });
         group.addView(button, config.isPhoneMode()
-                ? new RadioGroup.LayoutParams(-1, dp(50))
+                ? new RadioGroup.LayoutParams(-1, -2)
                 : new RadioGroup.LayoutParams(0, dp(52), 1f));
     }
 
@@ -288,11 +408,15 @@ public final class SettingsActivity extends Activity {
             }
         });
         group.addView(button, config.isPhoneMode()
-                ? new RadioGroup.LayoutParams(-1, dp(50))
+                ? new RadioGroup.LayoutParams(-1, -2)
                 : new RadioGroup.LayoutParams(0, dp(52), 1f));
     }
 
     private void askAdminPin() {
+        if (ActivationStore.managed(this) && !config.hasPin()) {
+            if (ActivationAccess.require(this)) createAdminPin();
+            return;
+        }
         EditText input = new EditText(this);
         input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
         input.setHint(getString(R.string.admin_pin));
@@ -324,7 +448,59 @@ public final class SettingsActivity extends Activity {
         input.requestFocus();
     }
 
+    /** Explicit owner setup after activation; never ship a shared PIN or expose the admin form. */
+    private void createAdminPin() {
+        boolean english = Config.LANG_EN.equals(config.language());
+        LinearLayout fields = new LinearLayout(this);
+        fields.setOrientation(LinearLayout.VERTICAL);
+        fields.setPadding(dp(20), dp(12), dp(20), 0);
+        EditText first = new EditText(this);
+        EditText confirmation = new EditText(this);
+        for (EditText field : new EditText[]{first, confirmation}) {
+            field.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+            field.setSingleLine(true);
+            field.setSaveEnabled(false);
+            fields.addView(field, new LinearLayout.LayoutParams(-1, dp(60)));
+        }
+        first.setHint(english ? "New administrator PIN (at least 6 digits)" : "Нов администраторски PIN (поне 6 цифри)");
+        confirmation.setHint(english ? "Confirm PIN" : "Потвърдете PIN");
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(english ? "Protect administrator settings" : "Защита на администраторските настройки")
+                .setMessage(english ? "The device owner chooses this PIN once. Keep it private." : "Собственикът на устройството задава този PIN веднъж. Пазете го в тайна.")
+                .setView(fields).setPositiveButton(english ? "Save PIN" : "Запази PIN", null)
+                .setNegativeButton(getString(R.string.cancel), null).create();
+        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String pin = first.getText().toString();
+            if (!pin.matches("[0-9]{6,}" ) || !pin.equals(confirmation.getText().toString())) {
+                confirmation.setError(english ? "Enter matching PINs with at least 6 digits" : "Въведете еднакви PIN кодове с поне 6 цифри");
+                return;
+            }
+            if (!ActivationAccess.playbackAllowed(this)) { dialog.dismiss(); ActivationAccess.require(this); return; }
+            if (!config.hasPin()) config.setPin(pin);
+            first.setText(""); confirmation.setText("");
+            dialog.dismiss();
+            askAdminPin(); // The protected form still requires an explicit PIN verification.
+        }));
+        dialog.show();
+        first.requestFocus();
+    }
+
+    private void updateSubscription() {
+        accountUi.removeCallbacks(subscriptionTick);
+        if (subscriptionValue == null) return;
+        SubscriptionInfo info = ActivationAccess.subscription();
+        boolean english = Config.LANG_EN.equals(config.language());
+        long now = android.os.SystemClock.elapsedRealtime();
+        subscriptionValue.setText(info.display(english, now));
+        String expiry = info.expiryDisplay(english);
+        subscriptionExpiry.setText(expiry);
+        subscriptionExpiry.setVisibility(expiry.isEmpty() ? View.GONE : View.VISIBLE);
+        if (accountVisible && info.hasCountdown() && info.remainingAt(now) > 0L)
+            accountUi.postDelayed(subscriptionTick, 1000L);
+    }
+
     private String accountUsername() {
+        if (!config.activationUsername().isEmpty()) return config.activationUsername();
         try {
             Uri uri = Uri.parse(config.playlistUrl());
             String username = uri.getQueryParameter("username");
@@ -403,6 +579,7 @@ public final class SettingsActivity extends Activity {
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         button.setFocusable(true);
         button.setAllCaps(false);
+        if (config.isPhoneMode()) button.setMinimumHeight(dp(56));
         button.setPadding(dp(14), 0, dp(14), 0);
         button.setBackground(buttonBackground());
         return button;
@@ -424,6 +601,7 @@ public final class SettingsActivity extends Activity {
         r.setTextSize(UiTheme.sp(this, 15));
         r.setChecked(checked);
         r.setFocusable(true);
+        if (config.isPhoneMode()) r.setMinimumHeight(dp(52));
         return r;
     }
 

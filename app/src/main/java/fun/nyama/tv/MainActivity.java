@@ -2,10 +2,14 @@ package fun.nyama.tv;
 
 import android.app.Activity;
 import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.net.ConnectivityManager;
+import android.net.Network;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -14,6 +18,9 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.SurfaceView;
+import android.view.SurfaceHolder;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -21,6 +28,9 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import androidx.core.widget.NestedScrollView;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
 
 import androidx.annotation.OptIn;
 import androidx.media3.common.MediaItem;
@@ -33,6 +43,7 @@ import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.ui.PlayerView;
+import androidx.media3.ui.AspectRatioFrameLayout;
 
 
 import java.lang.ref.WeakReference;
@@ -49,15 +60,30 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @OptIn(markerClass = UnstableApi.class)
 public final class MainActivity extends Activity implements ChannelBrowserOverlay.Listener, EpgGuideOverlay.Listener {
     public static final String EXTRA_EMBEDDED_IN_NYAMA_PLUS = "nyama_plus_embedded";
+    public static final String EXTRA_RETURN_FROM_ON_DEMAND = "return_from_on_demand";
+    private boolean returnFromOnDemand;
+    private static volatile boolean onDemandPlaybackActive;
+    private static long onDemandSession;
+    private boolean liveSourceRefreshPending;
+    private String loadedPlaylistUrl = "";
     private static WeakReference<MainActivity> activeInstance = new WeakReference<>(null);
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private final ExecutorService io = Executors.newFixedThreadPool(2);
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private ScheduledFuture<?> refreshTask;
+    private ScheduledFuture<?> playlistRetryTask;
+    private final AtomicBoolean playlistRefreshInFlight = new AtomicBoolean(false);
+    private volatile boolean hasUsablePlaylist = false;
+    private volatile boolean resumed = false;
+    private int startupRetryAttempt = 0;
+    private ConnectivityManager connectivityManager;
+    private ConnectivityManager.NetworkCallback networkCallback;
+    private static final long[] STARTUP_RETRY_DELAYS_MS = {3_000L, 10_000L, 30_000L, 60_000L};
     // A new MainActivity instance represents a fresh app start. The cached playlist may
     // be used immediately for fast startup, but exactly one forced network refresh is
     // requested before this instance settles into the normal 30-minute refresh cycle.
@@ -85,12 +111,20 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     private TextView status;
     private ProgressBar buffering;
     private OutlineTextView cornerClock;
+    private FrameLayout playbackOverlays;
+    private View refreshSuccessDot;
+    private final Runnable restorePlaybackOverlays = this::refreshCornerClock;
+    private final Runnable fadeRefreshSuccess = () -> {
+        if (refreshSuccessDot != null) refreshSuccessDot.animate().alpha(0f).setDuration(600L)
+                .withEndAction(() -> refreshSuccessDot.setVisibility(View.GONE)).start();
+    };
     private boolean compactUi;
     private LinearLayout programmeInfo;
     private TextView programmeInfoTitle;
     private TextView programmeInfoTime;
     private TextView programmeInfoDescription;
     private ChannelBrowserOverlay browser;
+    private MobileBottomNav mobileNavigation;
     private EpgGuideOverlay epgGuide;
     private LinearLayout exitPrompt;
     private boolean exitArmed = false;
@@ -102,7 +136,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     private final Runnable clearNumber = this::commitNumber;
     private final Runnable hideHud = () -> hud.setVisibility(View.GONE);
     private final Runnable hideStatus = () -> status.setVisibility(View.GONE);
-    private final Runnable hideProgrammeInfo = () -> programmeInfo.setVisibility(View.GONE);
+    private final Runnable hideProgrammeInfo = () -> { programmeInfo.setVisibility(View.GONE); syncMobileNavigation(); };
     private final Runnable disarmExit = this::cancelExitPrompt;
     private final Runnable usageCheckpoint = new Runnable() {
         @Override public void run() {
@@ -144,7 +178,11 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         super.onCreate(state);
         activeInstance = new WeakReference<>(this);
         config = new Config(this);
+        returnFromOnDemand = getIntent().getBooleanExtra(EXTRA_RETURN_FROM_ON_DEMAND, false);
         AutoStartManager.cancelDelayedLaunches(this);
+        suppressNextUserLeaveHint = true;
+        if (!ActivationAccess.require(this)) return;
+        suppressNextUserLeaveHint = false;
         if (!config.isPhoneMode()) setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
         compactUi = config.isPhoneMode();
         accent = UiTheme.accent(this);
@@ -154,12 +192,19 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
 
         buildUi();
         initPlayer();
+        registerNetworkCallback();
     }
 
     @Override protected void onResume() {
         super.onResume();
+        if (isFinishing()) return;
+        suppressNextUserLeaveHint = true;
+        if (!ActivationAccess.require(this)) return;
+        resumed = true;
         suppressNextUserLeaveHint = false;
         immersive();
+        syncMobileNavigation();
+        refreshCornerClock();
 
         if (!uiSignatureAtCreate.equals(config.uiSignature())) {
             recreate();
@@ -171,14 +216,61 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
             startActivity(new Intent(this, AdminSettingsActivity.class));
             return;
         }
-        boolean forceStartupPlaylistRefresh = startupPlaylistRefreshPending;
-        startupPlaylistRefreshPending = false;
-        loadAndRefresh(forceStartupPlaylistRefresh);
+        if (onDemandPlaybackActive) pausePlaybackForOnDemand();
+        else {
+            boolean returning = returnFromOnDemand;
+            returnFromOnDemand = false;
+            boolean playerReturn = !config.isPhoneMode() && PlaylistReturnRefresh.consumeReturn();
+            boolean forceStartupPlaylistRefresh = startupPlaylistRefreshPending && !returning && !playerReturn;
+            startupPlaylistRefreshPending = false;
+            if (!returning || !resumeLoadedLiveChannel()) loadAndRefresh(forceStartupPlaylistRefresh);
+        }
         startForegroundRefreshLoop();
         main.removeCallbacks(updateClock);
         main.post(updateClock);
         main.removeCallbacks(usageCheckpoint);
         main.post(usageCheckpoint);
+    }
+
+    @Override public void onConfigurationChanged(Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        if (playerView == null) return;
+        // Keep the player, channels, network callback and refresh deadlines. Only menus have
+        // orientation-specific geometry; rebuild those views while retaining their selection.
+        if (config.isPhoneMode()) {
+            ViewGroup root = (ViewGroup) browser.getParent();
+            int index = root.indexOfChild(browser);
+            ChannelBrowserOverlay replacement = browser.forConfigurationChange();
+            root.removeView(browser);
+            root.addView(replacement, index, browser.getLayoutParams());
+            browser = replacement;
+            index = root.indexOfChild(epgGuide);
+            EpgGuideOverlay guide = epgGuide.forConfigurationChange();
+            root.removeView(epgGuide);
+            root.addView(guide, index, epgGuide.getLayoutParams());
+            epgGuide = guide;
+        }
+        cornerClock.setLayoutParams(clockLayoutParams());
+        immersive();
+        View screen = findViewById(android.R.id.content);
+        ViewCompat.requestApplyInsets(screen);
+        screen.requestLayout();
+        syncMobileNavigation();
+        refreshCornerClock();
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        returnFromOnDemand = intent.getBooleanExtra(EXTRA_RETURN_FROM_ON_DEMAND, false);
+    }
+
+    private boolean resumeLoadedLiveChannel() {
+        if (onDemandPlaybackActive || !ActivationAccess.playbackAllowed(this) || player == null || player.getMediaItemCount() == 0
+                || !loadedPlaylistUrl.equals(config.playlistUrl())) return false;
+        if (player.getPlaybackState() == Player.STATE_IDLE) player.prepare();
+        player.setPlayWhenReady(true);
+        return true;
     }
 
     @Override protected void onUserLeaveHint() {
@@ -196,7 +288,10 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     }
 
     @Override protected void onPause() {
+        hideRefreshSuccess();
+        if (mobileNavigation != null) mobileNavigation.hideNow();
         super.onPause();
+        resumed = false;
         if (refreshTask != null) refreshTask.cancel(false);
         refreshTask = null;
         main.removeCallbacks(updateClock);
@@ -210,10 +305,18 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     }
 
     @Override protected void onDestroy() {
+        hideRefreshSuccess();
+        main.removeCallbacks(restorePlaybackOverlays);
+        resumed=false;
+        if (mobileNavigation != null) mobileNavigation.hideNow();
         MainActivity active = activeInstance.get();
         if (active == this) activeInstance.clear();
         super.onDestroy();
         if (player != null) player.release();
+        if (connectivityManager != null && networkCallback != null) {
+            try { connectivityManager.unregisterNetworkCallback(networkCallback); }
+            catch (RuntimeException ignored) {}
+        }
         io.shutdownNow();
         scheduler.shutdownNow();
     }
@@ -221,11 +324,35 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     private void buildUi() {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
+        if (!compactUi) {
+            WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+            ViewCompat.setOnApplyWindowInsetsListener(root, PlayerVideoFit::applyInsets);
+            ViewCompat.requestApplyInsets(root);
+        }
 
         playerView = new PlayerView(this);
+        playerView.setResizeMode(AspectRatioFrameLayout.RESIZE_MODE_FIT);
         playerView.setUseController(false);
         playerView.setKeepScreenOn(true);
         root.addView(playerView, new FrameLayout.LayoutParams(-1, -1));
+        // Keep Media3's existing SurfaceView and FIT sizing. Its separate surface must stay
+        // behind the application window, so ordinary Android overlay views remain visible.
+        if (playerView.getVideoSurfaceView() instanceof SurfaceView) {
+            SurfaceView surface = (SurfaceView) playerView.getVideoSurfaceView();
+            surface.setZOrderOnTop(false);
+            surface.setZOrderMediaOverlay(false);
+            surface.getHolder().addCallback(new SurfaceHolder.Callback() {
+                public void surfaceCreated(SurfaceHolder holder) { restore(); }
+                public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) { restore(); }
+                public void surfaceDestroyed(SurfaceHolder holder) { }
+                private void restore() {
+                    main.removeCallbacks(restorePlaybackOverlays);
+                    main.post(restorePlaybackOverlays);
+                }
+            });
+        }
+        playbackOverlays = new FrameLayout(this);
+        playbackOverlays.setElevation(dp(4));
 
         buffering = new ProgressBar(this);
         buffering.setVisibility(View.GONE);
@@ -279,9 +406,9 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         copy.addView(hudNow);
         copy.addView(hudProgress, new LinearLayout.LayoutParams(-1, dp(7)));
         copy.addView(hudNext);
-        hud.addView(copy, new LinearLayout.LayoutParams(0, -1, 1f));
-
-        FrameLayout.LayoutParams hp = new FrameLayout.LayoutParams(-1, dp(compactUi ? 132 : 186), Gravity.BOTTOM);
+        hud.addView(copy, new LinearLayout.LayoutParams(0, compactUi ? -2 : -1, 1f));
+        if (compactUi) hud.setMinimumHeight(dp(132));
+        FrameLayout.LayoutParams hp = new FrameLayout.LayoutParams(-1, compactUi ? -2 : dp(186), Gravity.BOTTOM);
         root.addView(hud, hp);
 
         programmeInfo = new LinearLayout(this);
@@ -296,13 +423,23 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         programmeInfoDescription = new TextView(this);
         programmeInfoDescription.setTextColor(0xFFE1E4E8);
         programmeInfoDescription.setTextSize(UiTheme.sp(this, compactUi ? 14 : 17));
-        programmeInfoDescription.setMaxLines(compactUi ? 3 : 5);
-        programmeInfoDescription.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        programmeInfo.addView(infoLabel);
-        programmeInfo.addView(programmeInfoTitle);
-        programmeInfo.addView(programmeInfoTime);
-        programmeInfo.addView(programmeInfoDescription, new LinearLayout.LayoutParams(-1, 0, 1f));
-        FrameLayout.LayoutParams ip = new FrameLayout.LayoutParams(-1, dp(compactUi ? 180 : 250), Gravity.BOTTOM);
+        if (compactUi) {
+            programmeInfoTitle.setSingleLine(false); programmeInfoTime.setSingleLine(false);
+            programmeInfoTitle.setEllipsize(null); programmeInfoTime.setEllipsize(null);
+            programmeInfoDescription.setMaxLines(Integer.MAX_VALUE);
+            LinearLayout content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL);
+            content.addView(infoLabel); content.addView(programmeInfoTitle); content.addView(programmeInfoTime);
+            content.addView(programmeInfoDescription, new LinearLayout.LayoutParams(-1, -2));
+            NestedScrollView scroll = new NestedScrollView(this); scroll.setTag("mobile-programme-info-scroll");
+            scroll.addView(content, new NestedScrollView.LayoutParams(-1, -2));
+            programmeInfo.addView(scroll, new LinearLayout.LayoutParams(-1, -2));
+        } else {
+            programmeInfoDescription.setMaxLines(5);
+            programmeInfoDescription.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            programmeInfo.addView(infoLabel); programmeInfo.addView(programmeInfoTitle); programmeInfo.addView(programmeInfoTime);
+            programmeInfo.addView(programmeInfoDescription, new LinearLayout.LayoutParams(-1, 0, 1f));
+        }
+        FrameLayout.LayoutParams ip = new FrameLayout.LayoutParams(-1, compactUi ? -2 : dp(250), Gravity.BOTTOM);
         root.addView(programmeInfo, ip);
 
         browser = new ChannelBrowserOverlay(this, this);
@@ -312,6 +449,10 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         root.addView(epgGuide, new FrameLayout.LayoutParams(-1, -1));
 
         cornerClock = new OutlineTextView(this);
+        cornerClock.setSingleLine(true);
+        // TextView centers a single line inside a huge scrolling layout by default.
+        // This clock draws in view coordinates, so that pre-draw scroll would hide its glyphs.
+        cornerClock.setHorizontallyScrolling(false);
         cornerClock.setTextColor(Color.WHITE);
         cornerClock.setTextSize(UiTheme.sp(this, 15) * config.clockScale());
         cornerClock.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
@@ -320,7 +461,14 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         cornerClock.setBackgroundColor(Color.TRANSPARENT);
         cornerClock.setStrokeColor(Color.BLACK);
         cornerClock.setStrokeWidth(getResources().getDisplayMetrics().density * 1.6f);
-        root.addView(cornerClock, clockLayoutParams());
+        playbackOverlays.addView(cornerClock, clockLayoutParams());
+        cornerClock.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> positionRefreshSuccess());
+        refreshSuccessDot = new View(this);
+        refreshSuccessDot.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        GradientDrawable dot = new GradientDrawable(); dot.setShape(GradientDrawable.OVAL); dot.setColor(0xFF4CAF50);
+        refreshSuccessDot.setBackground(dot);
+        refreshSuccessDot.setVisibility(View.GONE);
+        playbackOverlays.addView(refreshSuccessDot, new FrameLayout.LayoutParams(dp(10), dp(10), Gravity.TOP | Gravity.END));
 
         exitPrompt = new LinearLayout(this);
         exitPrompt.setOrientation(LinearLayout.VERTICAL);
@@ -348,12 +496,24 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         FrameLayout.LayoutParams xp = new FrameLayout.LayoutParams(
                 compactUi ? dp(300) : dp(430), -2, Gravity.CENTER);
         root.addView(exitPrompt, xp);
+        root.addView(playbackOverlays, new FrameLayout.LayoutParams(-1, -1));
 
-        // Nyama+ navigation now lives inside the normal channel browser.
+        // TV navigation lives inside the normal channel browser; phones use a measured bottom bar.
         // There is intentionally no floating NY+ handle or separate TV navigation overlay.
 
-        setContentView(root);
-        if (config.isPhoneMode()) installPhoneTouchControls();
+        setContentView(config.isPhoneMode() ? MobileBottomNav.wrap(this, root, AppSidebar.SECTION_TV,
+                new AppSidebar.Listener() {
+                    public void onTv() { showChannelBrowser(false); }
+                    public void onMovies() { onRequestMovies(); }
+                    public void onSeries() { onRequestSeries(); }
+                    public void onSettings() { onRequestSettings(); }
+                }) : root);
+        if (config.isPhoneMode()) {
+            mobileNavigation = findViewById(android.R.id.content).findViewWithTag("mobile-bottom-navigation");
+            mobileNavigation.enableAutoHide();
+            syncMobileNavigation();
+            installPhoneTouchControls();
+        }
         refreshCornerClock();
     }
 
@@ -384,10 +544,12 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         playerView.setPlayer(player);
         player.addListener(new Player.Listener() {
             @Override public void onPlaybackStateChanged(int playbackState) {
+                refreshCornerClock();
                 buffering.setVisibility(playbackState == Player.STATE_BUFFERING ? View.VISIBLE : View.GONE);
             }
 
             @Override public void onPlayerError(PlaybackException error) {
+                NetworkDiagnostics.logFailure(MainActivity.this, "Media3 channel playback", error);
                 long generation = playGeneration;
                 buffering.setVisibility(View.GONE);
                 showStatus(getString(R.string.stream_retrying), 3500);
@@ -399,33 +561,37 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
                 }, 4000);
             }
         });
+        syncMobileNavigation();
     }
 
     private void loadAndRefresh(boolean forcePlaylistRefresh) {
         io.execute(() -> {
             List<Channel> cached = Collections.emptyList();
-            try { cached = PlaylistRepository.loadCached(this); } catch (Exception ignored) {}
+            try { cached = PlaylistRepository.loadCached(this); }
+            catch (Exception e) { NetworkDiagnostics.logFailure(this, "cached playlist startup", e); }
             if (!cached.isEmpty()) {
+                hasUsablePlaylist = true;
                 List<Channel> finalCached = cached;
                 main.post(() -> applyChannels(finalCached, false));
+            }
+
+            long age = System.currentTimeMillis() - config.playlistLastRefresh();
+            // Start playlist I/O before any EPG parsing. A slow or corrupt guide must
+            // never delay cached playback or the first attempt to obtain channels.
+            if (forcePlaylistRefresh || cached.isEmpty() || config.playlistLastRefresh() == 0L
+                    || age >= Config.PLAYLIST_REFRESH_MS) {
+                if (!PlaylistReturnRefresh.inFlight()) refreshPlaylistNow();
             }
 
             boolean epgParseFailed = false;
             if (EpgRepository.cacheFile(this).exists()) {
                 try { EpgRepository.parseRelevant(this); }
-                catch (Exception ignored) { epgParseFailed = true; }
+                catch (Exception e) {
+                    epgParseFailed = true;
+                    NetworkDiagnostics.logFailure(this, "cached EPG parse", e);
+                }
             }
             main.post(() -> browser.refreshEpg());
-
-            long age = System.currentTimeMillis() - config.playlistLastRefresh();
-            // Always refresh once on a fresh app start so additions/removals on the
-            // server are visible immediately. The cached list above remains a safe
-            // fallback if the network request fails. Subsequent foreground resumes
-            // keep the normal 30-minute freshness rule.
-            if (forcePlaylistRefresh || cached.isEmpty() || config.playlistLastRefresh() == 0L
-                    || age >= Config.PLAYLIST_REFRESH_MS) {
-                refreshPlaylistNow();
-            }
 
             // The XMLTV file is a persistent cache. Do not download it on every app start.
             // Refresh only when missing, unreadable, explicitly changed, or 24 hours old.
@@ -439,17 +605,31 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
 
     private void startForegroundRefreshLoop() {
         if (refreshTask != null) refreshTask.cancel(false);
-        refreshTask = scheduler.scheduleAtFixedRate(this::refreshPlaylistNow,
+        refreshTask = scheduler.scheduleAtFixedRate(() -> refreshPlaylistNow(true),
                 Config.PLAYLIST_REFRESH_MS, Config.PLAYLIST_REFRESH_MS, TimeUnit.MILLISECONDS);
     }
 
-    private void refreshPlaylistNow() {
+    private void refreshPlaylistNow() { refreshPlaylistNow(false); }
+
+    private void refreshPlaylistNow(boolean scheduled) {
+        if (!playlistRefreshInFlight.compareAndSet(false, true)) return;
         io.execute(() -> {
             try {
                 List<Channel> fresh = PlaylistRepository.refresh(this);
-                main.post(() -> applyChannels(fresh, true));
+                if (fresh.isEmpty()) throw new IllegalStateException("Playlist URL is not configured or returned no channels");
+                hasUsablePlaylist = true;
+                startupRetryAttempt = 0;
+                cancelPlaylistRetry();
+                main.post(() -> applyChannels(fresh, true, scheduled));
             } catch (Exception e) {
-                main.post(() -> showStatus(getString(R.string.playlist_refresh_failed), 3500));
+                NetworkDiagnostics.logFailure(this, "playlist refresh", e);
+                main.post(() -> {
+                    if (scheduled) hideRefreshSuccess();
+                    showStatus(getString(R.string.playlist_refresh_failed), 3500);
+                });
+                if (!hasUsablePlaylist) scheduleStartupPlaylistRetry();
+            } finally {
+                playlistRefreshInFlight.set(false);
             }
         });
     }
@@ -463,12 +643,55 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
                     showCurrentInfoBriefly();
                 });
             } catch (Exception e) {
+                NetworkDiagnostics.logFailure(this, "EPG refresh", e);
                 main.post(() -> showStatus(getString(R.string.epg_refresh_failed), 3500));
             }
         });
     }
 
-    private void applyChannels(List<Channel> fresh, boolean fromRefresh) {
+    private synchronized void scheduleStartupPlaylistRetry() {
+        if (hasUsablePlaylist || scheduler.isShutdown()) return;
+        if (playlistRetryTask != null && !playlistRetryTask.isDone()) return;
+        int index = Math.min(startupRetryAttempt, STARTUP_RETRY_DELAYS_MS.length - 1);
+        long delay = STARTUP_RETRY_DELAYS_MS[index];
+        startupRetryAttempt++;
+        NetworkDiagnostics.logInfo("Scheduling playlist startup retry in " + delay
+                + "ms; attempt=" + startupRetryAttempt + "; " + NetworkDiagnostics.networkSummary(this));
+        playlistRetryTask = scheduler.schedule(() -> {
+            synchronized (MainActivity.this) { playlistRetryTask = null; }
+            if (resumed && config.isConfigured() && !hasUsablePlaylist) refreshPlaylistNow();
+        }, delay, TimeUnit.MILLISECONDS);
+    }
+
+    private synchronized void cancelPlaylistRetry() {
+        if (playlistRetryTask != null) playlistRetryTask.cancel(false);
+        playlistRetryTask = null;
+    }
+
+    private void registerNetworkCallback() {
+        connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (connectivityManager == null) return;
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override public void onAvailable(Network network) {
+                NetworkDiagnostics.logInfo("Network became available; "
+                        + NetworkDiagnostics.networkSummary(MainActivity.this));
+                if (resumed && config.isConfigured() && !hasUsablePlaylist) {
+                    cancelPlaylistRetry();
+                    refreshPlaylistNow();
+                }
+            }
+        };
+        try {
+            connectivityManager.registerDefaultNetworkCallback(networkCallback);
+        } catch (RuntimeException e) {
+            NetworkDiagnostics.logFailure(this, "network callback registration", e);
+            networkCallback = null;
+        }
+    }
+
+    private void applyChannels(List<Channel> fresh, boolean fromRefresh) { applyChannels(fresh, fromRefresh, false); }
+
+    private void applyChannels(List<Channel> fresh, boolean fromRefresh, boolean scheduled) {
         if (fresh == null || fresh.isEmpty()) return;
         String oldKey = currentIndex >= 0 && currentIndex < channels.size() ? channels.get(currentIndex).stableKey() : config.lastChannelKey();
         String oldUrl = currentIndex >= 0 && currentIndex < channels.size() ? channels.get(currentIndex).url : "";
@@ -480,11 +703,16 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         boolean sourceChanged = fromRefresh && currentIndex >= 0 && !oldUrl.isEmpty() && !oldUrl.equals(newChannel.url);
         currentIndex = newIndex;
 
-        if (player.getMediaItemCount() == 0 || sourceChanged) {
-            playChannel(currentIndex, fromRefresh);
-        } else if (fromRefresh) {
+        if (onDemandPlaybackActive) {
+            liveSourceRefreshPending |= sourceChanged || player.getMediaItemCount() == 0;
+            return;
+        }
+        if (player.getMediaItemCount() == 0 || sourceChanged || liveSourceRefreshPending) {
+            playChannel(currentIndex, fromRefresh && !scheduled, !scheduled);
+        } else if (fromRefresh && !scheduled) {
             showStatus(getString(R.string.playlist_updated, channels.size()), 2200);
         }
+        if (scheduled) showRefreshSuccess();
     }
 
     private int findByKey(String key) {
@@ -493,7 +721,11 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         return -1;
     }
 
-    private void playChannel(int index, boolean refreshed) {
+    private void playChannel(int index, boolean refreshed) { playChannel(index, refreshed, true); }
+
+    private void playChannel(int index, boolean refreshed, boolean showOverlay) {
+        if (onDemandPlaybackActive || !ActivationAccess.playbackAllowed(this)) return;
+        loadedPlaylistUrl = config.playlistUrl();
         cancelExitPrompt();
         if (channels.isEmpty()) return;
         if (index < 0) index = channels.size() - 1;
@@ -511,8 +743,10 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         player.setMediaItem(MediaItem.fromUri(channel.url));
         player.prepare();
         player.setPlayWhenReady(true);
+        liveSourceRefreshPending = false;
 
-        showChannelOverlay(channel, refreshed ? getString(R.string.playlist_refreshed) : null);
+        if (showOverlay) showChannelOverlay(channel, refreshed ? getString(R.string.playlist_refreshed) : null);
+        refreshCornerClock();
     }
 
     private void channelNext() { if (!channels.isEmpty()) playChannel(currentIndex + 1, false); }
@@ -646,6 +880,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
             main.removeCallbacks(clearNumber);
             cancelExitPrompt();
             refreshCornerClock();
+            syncMobileNavigation();
         }
         return hidden;
     }
@@ -657,6 +892,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         }
         exitArmed = true;
         if (exitPrompt != null) exitPrompt.setVisibility(View.VISIBLE);
+        syncMobileNavigation();
         main.removeCallbacks(disarmExit);
         main.postDelayed(disarmExit, EXIT_CONFIRM_WINDOW_MS);
     }
@@ -665,6 +901,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         exitArmed = false;
         main.removeCallbacks(disarmExit);
         if (exitPrompt != null) exitPrompt.setVisibility(View.GONE);
+        syncMobileNavigation();
     }
 
     public static void stopPlaybackAndExitIfRunning() {
@@ -673,24 +910,80 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         activity.runOnUiThread(activity::gracefulExit);
     }
 
-    /** Pause live TV only while an on-demand movie/episode is actually playing. */
+    static void stopForDeactivation() {
+        onDemandPlaybackActive = false; onDemandSession++;
+        MainActivity activity = activeInstance.get();
+        if (activity == null) return;
+        activity.playGeneration++;
+        activity.hideRefreshSuccess();
+        if (activity.player != null) {
+            activity.player.setPlayWhenReady(false); activity.player.stop(); activity.player.clearMediaItems();
+        }
+    }
+
+    /** Own the live playback gate before constructing/loading the VOD document. */
+    static long beginOnDemandPlayback() {
+        onDemandPlaybackActive = true;
+        long session = ++onDemandSession;
+        pausePlaybackForOnDemand();
+        return session;
+    }
+
+    /** Also used by authorization routing to pause live media without acquiring a VOD session. */
     public static void pausePlaybackForOnDemand() {
         MainActivity activity = activeInstance.get();
         if (activity == null || activity.isFinishing()) return;
         activity.runOnUiThread(() -> {
-            if (activity.player != null) activity.player.setPlayWhenReady(false);
+            activity.playGeneration++; // Invalidate any queued live-channel error retry.
+            if (activity.player != null) {
+                activity.player.setPlayWhenReady(false);
+                activity.player.pause();
+            }
+            activity.hideRefreshSuccess();
+            activity.refreshCornerClock();
         });
     }
 
     /** Resume the still-loaded live channel after leaving the on-demand player. */
+    static void resumePlaybackAfterOnDemand(long session) {
+        if (!onDemandPlaybackActive || session != onDemandSession) return; // A stale Activity cannot release a newer player session.
+        resumePlaybackAfterOnDemand();
+    }
+
     public static void resumePlaybackAfterOnDemand() {
+        onDemandPlaybackActive = false;
         MainActivity activity = activeInstance.get();
         if (activity == null || activity.isFinishing()) return;
+        if (!ActivationAccess.playbackAllowed(activity)) return;
         activity.runOnUiThread(() -> {
-            if (activity.player != null && activity.player.getMediaItemCount() > 0) {
-                activity.player.setPlayWhenReady(true);
+            if (onDemandPlaybackActive || activity.isDestroyed()) return;
+            if (activity.liveSourceRefreshPending) activity.playChannel(activity.currentIndex, false);
+            else if (activity.player != null && activity.player.getMediaItemCount() > 0) activity.player.setPlayWhenReady(true);
+            else if (activity.resumed && activity.config != null && activity.config.isConfigured()) {
+                activity.loadAndRefresh(activity.startupPlaylistRefreshPending);
+                activity.startupPlaylistRefreshPending = false;
             }
+            activity.refreshCornerClock();
         });
+    }
+
+    static void applyReturnedPlaylist(List<Channel> fresh) {
+        MainActivity activity = activeInstance.get();
+        if (activity == null || activity.isFinishing() || activity.player == null || fresh == null || fresh.isEmpty()) return;
+        activity.runOnUiThread(() -> {
+            if (!activity.isDestroyed() && activity.player != null && ActivationAccess.playbackAllowed(activity))
+                activity.applyChannels(fresh, true);
+        });
+    }
+
+    /** A player exit is an explicit event, not an arbitrary Activity resume. */
+    static void refreshPlaylistAfterOnDemand(Context context) {
+        MainActivity activity = activeInstance.get();
+        if (activity == null || activity.isFinishing() || activity.config == null) {
+            PlaylistReturnRefresh.request(context); return;
+        }
+        if (activity.config.isPhoneMode() || !ActivationAccess.playbackAllowed(activity)) return;
+        activity.refreshPlaylistNow(); // Existing in-flight guard and last-good-cache behavior.
     }
 
     private void gracefulExit() {
@@ -794,6 +1087,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     private void showChannelBrowser(boolean focusCategories, boolean focusSidebar) {
         cancelExitPrompt();
         if (channels.isEmpty()) {
+            syncMobileNavigation();
             showStatus(getString(R.string.no_channels_loaded), 2000);
             return;
         }
@@ -802,6 +1096,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         hud.setVisibility(View.GONE);
         programmeInfo.setVisibility(View.GONE);
         browser.show(channels, currentIndex, focusCategories, focusSidebar);
+        syncMobileNavigation();
         refreshCornerClock();
     }
 
@@ -813,6 +1108,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         hud.setVisibility(View.GONE);
         programmeInfo.setVisibility(View.GONE);
         epgGuide.show(channels.get(currentIndex));
+        syncMobileNavigation();
         refreshCornerClock();
     }
 
@@ -830,6 +1126,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         }
         hud.setVisibility(View.GONE);
         programmeInfo.setVisibility(View.VISIBLE);
+        syncMobileNavigation();
         main.removeCallbacks(hideProgrammeInfo);
         main.postDelayed(hideProgrammeInfo, 8000L);
     }
@@ -857,11 +1154,16 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         startActivity(new Intent(this, SettingsActivity.class));
     }
 
-    @Override public void onPlayChannel(int sourceIndex) { playChannel(sourceIndex, false); }
+    @Override public void onPlayChannel(int sourceIndex) {
+        playChannel(sourceIndex, false);
+    }
     @Override public void onRequestMovies() { openCatalogFromTv("movies"); }
     @Override public void onRequestSeries() { openCatalogFromTv("series"); }
     @Override public void onRequestSettings() { openSettings(); }
-    @Override public void onClosed() { immersive(); refreshCornerClock(); }
+    @Override public void onClosed() {
+        syncMobileNavigation();
+        immersive(); refreshCornerClock();
+    }
     @Override public void onFavoriteChanged(Channel channel, boolean favorite) {
         showStatus(getString(favorite ? R.string.added_favorite : R.string.removed_favorite, channel.name), 2200);
     }
@@ -897,19 +1199,63 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         hud.setVisibility(View.VISIBLE);
         main.removeCallbacks(hideHud);
         main.postDelayed(hideHud, 5000);
+        syncMobileNavigation();
+        refreshCornerClock();
     }
 
     private String time(long ms) { return new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date(ms)); }
 
     private void refreshCornerClock() {
         if (cornerClock == null) return;
-        boolean overlayOpen = (browser != null && browser.isOpen()) || (epgGuide != null && epgGuide.isOpen());
-        if (!config.showClock() || overlayOpen) {
+        // The channel browser already has the existing header clock. EPG has no clock of its
+        // own, so it must not suppress the configured Live TV clock.
+        boolean browserOnTop=browser!=null&&browser.isOpen()&&!(epgGuide!=null&&epgGuide.isOpen());
+        if (!config.showClock() || browserOnTop || onDemandPlaybackActive) {
             cornerClock.setVisibility(View.GONE);
+            positionRefreshSuccess();
             return;
         }
         cornerClock.setText(new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date()));
         cornerClock.setVisibility(View.VISIBLE);
+        cornerClock.bringToFront();
+        playbackOverlays.bringToFront();
+        positionRefreshSuccess();
+    }
+
+    private void positionRefreshSuccess() {
+        if (refreshSuccessDot == null) return;
+        int top = dp(16);
+        if (cornerClock.getVisibility() == View.VISIBLE && Config.CLOCK_TOP_RIGHT.equals(config.clockPosition()))
+            top += Math.max(cornerClock.getHeight(), cornerClock.getMinimumHeight()) + dp(8);
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) refreshSuccessDot.getLayoutParams();
+        if (lp.topMargin != top || lp.rightMargin != dp(18)) {
+            lp.topMargin = top; lp.rightMargin = dp(18); refreshSuccessDot.setLayoutParams(lp);
+        }
+    }
+
+    private void showRefreshSuccess() {
+        if (!resumed || onDemandPlaybackActive || isFinishing() || isDestroyed()) return;
+        hideRefreshSuccess();
+        positionRefreshSuccess();
+        refreshSuccessDot.setAlpha(1f);
+        refreshSuccessDot.setVisibility(View.VISIBLE);
+        refreshSuccessDot.bringToFront(); playbackOverlays.bringToFront();
+        main.postDelayed(fadeRefreshSuccess, 2400L);
+    }
+
+    private void hideRefreshSuccess() {
+        main.removeCallbacks(fadeRefreshSuccess);
+        if (refreshSuccessDot == null) return;
+        refreshSuccessDot.animate().cancel();
+        refreshSuccessDot.setAlpha(0f);
+        refreshSuccessDot.setVisibility(View.GONE);
+    }
+
+    private void syncMobileNavigation() {
+        if (mobileNavigation == null) return;
+        if(!resumed){mobileNavigation.hideNow();return;}
+        // Live TV navigation belongs only to the explicit channel/category browser.
+        mobileNavigation.setMenuOpen(browser != null && browser.isOpen());
     }
 
     private FrameLayout.LayoutParams clockLayoutParams() {
@@ -923,7 +1269,9 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         else if (Config.CLOCK_BOTTOM_RIGHT.equals(position)) gravity = Gravity.BOTTOM | Gravity.END;
         else gravity = Gravity.TOP | Gravity.START;
 
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(width, height, gravity);
+        // Retain the normal clock footprint, but allow system font scaling to grow it safely.
+        cornerClock.setMinWidth(width); cornerClock.setMinHeight(height);
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(-2, -2, gravity);
         int horizontal = dp(18);
         int vertical = dp(16);
         if ((gravity & Gravity.END) == Gravity.END) params.rightMargin = horizontal; else params.leftMargin = horizontal;

@@ -28,6 +28,7 @@ public final class Config {
     private static final String K_CLOCK_SCALE = "corner_clock_scale";
     private static final String K_CLOCK_POSITION = "corner_clock_position";
     private static final String K_DEVICE_MODE = "device_mode";
+    private static final String K_MOVIE_SERIES_PLAYER = "movie_series_player";
 
     public static final String DEFAULT_EPG_URL = "https://is.gd/fullepg";
     public static final String DEFAULT_PUKANKI_URL = "https://pukanki.fun";
@@ -40,6 +41,9 @@ public final class Config {
     public static final String THEME_ORANGE = "orange";
     public static final String THEME_GREEN = "green";
     public static final String THEME_BLUE = "blue";
+    public static final String PLAYER_1 = "player_1";
+    public static final String PLAYER_2 = "player_2";
+
     public static final String MODE_TV = "tv";
     public static final String MODE_PHONE = "phone";
     public static final String CLOCK_TOP_LEFT = "top_left";
@@ -91,7 +95,40 @@ public final class Config {
         editor.apply();
     }
 
-    public boolean isConfigured() { return !playlistUrl().isEmpty() && hasPin(); }
+    void clearProvisionedActivation() {
+        if (!ActivationStore.managed(context)) return;
+        synchronized (PlaylistRepository.class) {
+            if (!prefs.edit().remove(K_PLAYLIST).remove(K_EPG).remove(K_PUKANKI)
+                    .remove(K_PLAYLIST_REFRESH).remove(K_EPG_REFRESH)
+                    .remove("activation_username").remove("activation_client_number").commit())
+                throw new IllegalStateException("storage_unavailable");
+            for (String suffix : new String[]{"", ".bak", ".new"}) new java.io.File(context.getFilesDir(), "playlist.m3u" + suffix).delete();
+        }
+    }
+
+    // Provisioned playback does not require opening the administrator form. Settings still
+    // require a separately chosen PIN; managed mode is never itself an entitlement check.
+    public boolean isConfigured() { return !playlistUrl().isEmpty() && (hasPin() || ActivationStore.managed(context)); }
+    public String activationUsername() { return safe(prefs.getString("activation_username", "")); }
+
+    public void setActivationAccount(String username, String clientNumber) {
+        prefs.edit().putString("activation_username", username).putString("activation_client_number", clientNumber).apply();
+    }
+
+    // Enrollment is complete only after the supplied configuration/account is on disk.
+    // Preserve PIN, favorites, device mode and every unrelated preference.
+    boolean saveActivation(ActivationResponse response) {
+        SharedPreferences.Editor editor = prefs.edit()
+                .putString("activation_username", response.username)
+                .putString("activation_client_number", response.clientNumber);
+        if (response.active) {
+            editor.putString(K_PLAYLIST, response.playlist).putString(K_EPG, response.epg)
+                    .putString(K_PUKANKI, response.pukanki);
+            if (!playlistUrl().equals(response.playlist)) editor.putLong(K_PLAYLIST_REFRESH, 0L);
+            if (!epgUrl().equals(response.epg)) editor.putLong(K_EPG_REFRESH, 0L);
+        }
+        return editor.commit();
+    }
     public boolean hasPin() { return !safe(prefs.getString(K_PIN_HASH, "")).isEmpty(); }
 
     public void setPin(String pin) { prefs.edit().putString(K_PIN_HASH, sha256(pin)).apply(); }
@@ -156,6 +193,15 @@ public final class Config {
 
     public void setLanguage(String language) {
         prefs.edit().putString(K_LANGUAGE, LANG_EN.equals(language) ? LANG_EN : LANG_BG).apply();
+    }
+
+    /** One provider preference for Movies and Series on every device mode. */
+    public String movieSeriesPlayer() {
+        return PLAYER_1.equals(prefs.getString(K_MOVIE_SERIES_PLAYER, PLAYER_2)) ? PLAYER_1 : PLAYER_2;
+    }
+
+    public void setMovieSeriesPlayer(String player) {
+        prefs.edit().putString(K_MOVIE_SERIES_PLAYER, PLAYER_1.equals(player) ? PLAYER_1 : PLAYER_2).apply();
     }
 
     public String colorTheme() {

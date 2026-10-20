@@ -20,6 +20,7 @@ import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ProgressBar;
 import android.widget.TextView;
+import androidx.core.widget.NestedScrollView;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -73,6 +74,8 @@ public final class ChannelBrowserOverlay extends FrameLayout {
     private final TextView clock;
     private final ImageButton settingsButton;
     private final boolean compact;
+    private LinearLayout mobileTop;
+    private NestedScrollView mobileBody;
     private final boolean portraitPhone;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final TextView empty;
@@ -88,9 +91,8 @@ public final class ChannelBrowserOverlay extends FrameLayout {
         this.config = new Config(context);
         this.accent = UiTheme.accent(context);
         this.compact = config.isPhoneMode();
-        int widthDp = Math.round(getResources().getDisplayMetrics().widthPixels / getResources().getDisplayMetrics().density);
-        int heightDp = Math.round(getResources().getDisplayMetrics().heightPixels / getResources().getDisplayMetrics().density);
-        this.portraitPhone = compact && heightDp > widthDp;
+        this.portraitPhone = compact && getResources().getConfiguration().orientation
+                == android.content.res.Configuration.ORIENTATION_PORTRAIT;
         setVisibility(GONE);
         setFocusable(true);
         setFocusableInTouchMode(true);
@@ -107,22 +109,25 @@ public final class ChannelBrowserOverlay extends FrameLayout {
         top.setPadding(dp(portraitPhone ? 10 : (compact ? 12 : 28)), dp(compact ? 6 : 10),
                 dp(portraitPhone ? 10 : (compact ? 12 : 28)), dp(compact ? 6 : 10));
         top.setBackgroundColor(portraitPhone ? 0xE60D0F13 : 0xC00D0F13);
-        root.addView(top, new LinearLayout.LayoutParams(-1, dp(portraitPhone ? 54 : (compact ? 60 : 76))));
+        if (compact) { top.setMinimumHeight(dp(portraitPhone ? 54 : 60)); mobileTop = top; }
+        root.addView(top, new LinearLayout.LayoutParams(-1, compact ? -2 : dp(76)));
 
         clock = text("", compact ? 15 : 18, Color.WHITE, true);
         clock.setTextSize(UiTheme.sp(context, compact ? 15 : 18) * config.clockScale());
         clock.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        if (compact) clock.setSingleLine(true);
         clock.setVisibility(config.showClock() ? VISIBLE : GONE);
-        top.addView(clock, new LinearLayout.LayoutParams(dp(portraitPhone ? 68 : (compact ? 80 : 96)), -1));
+        top.addView(clock, new LinearLayout.LayoutParams(compact ? -2 : dp(96), compact ? -2 : -1));
 
         LinearLayout titleBox = new LinearLayout(context);
         titleBox.setOrientation(LinearLayout.VERTICAL);
         titleBox.setGravity(Gravity.CENTER_VERTICAL);
         sectionTitle = text(context.getString(R.string.channels), compact ? 17 : 21, Color.WHITE, true);
+        if (compact) { sectionTitle.setSingleLine(true); sectionTitle.setEllipsize(android.text.TextUtils.TruncateAt.END); }
         channelCount = text("", compact ? 12 : 14, 0xFFB1B7C0, false);
         titleBox.addView(sectionTitle);
         titleBox.addView(channelCount);
-        top.addView(titleBox, new LinearLayout.LayoutParams(0, -1, 1f));
+        top.addView(titleBox, new LinearLayout.LayoutParams(0, compact ? -2 : -1, 1f));
 
         settingsButton = new ImageButton(context);
         settingsButton.setImageResource(R.drawable.ic_settings);
@@ -142,14 +147,14 @@ public final class ChannelBrowserOverlay extends FrameLayout {
         LinearLayout columns = new LinearLayout(context);
         columns.setOrientation(portraitPhone ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
         if (portraitPhone) columns.setPadding(dp(7), dp(6), dp(7), dp(7));
-        root.addView(columns, new LinearLayout.LayoutParams(-1, 0, 1f));
+        if (portraitPhone) {
+            mobileBody = new NestedScrollView(context); mobileBody.setTag("mobile-channel-browser-scroll");
+            mobileBody.setFillViewport(true);
+            mobileBody.addView(columns, new NestedScrollView.LayoutParams(-1, -2));
+            root.addView(mobileBody, new LinearLayout.LayoutParams(-1, 0, 1f));
+        } else root.addView(columns, new LinearLayout.LayoutParams(-1, 0, 1f));
 
-        // Portrait phone is intentionally a compact stacked design: a short app tab strip,
-        // a scrollable category band, the channel list as the main area, and a fixed EPG card.
-        // Fixed heights prevent the four menu areas from drawing over each other on narrow phones.
-        final int portraitCategoryHeight = Math.max(104, Math.min(128, Math.round(heightDp * 0.20f)));
-        final int portraitDetailHeight = Math.max(142, Math.min(172, Math.round(heightDp * 0.27f)));
-
+        // Mobile lists receive bounded viewport heights; the surrounding content can scroll.
         appPane = pane(0xE60C0F13);
         appSidebar = new AppSidebar(context, AppSidebar.SECTION_TV, new AppSidebar.Listener() {
             @Override public void onTv() {
@@ -178,11 +183,11 @@ public final class ChannelBrowserOverlay extends FrameLayout {
                 ? new LinearLayout.LayoutParams(-1, dp(62))
                 : new LinearLayout.LayoutParams(0, -1, 0.18f);
         if (portraitPhone) appPaneParams.bottomMargin = dp(6);
-        columns.addView(appPane, appPaneParams);
+        if (!compact) columns.addView(appPane, appPaneParams);
 
         View divider0 = new View(context);
         divider0.setBackgroundColor(0x7730343B);
-        columns.addView(divider0, portraitPhone
+        if (!compact) columns.addView(divider0, portraitPhone
                 ? new LinearLayout.LayoutParams(-1, 0)
                 : new LinearLayout.LayoutParams(dp(1), -1));
 
@@ -190,15 +195,16 @@ public final class ChannelBrowserOverlay extends FrameLayout {
         TextView categoryHeader = text(context.getString(R.string.categories), compact ? 11 : 13, 0xFFB1B7C0, true);
         categoryHeader.setPadding(dp(portraitPhone ? 12 : (compact ? 12 : 22)),
                 dp(portraitPhone ? 5 : (compact ? 8 : 18)), dp(8), dp(portraitPhone ? 3 : (compact ? 6 : 10)));
-        categoryPane.addView(categoryHeader, new LinearLayout.LayoutParams(-1, dp(portraitPhone ? 30 : (compact ? 38 : 54))));
+        categoryPane.addView(categoryHeader, new LinearLayout.LayoutParams(-1, compact ? -2 : dp(54)));
         categoryList = new ListView(context);
         categoryList.setDividerHeight(0);
         categoryList.setSelector(android.R.color.transparent);
         categoryList.setAdapter(categoryAdapter);
+        if (compact) categoryList.setNestedScrollingEnabled(true);
         categoryPane.addView(categoryList, new LinearLayout.LayoutParams(-1, 0, 1f));
         if (portraitPhone) categoryPane.setBackground(rounded(0xE60D0F13, 12));
         LinearLayout.LayoutParams categoryPaneParams = portraitPhone
-                ? new LinearLayout.LayoutParams(-1, dp(portraitCategoryHeight))
+                ? new LinearLayout.LayoutParams(-1, dp(120))
                 : new LinearLayout.LayoutParams(0, -1, 0.18f);
         if (portraitPhone) categoryPaneParams.bottomMargin = dp(6);
         columns.addView(categoryPane, categoryPaneParams);
@@ -214,6 +220,7 @@ public final class ChannelBrowserOverlay extends FrameLayout {
         channelList.setDividerHeight(0);
         channelList.setSelector(android.R.color.transparent);
         channelList.setAdapter(channelAdapter);
+        if (compact) channelList.setNestedScrollingEnabled(true);
 
         channelPane.addView(channelList, new LinearLayout.LayoutParams(-1, 0, 1f));
         empty = text(context.getString(R.string.no_channels_category), 18, 0xFFD0D4DA, false);
@@ -222,25 +229,22 @@ public final class ChannelBrowserOverlay extends FrameLayout {
         channelPane.addView(empty, new LinearLayout.LayoutParams(-1, dp(60)));
         if (portraitPhone) channelPane.setBackground(rounded(0xEC14171C, 12));
         LinearLayout.LayoutParams channelPaneParams = portraitPhone
-                ? new LinearLayout.LayoutParams(-1, 0, 1f)
+                ? new LinearLayout.LayoutParams(-1, dp(200))
                 : new LinearLayout.LayoutParams(0, -1, 0.34f);
         if (portraitPhone) channelPaneParams.bottomMargin = dp(6);
         columns.addView(channelPane, channelPaneParams);
 
         View divider2 = new View(context);
         divider2.setBackgroundColor(0x7730343B);
-        columns.addView(divider2, portraitPhone
-                ? new LinearLayout.LayoutParams(-1, 0)
-                : new LinearLayout.LayoutParams(dp(1), -1));
+        if (!compact) columns.addView(divider2, new LinearLayout.LayoutParams(dp(1), -1));
 
         detailPane = pane(0xC00D0F13);
         LinearLayout detail = detailPane;
         detail.setPadding(dp(portraitPhone ? 14 : (compact ? 14 : 30)), dp(portraitPhone ? 8 : (compact ? 8 : 20)),
                 dp(portraitPhone ? 14 : (compact ? 14 : 30)), dp(portraitPhone ? 8 : (compact ? 8 : 20)));
         if (portraitPhone) detail.setBackground(rounded(0xE60D0F13, 12));
-        columns.addView(detail, portraitPhone
-                ? new LinearLayout.LayoutParams(-1, dp(portraitDetailHeight))
-                : new LinearLayout.LayoutParams(0, -1, 0.30f));
+        if (compact) detail.setVisibility(GONE);
+        else columns.addView(detail, new LinearLayout.LayoutParams(0, -1, 0.30f));
 
         detailLogo = new ImageView(context);
         detailLogo.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
@@ -253,11 +257,11 @@ public final class ChannelBrowserOverlay extends FrameLayout {
         detailNumber.setVisibility(GONE);
         detail.addView(detailNumber, new LinearLayout.LayoutParams(-1, 0));
         detailName = text("", compact ? 19 : 26, Color.WHITE, true);
-        detailName.setVisibility(GONE);
-        detail.addView(detailName, new LinearLayout.LayoutParams(-1, 0));
+        detailName.setVisibility(compact ? VISIBLE : GONE);
+        detail.addView(detailName, new LinearLayout.LayoutParams(-1, compact ? -2 : 0));
         detailGroup = text("", compact ? 12 : 14, 0xFFB1B7C0, false);
-        detailGroup.setVisibility(GONE);
-        detail.addView(detailGroup, new LinearLayout.LayoutParams(-1, 0));
+        detailGroup.setVisibility(compact ? VISIBLE : GONE);
+        detail.addView(detailGroup, new LinearLayout.LayoutParams(-1, compact ? -2 : 0));
 
         TextView nowLabel = text(context.getString(R.string.now), 13, accent, true);
         detail.addView(nowLabel);
@@ -288,7 +292,8 @@ public final class ChannelBrowserOverlay extends FrameLayout {
         TextView help = text(context.getString(R.string.browser_help), compact ? 11 : 13, 0xFFAEB5BF, false);
         help.setGravity(Gravity.BOTTOM | Gravity.START);
         help.setVisibility(portraitPhone ? GONE : VISIBLE);
-        detail.addView(help, new LinearLayout.LayoutParams(-1, 0, 1f));
+        detail.addView(help, compact ? new LinearLayout.LayoutParams(-1, -2)
+                : new LinearLayout.LayoutParams(-1, 0, 1f));
 
         categoryList.setOnItemClickListener((p, v, pos, id) -> {
             selectedCategory = pos;
@@ -313,6 +318,38 @@ public final class ChannelBrowserOverlay extends FrameLayout {
             if (hasFocus) setFoldStage(1, true);
             channelAdapter.notifyDataSetChanged();
         });
+    }
+
+    @Override protected void onMeasure(int widthSpec, int heightSpec) {
+        if (portraitPhone && mobileTop != null && MeasureSpec.getMode(heightSpec) != MeasureSpec.UNSPECIFIED) {
+            mobileTop.measure(widthSpec, MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+            View categoryHeader = categoryPane.getChildAt(0);
+            categoryHeader.measure(widthSpec, MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+            int usable = Math.max(0, MeasureSpec.getSize(heightSpec) - mobileTop.getMeasuredHeight());
+            LinearLayout.LayoutParams categories = (LinearLayout.LayoutParams) categoryPane.getLayoutParams();
+            categories.height = Math.max(categoryHeader.getMeasuredHeight() + dp(64), Math.max(dp(112), Math.round(usable * 0.24f)));
+            LinearLayout.LayoutParams channels = (LinearLayout.LayoutParams) channelPane.getLayoutParams();
+            channels.height = Math.max(dp(180), Math.round(usable * 0.72f));
+        }
+        super.onMeasure(widthSpec, heightSpec);
+    }
+
+    /** Rebuild only orientation-dependent menu geometry; never reload the live session. */
+    ChannelBrowserOverlay forConfigurationChange() {
+        if (foldAnimator != null) foldAnimator.cancel();
+        ChannelBrowserOverlay next = new ChannelBrowserOverlay(getContext(), listener);
+        next.source.addAll(source);
+        next.rebuildCategories();
+        String category = categories.isEmpty() ? "all" : categories.get(selectedCategory).key;
+        next.selectedCategory = Math.max(0, next.findCategoryByKey(category));
+        next.selectedChannel = selectedChannel;
+        next.applyCategory(false);
+        next.categoryList.setSelection(next.selectedCategory);
+        next.channelList.setSelection(next.selectedChannel);
+        next.setFoldStage(foldStage, false);
+        next.setVisibility(getVisibility());
+        next.updateClock();
+        return next;
     }
 
     public boolean isOpen() { return getVisibility() == VISIBLE; }
@@ -685,6 +722,7 @@ public final class ChannelBrowserOverlay extends FrameLayout {
 
     private void updateDetail() {
         updateClock();
+        if (compact) return;
         if (selectedChannel < 0 || selectedChannel >= filtered.size()) {
             detailLogo.setImageDrawable(null);
             detailNumber.setText("");
@@ -771,7 +809,8 @@ public final class ChannelBrowserOverlay extends FrameLayout {
         @Override public View getView(int position, View convertView, ViewGroup parent) {
             TextView row = convertView instanceof TextView ? (TextView) convertView : text("", 18, Color.WHITE, false);
             row.setPadding(dp(portraitPhone ? 14 : (compact ? 12 : 22)), 0, dp(compact ? 8 : 14), 0);
-            row.setMinHeight(dp(portraitPhone ? 40 : (compact ? 44 : 58)));
+            row.setMinHeight(dp(compact ? 48 : 58));
+            if (compact) row.setPadding(row.getPaddingLeft(), dp(6), row.getPaddingRight(), dp(6));
             if (portraitPhone) row.setTextSize(UiTheme.sp(getContext(), 15));
             Category category = categories.get(position);
             String prefix = "favorites".equals(category.key) ? "★  " : "";
@@ -820,11 +859,11 @@ public final class ChannelBrowserOverlay extends FrameLayout {
 
                 number = text("", compact ? 13 : 16, 0xFFB4BBC5, true);
                 number.setGravity(Gravity.CENTER);
-                row.addView(number, new LinearLayout.LayoutParams(dp(compact ? 42 : 58), -1));
+                row.addView(number, new LinearLayout.LayoutParams(dp(compact ? 30 : 58), compact ? -2 : -1));
 
                 logo = new ImageView(getContext());
                 logo.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
-                row.addView(logo, new LinearLayout.LayoutParams(dp(compact ? 58 : 82), dp(compact ? 44 : 58)));
+                row.addView(logo, new LinearLayout.LayoutParams(dp(compact ? 44 : 82), dp(compact ? 44 : 58)));
 
                 LinearLayout labels = new LinearLayout(getContext());
                 labels.setOrientation(LinearLayout.VERTICAL);
@@ -832,13 +871,14 @@ public final class ChannelBrowserOverlay extends FrameLayout {
                 labels.setPadding(dp(compact ? 9 : 16), 0, dp(8), 0);
                 name = text("", compact ? 16 : 19, Color.WHITE, true);
                 programme = text("", compact ? 12 : 14, 0xFFB7BDC6, false);
+                if (compact) { programme.setSingleLine(true); programme.setEllipsize(android.text.TextUtils.TruncateAt.END); }
                 labels.addView(name);
                 labels.addView(programme);
-                row.addView(labels, new LinearLayout.LayoutParams(0, -1, 1f));
+                row.addView(labels, new LinearLayout.LayoutParams(0, compact ? -2 : -1, 1f));
 
                 favorite = text("", 22, 0xFFFFD54F, false);
                 favorite.setGravity(Gravity.CENTER);
-                row.addView(favorite, new LinearLayout.LayoutParams(dp(38), -1));
+                row.addView(favorite, new LinearLayout.LayoutParams(dp(compact ? 28 : 38), compact ? -2 : -1));
             }
 
             Channel channel = filtered.get(position);
