@@ -11,8 +11,6 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.KeyEvent;
-import android.os.Handler;
-import android.os.Looper;
 import android.view.View;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -25,9 +23,6 @@ import androidx.core.view.WindowCompat;
 // This view requires a destination listener and is never inflated from XML.
 @android.annotation.SuppressLint("ViewConstructor")
 final class MobileBottomNav extends LinearLayout {
-    private static final long HIDE_DELAY_MS = 3000L;
-    private final Handler main = new Handler(Looper.getMainLooper());
-    private final Runnable hide = () -> setVisibility(GONE);
     private boolean autoHide;
     private boolean menuOpen;
 
@@ -74,21 +69,17 @@ final class MobileBottomNav extends LinearLayout {
     void enableAutoHide() { autoHide = true; hideNow(); }
 
     void revealTemporarily() {
-        if (!autoHide) return;
-        setVisibility(VISIBLE);
-        main.removeCallbacks(hide);
-        if (!menuOpen) main.postDelayed(hide, HIDE_DELAY_MS);
+        // Touch, keys and focus must never reveal Live TV navigation outside the browser.
+        if (autoHide && menuOpen) setVisibility(VISIBLE);
     }
 
     void setMenuOpen(boolean open) {
         if (!autoHide) return;
         menuOpen = open;
-        main.removeCallbacks(hide);
         setVisibility(open ? VISIBLE : GONE);
     }
 
     void hideNow() {
-        main.removeCallbacks(hide);
         menuOpen = false;
         if (autoHide) setVisibility(GONE);
     }

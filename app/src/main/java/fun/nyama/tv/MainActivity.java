@@ -189,6 +189,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         suppressNextUserLeaveHint = false;
         immersive();
         syncMobileNavigation();
+        refreshCornerClock();
 
         if (!uiSignatureAtCreate.equals(config.uiSignature())) {
             recreate();
@@ -465,10 +466,6 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
                 .build();
         playerView.setPlayer(player);
         player.addListener(new Player.Listener() {
-            @Override public void onIsPlayingChanged(boolean isPlaying) {
-                if(resumed)syncMobileNavigation();
-            }
-
             @Override public void onPlaybackStateChanged(int playbackState) {
                 buffering.setVisibility(playbackState == Player.STATE_BUFFERING ? View.VISIBLE : View.GONE);
             }
@@ -903,15 +900,6 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         showStatus(getString(favorite ? R.string.added_favorite : R.string.removed_favorite, channel.name), 2200);
     }
 
-    @Override public boolean dispatchTouchEvent(MotionEvent event) {
-        // Menus pin navigation; ordinary playback gestures remain with the existing detector.
-        if (mobileNavigation != null && event.getActionMasked() == MotionEvent.ACTION_DOWN
-                && (mobileNavigation.getVisibility() == View.VISIBLE
-                || (browser != null && browser.isOpen()) || (epgGuide != null && epgGuide.isOpen())))
-            mobileNavigation.revealTemporarily();
-        return super.dispatchTouchEvent(event);
-    }
-
     private void installPhoneTouchControls() {
         final GestureDetector detector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onDown(MotionEvent e) { return true; }
@@ -1037,7 +1025,6 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     }
 
     @Override public void onPlayChannel(int sourceIndex) {
-        if (mobileNavigation != null) mobileNavigation.hideNow();
         playChannel(sourceIndex, false);
     }
     @Override public void onRequestMovies() { openCatalogFromTv("movies"); }
@@ -1083,6 +1070,7 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         main.removeCallbacks(hideHud);
         main.postDelayed(hideHud, 5000);
         syncMobileNavigation();
+        refreshCornerClock();
     }
 
     private String time(long ms) { return new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date(ms)); }
@@ -1098,16 +1086,14 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         }
         cornerClock.setText(new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date()));
         cornerClock.setVisibility(View.VISIBLE);
+        cornerClock.bringToFront();
     }
 
     private void syncMobileNavigation() {
         if (mobileNavigation == null) return;
         if(!resumed){mobileNavigation.hideNow();return;}
-        boolean menu = (browser != null && browser.isOpen()) || (epgGuide != null && epgGuide.isOpen())
-                || (programmeInfo != null && programmeInfo.getVisibility() == View.VISIBLE)
-                || (exitPrompt != null && exitPrompt.getVisibility() == View.VISIBLE) || channels.isEmpty()
-                || (player!=null&&!player.isPlaying());
-        mobileNavigation.setMenuOpen(menu);
+        // Live TV navigation belongs only to the explicit channel/category browser.
+        mobileNavigation.setMenuOpen(browser != null && browser.isOpen());
     }
 
     private FrameLayout.LayoutParams clockLayoutParams() {

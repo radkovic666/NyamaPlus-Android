@@ -89,26 +89,24 @@ public class MobileBottomNavTest {
             assertEquals(4, bar.getPaddingBottom());
         }
     }
-    @Test public void liveTvOptInStartsHiddenResetsOnTouchFocusAndCancelsOnExit() {
+    @Test public void liveTvTouchFocusAndKeysCannotRevealNavigationOutsideBrowser() {
         Activity activity = Robolectric.buildActivity(Activity.class).get();
         View screen = MobileBottomNav.wrap(activity, new FrameLayout(activity), "tv", new Actions());
         activity.setContentView(screen);
         MobileBottomNav bar = screen.findViewWithTag("mobile-bottom-navigation");
         bar.enableAutoHide(); assertEquals(View.GONE, bar.getVisibility());
-        bar.revealTemporarily(); assertEquals(View.VISIBLE, bar.getVisibility());
-        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(2500));
-        MotionEvent touch = MotionEvent.obtain(0, 2500, MotionEvent.ACTION_DOWN, 4, 4, 0);
-        bar.dispatchTouchEvent(touch); touch.recycle();
-        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(2500));
-        assertEquals(View.VISIBLE, bar.getVisibility());
-        bar.getChildAt(1).requestFocus();
-        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(2500));
-        assertEquals(View.VISIBLE, bar.getVisibility());
-        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(501));
-        assertEquals(View.GONE, bar.getVisibility());
-        bar.revealTemporarily(); bar.hideNow();
-        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(5));
-        assertEquals(View.GONE, bar.getVisibility());
+        for (boolean open : new boolean[]{false,true,false}) {
+            bar.setMenuOpen(open);
+            bar.revealTemporarily();
+            MotionEvent touch = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, 4, 4, 0);
+            bar.dispatchTouchEvent(touch); touch.recycle();
+            bar.getChildAt(1).requestFocus();
+            bar.dispatchKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN,android.view.KeyEvent.KEYCODE_DPAD_DOWN));
+            assertEquals(open ? View.VISIBLE : View.GONE, bar.getVisibility());
+            Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMinutes(2));
+            assertEquals(open ? View.VISIBLE : View.GONE, bar.getVisibility());
+        }
+        bar.hideNow(); assertEquals(View.GONE,bar.getVisibility());
     }
     @Test @Config(sdk = 30) public void liveTvHiddenBarsDoNotLeaveTopOffsetsAndCutoutSafetySurvivesHiddenNavigation() {
         Activity activity = Robolectric.buildActivity(Activity.class).get(); View content=new FrameLayout(activity);
@@ -135,7 +133,7 @@ public class MobileBottomNavTest {
             assertEquals(View.VISIBLE, bar.getVisibility());
         }
     }
-    @Test public void openMenuCancelsExistingTimerAndInteractionCannotRearmIt() {
+    @Test public void openBrowserRemainsVisibleUntilExplicitClose() {
         Activity activity=Robolectric.buildActivity(Activity.class).get();
         MobileBottomNav nav=new MobileBottomNav(activity,"tv",new Actions());nav.enableAutoHide();nav.revealTemporarily();
         nav.setMenuOpen(true);nav.revealTemporarily();

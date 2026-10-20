@@ -152,15 +152,15 @@ public class MobileLiveNavigationTest {
         }
         ((ChannelBrowserOverlay)get("browser")).hide(); assertEquals(View.GONE, nav.getVisibility());
     }
-    @Test public void guideAndProgrammeMenusPinNavigationUntilTheLastOverlayClosesAndClockReturns() throws Exception {
+    @Test public void guideAndProgrammeInfoKeepNavigationHiddenAndClockReturns() throws Exception {
         build(true);
         MobileBottomNav nav=(MobileBottomNav)get("mobileNavigation");
         Method guide=MainActivity.class.getDeclaredMethod("showCurrentChannelEpg");guide.setAccessible(true);guide.invoke(activity);
         Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(40));
-        assertEquals(View.VISIBLE,nav.getVisibility());assertEquals(View.VISIBLE,((View)get("cornerClock")).getVisibility());
+        assertEquals(View.GONE,nav.getVisibility());assertEquals(View.VISIBLE,((View)get("cornerClock")).getVisibility());
         ((EpgGuideOverlay)get("epgGuide")).hide();assertEquals(View.GONE,nav.getVisibility());
         Method info=MainActivity.class.getDeclaredMethod("showCurrentProgrammeDescription");info.setAccessible(true);info.invoke(activity);
-        assertEquals(View.VISIBLE,nav.getVisibility());Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(9));
+        assertEquals(View.GONE,nav.getVisibility());Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(9));
         assertEquals(View.GONE,nav.getVisibility());
         new fun.nyama.tv.Config(activity).setShowClock(false);
         Method clock=MainActivity.class.getDeclaredMethod("refreshCornerClock");clock.setAccessible(true);clock.invoke(activity);
@@ -181,21 +181,97 @@ public class MobileLiveNavigationTest {
         ((EpgGuideOverlay)get("epgGuide")).hide();assertEquals(View.GONE,clock.getVisibility());
         ((ChannelBrowserOverlay)get("browser")).hide();assertEquals(View.VISIBLE,clock.getVisibility());
     }
-    @Test public void navigationHidesOnlyWhenLiveVideoIsPlayingAndNoMenuIsOpen() throws Exception {
-        build(true);boolean[] playing={false};
-        androidx.media3.exoplayer.ExoPlayer player=(androidx.media3.exoplayer.ExoPlayer)java.lang.reflect.Proxy.newProxyInstance(
-                getClass().getClassLoader(),new Class<?>[]{androidx.media3.exoplayer.ExoPlayer.class},(proxy,method,args)->{
-                    if(method.getName().equals("isPlaying"))return playing[0];
+    private void invoke(String name) throws Exception {
+        Method method = MainActivity.class.getDeclaredMethod(name); method.setAccessible(true); method.invoke(activity);
+    }
+    private void installPlayerWithoutNetwork() throws Exception {
+        androidx.media3.exoplayer.ExoPlayer player = (androidx.media3.exoplayer.ExoPlayer) java.lang.reflect.Proxy.newProxyInstance(
+                getClass().getClassLoader(), new Class<?>[]{androidx.media3.exoplayer.ExoPlayer.class}, (proxy, method, args) -> {
+                    if (method.getName().equals("isPlaying") || method.getName().equals("getPlaybackState"))
+                        throw new AssertionError("Navigation must not query playback state");
                     return null;
                 });
-        set("player",player);Method sync=MainActivity.class.getDeclaredMethod("syncMobileNavigation");sync.setAccessible(true);
-        MobileBottomNav nav=(MobileBottomNav)get("mobileNavigation");sync.invoke(activity);assertEquals(View.VISIBLE,nav.getVisibility());
-        playing[0]=true;sync.invoke(activity);assertEquals(View.GONE,nav.getVisibility());
-        showBrowser();sync.invoke(activity);assertEquals(View.VISIBLE,nav.getVisibility());
-        ((ChannelBrowserOverlay)get("browser")).hide();assertEquals(View.GONE,nav.getVisibility());
-        playing[0]=false;set("resumed",false);sync.invoke(activity);assertEquals(View.GONE,nav.getVisibility());
-        set("resumed",true);sync.invoke(activity);assertEquals(View.VISIBLE,nav.getVisibility());
+        set("player", player);
+        set("httpFactory", new androidx.media3.datasource.DefaultHttpDataSource.Factory());
     }
+    @Test public void playbackLoadingOtherOverlaysAndBackgroundNeverRevealNavigation() throws Exception {
+        build(true); installPlayerWithoutNetwork();
+        MobileBottomNav nav = (MobileBottomNav) get("mobileNavigation");
+        invoke("syncMobileNavigation"); assertEquals(View.GONE, nav.getVisibility());
+        ((View)get("buffering")).setVisibility(View.VISIBLE);
+        ((View)get("exitPrompt")).setVisibility(View.VISIBLE);
+        set("channels", Collections.emptyList());
+        invoke("syncMobileNavigation"); assertEquals(View.GONE, nav.getVisibility());
+        set("resumed", false); invoke("syncMobileNavigation");
+        set("resumed", true); invoke("syncMobileNavigation"); assertEquals(View.GONE, nav.getVisibility());
+    }
+    private void gesture(PlayerView video, float from, float to) {
+        long now = SystemClock.uptimeMillis();
+        for (int i = 0; i < 5; i++) {
+            int action = i == 0 ? MotionEvent.ACTION_DOWN : i == 4 ? MotionEvent.ACTION_UP : MotionEvent.ACTION_MOVE;
+            MotionEvent event = MotionEvent.obtain(now, now + i * 20, action, from + (to - from) * i / 4, 140, 0);
+            video.dispatchTouchEvent(event); event.recycle();
+        }
+    }
+    @Test public void rapidHorizontalSwipesChangeChannelsWithoutOpeningBrowserOrRevealingNavigation() throws Exception {
+        build(true); installPlayerWithoutNetwork();
+        set("channels", java.util.Arrays.asList(
+                new Channel(1,"One","one","","","Group","https://example.invalid/1",null,null),
+                new Channel(2,"Two","two","","","Group","https://example.invalid/2",null,null),
+                new Channel(3,"Three","three","","","Group","https://example.invalid/3",null,null)));
+        MobileBottomNav nav = (MobileBottomNav)get("mobileNavigation");
+        PlayerView video = (PlayerView)get("playerView");
+        for (int[] size : new int[][]{{320,640},{640,320}}) {
+            layout(size[0],size[1]);
+            for (int n = 0; n < 8; n++) {
+                int before = (int)get("currentIndex"); boolean next = n % 3 != 2;
+                gesture(video, next ? 260 : 40, next ? 40 : 260);
+                assertEquals((before + (next ? 1 : 2)) % 3, get("currentIndex"));
+                assertFalse(((ChannelBrowserOverlay)get("browser")).isOpen());
+                assertEquals(View.GONE,nav.getVisibility());
+                assertEquals(View.VISIBLE,((View)get("cornerClock")).getVisibility());
+                Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(400));
+                assertFalse(((ChannelBrowserOverlay)get("browser")).isOpen());
+                assertEquals(View.GONE,nav.getVisibility());
+            }
+            showBrowser();
+            // Exercise the browser's real selection/close callback, without a media/network stack.
+            Method select = ChannelBrowserOverlay.class.getDeclaredMethod("playSelected",int.class); select.setAccessible(true);
+            select.invoke(get("browser"),1);
+            assertFalse(((ChannelBrowserOverlay)get("browser")).isOpen());
+            assertEquals(View.GONE,nav.getVisibility());
+            assertEquals(View.VISIBLE,((View)get("cornerClock")).getVisibility());
+        }
+    }
+    private void assertClockTransitionsInAllCorners(boolean phone) throws Exception {
+        fun.nyama.tv.Config config = new fun.nyama.tv.Config(RuntimeEnvironment.getApplication());
+        String[] corners = {fun.nyama.tv.Config.CLOCK_TOP_LEFT,fun.nyama.tv.Config.CLOCK_TOP_RIGHT,
+                fun.nyama.tv.Config.CLOCK_BOTTOM_LEFT,fun.nyama.tv.Config.CLOCK_BOTTOM_RIGHT};
+        int[] gravities = {android.view.Gravity.TOP|android.view.Gravity.START,android.view.Gravity.TOP|android.view.Gravity.END,
+                android.view.Gravity.BOTTOM|android.view.Gravity.START,android.view.Gravity.BOTTOM|android.view.Gravity.END};
+        for (int c = 0; c < corners.length; c++) {
+            config.setClockPosition(corners[c]); build(phone);
+            OutlineTextView clock = (OutlineTextView)get("cornerClock");
+            for (int[] size : new int[][]{{360,800},{800,360}}) {
+                layout(size[0],size[1]);
+                assertEquals(gravities[c],((FrameLayout.LayoutParams)clock.getLayoutParams()).gravity);
+                assertTrue(clock.getLeft()>=0 && clock.getRight()<=((View)clock.getParent()).getWidth());
+                assertTrue(clock.getTop()>=0 && clock.getBottom()<=((View)clock.getParent()).getHeight());
+                showBrowser(); assertEquals(View.GONE,clock.getVisibility());
+                ((ChannelBrowserOverlay)get("browser")).hide();
+                assertEquals(View.VISIBLE,clock.getVisibility());
+                // A normal channel transition must restore the same clock immediately and above siblings.
+                clock.setVisibility(View.GONE); ((ViewGroup)clock.getParent()).getChildAt(0).bringToFront();
+                Method overlay=MainActivity.class.getDeclaredMethod("showChannelOverlay",Channel.class,String.class);overlay.setAccessible(true);
+                overlay.invoke(activity,((java.util.List<?>)get("channels")).get(0),null);
+                assertEquals(View.VISIBLE,clock.getVisibility());
+                ViewGroup parent=(ViewGroup)clock.getParent();assertEquals(parent.getChildCount()-1,parent.indexOfChild(clock));
+            }
+            invoke("onDestroy"); activity=null;
+        }
+    }
+    @Test public void mobileClockRestoresAfterChannelAndMenuTransitionsInAllFourCorners() throws Exception { assertClockTransitionsInAllCorners(true); }
+    @Test public void tvClockRestoresAfterChannelAndMenuTransitionsInAllFourCorners() throws Exception { assertClockTransitionsInAllCorners(false); }
     @Test public void mobileMultilineProgrammeDescriptionUsesScrollableNaturalHeight() throws Exception {
         build(true);
         android.widget.LinearLayout info=(android.widget.LinearLayout)get("programmeInfo");
