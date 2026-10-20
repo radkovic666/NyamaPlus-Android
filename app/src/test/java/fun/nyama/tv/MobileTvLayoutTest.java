@@ -57,31 +57,22 @@ public class MobileTvLayoutTest {
         assertNotNull(view.getLayout()); assertTrue(view.getLineCount()>0);
         assertTrue("Text height clipped: "+view.getText(),view.getLayout().getLineBottom(view.getLineCount()-1) <= view.getHeight()-view.getTotalPaddingBottom()-view.getTotalPaddingTop());
     }
-    @Test @Config(qualifiers="w320dp-h640dp-port-mdpi") public void portraitListsAndAllNowNextDetailsAreScrollableAboveNavigation() throws Exception {
+    @Test @Config(qualifiers="w320dp-h640dp-port-mdpi") public void portraitBrowserReclaimsDetailCardSpaceAboveNavigation() throws Exception {
         ChannelBrowserOverlay browser=browser();
         View root=MobileBottomNav.wrap(activity,browser,"tv",MobileBottomNav.destinations(activity,"tv"));activity.setContentView(root);layout(root,320,640);
-        NestedScrollView scroll=browser.findViewWithTag("mobile-channel-browser-scroll");assertNotNull(scroll);
-        assertTrue(scroll.getChildAt(0).getHeight()>scroll.getHeight());
-        assertTrue(((View)get(browser,"channelList")).getHeight()>=150);
+        assertNull(((View)get(browser,"detailPane")).getParent());
+        assertEquals(View.GONE,((View)get(browser,"detailPane")).getVisibility());
+        assertTrue("Channel viewport="+((View)get(browser,"channelList")).getHeight(),((View)get(browser,"channelList")).getHeight()>=250);
         assertTrue(((View)get(browser,"categoryList")).getHeight()>40);
-        TextView now=(TextView)get(browser,"nowTitle"),next=(TextView)get(browser,"nextTitle");
-        assertTrue(next.getText().toString().endsWith("КРАЙ"));assertFullText(now);assertFullText(next);
-        assertFullText((TextView)get(browser,"detailName"));
-        scroll.scrollTo(0,scroll.getChildAt(0).getHeight());
-        Rect rectangle=new Rect(0,0,next.getWidth(),next.getHeight());scroll.offsetDescendantRectToMyCoords(next,rectangle);
-        assertTrue(rectangle.bottom-scroll.getScrollY()<=scroll.getHeight());
         assertTrue(browser.getBottom()<=nav(root).getTop());
     }
-    @Test @Config(qualifiers="w640dp-h320dp-land-mdpi") public void landscapeDetailsScrollIndependentlyAndRowsGrowAroundLongLabels() throws Exception {
+    @Test @Config(qualifiers="w640dp-h320dp-land-mdpi") public void landscapeBrowserGivesDetailWidthBackToReadableChannelRows() throws Exception {
         ChannelBrowserOverlay browser=browser();View root=MobileBottomNav.wrap(activity,browser,"tv",MobileBottomNav.destinations(activity,"tv"));activity.setContentView(root);layout(root,640,320);
-        NestedScrollView scroll=browser.findViewWithTag("mobile-programme-detail-scroll");assertNotNull(scroll);
-        assertTrue(scroll.getChildAt(0).getHeight()>scroll.getHeight());
-        TextView next=(TextView)get(browser,"nextTitle");assertFullText(next);
-        scroll.scrollTo(0,scroll.getChildAt(0).getHeight());
-        Rect rectangle=new Rect(0,0,next.getWidth(),next.getHeight());scroll.offsetDescendantRectToMyCoords(next,rectangle);
-        assertTrue(rectangle.bottom-scroll.getScrollY()<=scroll.getHeight());
-        ListView list=(ListView)get(browser,"channelList");View row=list.getAdapter().getView(0,null,list);
-        row.measure(View.MeasureSpec.makeMeasureSpec(230,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(0,View.MeasureSpec.UNSPECIFIED));row.layout(0,0,230,row.getMeasuredHeight());
+        assertNull(browser.findViewWithTag("mobile-programme-detail-scroll"));
+        assertNull(((View)get(browser,"detailPane")).getParent());
+        ListView list=(ListView)get(browser,"channelList");assertTrue(list.getWidth()>260);
+        View row=list.getAdapter().getView(0,null,list);
+        row.measure(View.MeasureSpec.makeMeasureSpec(list.getWidth(),View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(0,View.MeasureSpec.UNSPECIFIED));row.layout(0,0,list.getWidth(),row.getMeasuredHeight());
         LinearLayout labels=(LinearLayout)((ViewGroup)row).getChildAt(2);assertFullText((TextView)labels.getChildAt(0));assertFullText((TextView)labels.getChildAt(1));
         assertTrue(browser.getBottom()<=nav(root).getTop());
     }
@@ -113,6 +104,8 @@ public class MobileTvLayoutTest {
         new fun.nyama.tv.Config(activity).setDeviceMode("tv");new fun.nyama.tv.Config(activity).setTextScale(1f);
         ChannelBrowserOverlay browser=browser();layout(browser,1280,720);
         assertNull(browser.findViewWithTag("mobile-programme-detail-scroll"));assertNull(browser.findViewWithTag("mobile-channel-browser-scroll"));
+        assertNotNull(((View)get(browser,"detailPane")).getParent());
+        assertEquals(View.VISIBLE,((View)get(browser,"detailPane")).getVisibility());
         assertEquals(View.GONE,((View)get(browser,"nowDescription")).getVisibility());assertEquals(View.GONE,((View)get(browser,"detailName")).getVisibility());
         EpgGuideOverlay epg=new EpgGuideOverlay(activity,null);assertNull(epg.findViewWithTag("mobile-epg-detail-scroll"));
         LinearLayout.LayoutParams description = (LinearLayout.LayoutParams)((TextView)get(epg,"description")).getLayoutParams();

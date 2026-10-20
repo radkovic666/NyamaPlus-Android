@@ -13,12 +13,21 @@ public final class PlaylistRepository {
     interface Downloader { void download(Context context, String url, File target) throws Exception; }
     static Downloader downloader = HttpUtil::downloadToFile;
     private static java.util.concurrent.FutureTask<List<Channel>> refreshInFlight;
+    private static boolean deactivationPending;
+
+    static void awaitDeactivationQuiescence() throws InterruptedException {
+        java.util.concurrent.FutureTask<List<Channel>> pending;
+        synchronized (PlaylistRepository.class) { deactivationPending = true; pending = refreshInFlight; }
+        if (pending != null) try { pending.get(); } catch (java.util.concurrent.ExecutionException ignored) { }
+    }
+    static synchronized void finishDeactivationRequest() { deactivationPending = false; }
 
     public static File cacheFile(Context context) { return new File(context.getFilesDir(), "playlist.m3u"); }
 
     public static List<Channel> refresh(Context context) throws Exception {
         java.util.concurrent.FutureTask<List<Channel>> task;
         synchronized (PlaylistRepository.class) {
+            if (deactivationPending) throw new java.io.IOException("deactivation_in_progress");
             if (refreshInFlight == null) {
                 Context app = context.getApplicationContext();
                 refreshInFlight = new java.util.concurrent.FutureTask<>(() -> refreshOnce(app));
@@ -60,8 +69,13 @@ public final class PlaylistRepository {
             throw new IllegalStateException("Playlist downloaded but contains no playable channels");
         }
 
-        replace(candidate, cache);
-        config.setPlaylistLastRefresh(System.currentTimeMillis());
+        synchronized (PlaylistRepository.class) {
+            if (!url.equals(config.playlistUrl())) {
+                candidate.delete(); throw new java.io.IOException("playlist_configuration_changed");
+            }
+            replace(candidate, cache);
+            config.setPlaylistLastRefresh(System.currentTimeMillis());
+        }
         DeviceLinking.playlistRefreshed();
         return channels;
     }

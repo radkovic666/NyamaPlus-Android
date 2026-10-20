@@ -14,6 +14,7 @@ import java.util.concurrent.ExecutorService;
 /** Process-only entitlement; never restore authorization from cached URLs or account status. */
 final class ActivationAccess implements Application.ActivityLifecycleCallbacks {
     private static volatile boolean authorized;
+    private static volatile boolean revokeSupported, deactivating;
     private static volatile SubscriptionInfo subscription = SubscriptionInfo.UNKNOWN;
     private static ActivationResponse pendingRenewal;
     private static ActivationAccess instance;
@@ -58,10 +59,11 @@ final class ActivationAccess implements Application.ActivityLifecycleCallbacks {
     }
 
     static boolean accept(Context context, ActivationResponse response) {
-        authorized = false;
+        authorized = false; revokeSupported = false;
         pendingRenewal = null;
         Config config = new Config(context);
         if (!config.saveActivation(response)) { DeviceLinking.denied(); return false; }
+        revokeSupported = response.revokeCurrentDeviceSupported;
         subscription = response.subscription.observedAt(android.os.SystemClock.elapsedRealtime());
         if (!response.active) { DeviceLinking.denied(); return true; }
         authorizedAt = android.os.SystemClock.elapsedRealtime();
@@ -70,7 +72,19 @@ final class ActivationAccess implements Application.ActivityLifecycleCallbacks {
         return true;
     }
 
-    static void deny() { authorized = false; pendingRenewal = null; DeviceLinking.denied(); }
+    static void deny() {
+        authorized = false; revokeSupported = false; pendingRenewal = null; DeviceLinking.denied();
+        if (instance != null) { instance.generation++; instance.main.removeCallbacks(instance.refresh); }
+    }
+
+    static boolean supportsDeviceRevoke() { return revokeSupported; }
+    static void setDeactivating(boolean value) {
+        deactivating = value;
+        if (instance == null) return;
+        if (value) {
+            instance.generation++; instance.main.removeCallbacks(instance.refresh); instance.accountUpdates.clear();
+        } else if (authorized && instance.started > 0) instance.schedule();
+    }
 
     static SubscriptionInfo subscription() { return subscription; }
 
@@ -93,7 +107,7 @@ final class ActivationAccess implements Application.ActivityLifecycleCallbacks {
     }
 
     private void refresh(Activity current, Runnable updated) {
-        if (current == null || current instanceof ActivationActivity || !ActivationStore.managed(context) || !authorized) return;
+        if (deactivating || current == null || current instanceof ActivationActivity || !ActivationStore.managed(context) || !authorized) return;
         if (updated != null) accountUpdates.add(updated);
         main.removeCallbacks(refresh);
         if (refreshing) return; // Reuse an authorization check already in flight.

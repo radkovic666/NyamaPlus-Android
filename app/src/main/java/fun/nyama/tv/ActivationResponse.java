@@ -7,6 +7,7 @@ import java.net.URI;
 final class ActivationResponse {
     final String authorizationDeviceId, authorizationToken;
     final boolean active;
+    final boolean revokeCurrentDeviceSupported;
     final SubscriptionInfo subscription;
     final String playlist, epg, pukanki, payment, username, clientNumber;
 
@@ -16,6 +17,8 @@ final class ActivationResponse {
         authorizationDeviceId = deviceId;
         authorizationToken = token;
         if (!body.optBoolean("ok")) throw new ActivationApi.Failure(body.optString("error", "server_unavailable"), 0);
+        JSONObject capabilities = body.optJSONObject("capabilities");
+        revokeCurrentDeviceSupported = capabilities != null && Boolean.TRUE.equals(capabilities.opt("revoke_current_device"));
         subscription = SubscriptionInfo.from(body, 0L);
         String status = body.optString("access_status");
         active = "active".equals(status);

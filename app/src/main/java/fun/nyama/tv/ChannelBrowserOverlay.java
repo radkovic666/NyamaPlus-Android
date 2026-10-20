@@ -236,22 +236,15 @@ public final class ChannelBrowserOverlay extends FrameLayout {
 
         View divider2 = new View(context);
         divider2.setBackgroundColor(0x7730343B);
-        columns.addView(divider2, portraitPhone
-                ? new LinearLayout.LayoutParams(-1, 0)
-                : new LinearLayout.LayoutParams(dp(1), -1));
+        if (!compact) columns.addView(divider2, new LinearLayout.LayoutParams(dp(1), -1));
 
         detailPane = pane(0xC00D0F13);
         LinearLayout detail = detailPane;
         detail.setPadding(dp(portraitPhone ? 14 : (compact ? 14 : 30)), dp(portraitPhone ? 8 : (compact ? 8 : 20)),
                 dp(portraitPhone ? 14 : (compact ? 14 : 30)), dp(portraitPhone ? 8 : (compact ? 8 : 20)));
         if (portraitPhone) detail.setBackground(rounded(0xE60D0F13, 12));
-        if (compact && !portraitPhone) {
-            NestedScrollView detailScroll = new NestedScrollView(context);
-            detailScroll.setTag("mobile-programme-detail-scroll"); detailScroll.setFillViewport(true);
-            detailScroll.addView(detail, new NestedScrollView.LayoutParams(-1, -2));
-            columns.addView(detailScroll, new LinearLayout.LayoutParams(0, -1, 0.30f));
-        } else columns.addView(detail, portraitPhone ? new LinearLayout.LayoutParams(-1, -2)
-                : new LinearLayout.LayoutParams(0, -1, 0.30f));
+        if (compact) detail.setVisibility(GONE);
+        else columns.addView(detail, new LinearLayout.LayoutParams(0, -1, 0.30f));
 
         detailLogo = new ImageView(context);
         detailLogo.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
@@ -327,17 +320,18 @@ public final class ChannelBrowserOverlay extends FrameLayout {
         });
     }
 
-    @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
-        super.onSizeChanged(width, height, oldWidth, oldHeight);
-        if (!portraitPhone || mobileTop == null) return;
-        int usable = Math.max(0, height - mobileTop.getMeasuredHeight());
-        LinearLayout.LayoutParams categories = (LinearLayout.LayoutParams) categoryPane.getLayoutParams();
-        int categoryMinimum = categoryPane.getChildAt(0).getMeasuredHeight() + dp(64);
-        categories.height = Math.max(categoryMinimum, Math.max(dp(112), Math.round(usable * 0.24f)));
-        categoryPane.setLayoutParams(categories);
-        LinearLayout.LayoutParams channels = (LinearLayout.LayoutParams) channelPane.getLayoutParams();
-        channels.height = Math.max(dp(180), Math.round(usable * 0.48f));
-        channelPane.setLayoutParams(channels);
+    @Override protected void onMeasure(int widthSpec, int heightSpec) {
+        if (portraitPhone && mobileTop != null && MeasureSpec.getMode(heightSpec) != MeasureSpec.UNSPECIFIED) {
+            mobileTop.measure(widthSpec, MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+            View categoryHeader = categoryPane.getChildAt(0);
+            categoryHeader.measure(widthSpec, MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+            int usable = Math.max(0, MeasureSpec.getSize(heightSpec) - mobileTop.getMeasuredHeight());
+            LinearLayout.LayoutParams categories = (LinearLayout.LayoutParams) categoryPane.getLayoutParams();
+            categories.height = Math.max(categoryHeader.getMeasuredHeight() + dp(64), Math.max(dp(112), Math.round(usable * 0.24f)));
+            LinearLayout.LayoutParams channels = (LinearLayout.LayoutParams) channelPane.getLayoutParams();
+            channels.height = Math.max(dp(180), Math.round(usable * 0.72f));
+        }
+        super.onMeasure(widthSpec, heightSpec);
     }
 
     /** Rebuild only orientation-dependent menu geometry; never reload the live session. */
@@ -728,6 +722,7 @@ public final class ChannelBrowserOverlay extends FrameLayout {
 
     private void updateDetail() {
         updateClock();
+        if (compact) return;
         if (selectedChannel < 0 || selectedChannel >= filtered.size()) {
             detailLogo.setImageDrawable(null);
             detailNumber.setText("");

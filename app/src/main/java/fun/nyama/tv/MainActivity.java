@@ -450,6 +450,9 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
 
         cornerClock = new OutlineTextView(this);
         cornerClock.setSingleLine(true);
+        // TextView centers a single line inside a huge scrolling layout by default.
+        // This clock draws in view coordinates, so that pre-draw scroll would hide its glyphs.
+        cornerClock.setHorizontallyScrolling(false);
         cornerClock.setTextColor(Color.WHITE);
         cornerClock.setTextSize(UiTheme.sp(this, 15) * config.clockScale());
         cornerClock.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
@@ -905,6 +908,17 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
         MainActivity activity = activeInstance.get();
         if (activity == null || activity.isFinishing()) return;
         activity.runOnUiThread(activity::gracefulExit);
+    }
+
+    static void stopForDeactivation() {
+        onDemandPlaybackActive = false; onDemandSession++;
+        MainActivity activity = activeInstance.get();
+        if (activity == null) return;
+        activity.playGeneration++;
+        activity.hideRefreshSuccess();
+        if (activity.player != null) {
+            activity.player.setPlayWhenReady(false); activity.player.stop(); activity.player.clearMediaItems();
+        }
     }
 
     /** Own the live playback gate before constructing/loading the VOD document. */

@@ -189,4 +189,11 @@
     <string name="card_seasons_short">%1$s сезона</string>
     <string name="card_episodes_short">%1$s еп.</string>
     <string name="card_votes_short">%1$s гласа</string>
+    <string name="deactivate">Деактивирай</string>
+    <string name="deactivate_title">Деактивиране на устройството</string>
+    <string name="deactivate_message">Това ще премахне това устройство от профила Ви и ще освободи място за друго устройство. Абонаментът Ви няма да бъде прекратен.</string>
+    <string name="deactivating">Деактивиране…</string>
+    <string name="deactivate_unavailable">Деактивирането ще бъде достъпно, когато сървърът потвърди поддръжка за освобождаване и на двете места за устройството.</string>
+    <string name="deactivate_error">Деактивирането не може да бъде завършено. Опитайте отново.</string>
+    <string name="deactivate_link_error">Връзката на устройството не може да бъде потвърдена. Опитайте след обичайно обновяване на плейлиста или се свържете с поддръжката.</string>
 </resources>

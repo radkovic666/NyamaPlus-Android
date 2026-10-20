@@ -4,7 +4,6 @@
         <item name="android:windowFullscreen">true</item>
         <item name="android:colorAccent">#FFFFFF</item>
         <item name="android:navigationBarColor">#000000</item>
-        <item name="android:windowLightNavigationBar">false</item>
     </style>
 
     <style name="AppTheme.Translucent" parent="AppTheme">

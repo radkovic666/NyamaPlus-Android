@@ -34,6 +34,10 @@ public final class SettingsActivity extends Activity {
     private final android.os.Handler accountUi = new android.os.Handler(android.os.Looper.getMainLooper());
     private final Runnable subscriptionTick = this::updateSubscription;
     private boolean accountVisible;
+    private Button deactivateButton;
+    private TextView deactivateStatus;
+    private android.widget.ProgressBar deactivateProgress;
+    private final DeviceDeactivation.Listener deactivationListener = this::updateDeactivationState;
     private UpdateManager updateManager;
     private boolean suppressNextUserLeaveHint;
 
@@ -54,10 +58,11 @@ public final class SettingsActivity extends Activity {
         if (isFinishing() || !ActivationAccess.require(this)) return;
         suppressNextUserLeaveHint = false;
         updateDataUsage();
+        DeviceDeactivation.instance().observe(deactivationListener);
         accountVisible = true;
         updateSubscription();
         if (ActivationStore.managed(this)) ActivationAccess.refreshAccount(this, () -> {
-            if (accountVisible && !isFinishing()) updateSubscription();
+            if (accountVisible && !isFinishing()) { updateSubscription(); updateDeactivationState(); }
         });
         if (updateManager != null) updateManager.onResume();
     }
@@ -83,12 +88,14 @@ public final class SettingsActivity extends Activity {
     }
 
     @Override protected void onPause() {
+        DeviceDeactivation.instance().forget(deactivationListener);
         accountVisible = false;
         accountUi.removeCallbacks(subscriptionTick);
         super.onPause();
     }
 
     @Override protected void onDestroy() {
+        DeviceDeactivation.instance().forget(deactivationListener);
         accountVisible = false;
         accountUi.removeCallbacksAndMessages(null);
         if (updateManager != null) updateManager.destroy();
@@ -296,9 +303,47 @@ public final class SettingsActivity extends Activity {
         cp.setMargins(0, dp(22), 0, 0);
         root.addView(close, cp);
 
+        if (ActivationStore.managed(this)) {
+            LinearLayout deactivateCard = card();
+            deactivateCard.setTag("deactivation-section");
+            deactivateCard.addView(description(getString(R.string.deactivate_message)));
+            deactivateButton = professionalButton(getString(R.string.deactivate));
+            deactivateButton.setTag("deactivate-device");
+            deactivateButton.setOnClickListener(v -> confirmDeactivation());
+            deactivateCard.addView(deactivateButton, new LinearLayout.LayoutParams(-1, phone ? -2 : dp(56)));
+            deactivateProgress = new android.widget.ProgressBar(this);
+            deactivateCard.addView(deactivateProgress, new LinearLayout.LayoutParams(dp(28), dp(28)));
+            deactivateStatus = description("");
+            deactivateCard.addView(deactivateStatus);
+            addSection(root, getString(R.string.deactivate), deactivateCard);
+            updateDeactivationState();
+        }
+
         autostart.requestFocus();
         return phone ? MobileBottomNav.wrap(this, scroll, AppSidebar.SECTION_SETTINGS,
                 MobileBottomNav.destinations(this, AppSidebar.SECTION_SETTINGS)) : scroll;
+    }
+
+    private void confirmDeactivation() {
+        if (!ActivationStore.managed(this) || !ActivationAccess.supportsDeviceRevoke() || DeviceDeactivation.instance().busy()) return;
+        new AlertDialog.Builder(this).setTitle(R.string.deactivate_title).setMessage(R.string.deactivate_message)
+                .setNegativeButton(R.string.cancel, null)
+                .setPositiveButton(R.string.deactivate, (dialog, which) -> DeviceDeactivation.instance().start(this)).show();
+    }
+
+    private void updateDeactivationState() {
+        if (deactivateButton == null) return;
+        DeviceDeactivation operation = DeviceDeactivation.instance();
+        boolean supported = ActivationAccess.supportsDeviceRevoke();
+        deactivateButton.setEnabled(supported && !operation.busy());
+        deactivateButton.setText(operation.busy() ? R.string.deactivating : R.string.deactivate);
+        deactivateProgress.setVisibility(operation.busy() ? View.VISIBLE : View.GONE);
+        String error = operation.error();
+        int text = !supported ? R.string.deactivate_unavailable
+                : ("device_link_required".equals(error) || "device_link_conflict".equals(error) || "device_link_ambiguous".equals(error))
+                ? R.string.deactivate_link_error : R.string.deactivate_error;
+        deactivateStatus.setText(!supported || !error.isEmpty() ? getString(text) : "");
+        deactivateStatus.setVisibility(!supported || !error.isEmpty() ? View.VISIBLE : View.GONE);
     }
 
     private void openInformationLink(String url) {

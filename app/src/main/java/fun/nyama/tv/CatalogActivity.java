@@ -724,9 +724,11 @@ public final class CatalogActivity extends Activity {
         RadioGroup sortGroup = new RadioGroup(this);
         sortGroup.setOrientation(RadioGroup.VERTICAL);
         int initial = Math.max(0, java.util.Arrays.asList(modes).indexOf(sortMode));
+        final int[] sortIds = new int[sortLabels.length];
         for (int i = 0; i < sortLabels.length; i++) {
             RadioButton rb = new RadioButton(this);
-            rb.setId(6100 + i);
+            sortIds[i] = View.generateViewId();
+            rb.setId(sortIds[i]);
             rb.setText(sortLabels[i]);
             rb.setTextColor(0xFFD8DEE6);
             rb.setTextSize(UiTheme.sp(this, 14));
@@ -776,7 +778,9 @@ public final class CatalogActivity extends Activity {
             dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(0xFFB8C0CA);
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
                 favoritesOnly = favoriteCheck.isChecked();
-                int checked = sortGroup.getCheckedRadioButtonId() - 6100;
+                int checked = 0;
+                for (int i = 0; i < sortIds.length; i++)
+                    if (sortGroup.getCheckedRadioButtonId() == sortIds[i]) { checked = i; break; }
                 sortMode = modes[Math.max(0, Math.min(modes.length - 1, checked))];
                 selectedGenres.clear();
                 for (int i = 0; i < genreChecks.size(); i++) {

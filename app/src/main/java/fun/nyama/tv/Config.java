@@ -95,6 +95,17 @@ public final class Config {
         editor.apply();
     }
 
+    void clearProvisionedActivation() {
+        if (!ActivationStore.managed(context)) return;
+        synchronized (PlaylistRepository.class) {
+            if (!prefs.edit().remove(K_PLAYLIST).remove(K_EPG).remove(K_PUKANKI)
+                    .remove(K_PLAYLIST_REFRESH).remove(K_EPG_REFRESH)
+                    .remove("activation_username").remove("activation_client_number").commit())
+                throw new IllegalStateException("storage_unavailable");
+            for (String suffix : new String[]{"", ".bak", ".new"}) new java.io.File(context.getFilesDir(), "playlist.m3u" + suffix).delete();
+        }
+    }
+
     // Provisioned playback does not require opening the administrator form. Settings still
     // require a separately chosen PIN; managed mode is never itself an entitlement check.
     public boolean isConfigured() { return !playlistUrl().isEmpty() && (hasPin() || ActivationStore.managed(context)); }

@@ -113,6 +113,20 @@ final class ActivationStore implements ActivationController.Credentials {
         }
     }
 
+    boolean deactivateIfCurrent(String id, String token) throws Exception {
+        synchronized (LOCK) {
+            JSONObject record = read();
+            String current = record.optString("activation_token");
+            // An in-flight authoritative config rejection may already have removed this token.
+            // An installed newer token must always survive the delayed revoke response.
+            if (!id.equals(record.optString("device_id")) || (!token.equals(current) && !current.isEmpty())) return false;
+            record.remove("activation_token");
+            write(record); // Keep managed mode and the installation ID: never fall back to manual access.
+            new Config(context).clearProvisionedActivation();
+            return true;
+        }
+    }
+
     @Override public void clearToken(String expectedToken) throws Exception {
         synchronized (LOCK) {
             JSONObject record = read();

@@ -81,6 +81,7 @@ public final class MoviePlayerActivity extends Activity {
     private boolean closeArmed;
     private boolean resumeTvWhenClosing;
     private long livePlaybackSession;
+    private static java.lang.ref.WeakReference<MoviePlayerActivity> activePlayer = new java.lang.ref.WeakReference<>(null);
     private boolean providerMenuMode;
     private boolean returnToSeries;
     private boolean playbackFailed;
@@ -122,6 +123,7 @@ public final class MoviePlayerActivity extends Activity {
     @Override protected void onCreate(Bundle state) {
         long createdAt = android.os.SystemClock.elapsedRealtime();
         super.onCreate(state);
+        activePlayer = new java.lang.ref.WeakReference<>(this);
         config = new Config(this);
         livePlaybackSession = MainActivity.beginOnDemandPlayback();
         if (!ActivationAccess.require(this)) return;
@@ -1379,7 +1381,16 @@ public final class MoviePlayerActivity extends Activity {
         }
     }
 
+    static void stopForDeactivation() {
+        MoviePlayerActivity activity = activePlayer.get();
+        if (activity == null || activity.isDestroyed()) return;
+        activity.releaseMovieWebView();
+        activity.livePlaybackSession = 0; activity.resumeTvWhenClosing = false;
+        activity.finish();
+    }
+
     @Override protected void onDestroy() {
+        if (activePlayer.get() == this) activePlayer.clear();
         leavingPlayback = true;
         main.removeCallbacks(clearCloseArm);
         main.removeCallbacks(hideControls);

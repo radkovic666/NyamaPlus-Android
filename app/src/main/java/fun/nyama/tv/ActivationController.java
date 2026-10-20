@@ -61,6 +61,27 @@ final class ActivationController {
         }
     }
 
+    static final class Revocation {
+        final String deviceId, token;
+        Revocation(String deviceId, String token) { this.deviceId = deviceId; this.token = token; }
+    }
+
+    Revocation revokeCurrentDevice() throws Exception {
+        String token = credentials.token();
+        if (!token.matches("[0-9a-f]{64}")) throw new ActivationApi.Failure("activation_invalid", 0);
+        String id = credentials.deviceId();
+        if (!id.matches("[0-9a-f]{64}")) throw new ActivationApi.Failure("invalid_input", 0);
+        try {
+            JSONObject reply = api.post("revoke", new JSONObject().put("device_id", id), token);
+            if (!Boolean.TRUE.equals(reply.opt("revoked")) || !Boolean.TRUE.equals(reply.opt("playlist_binding_released")))
+                throw new ActivationApi.Failure("deactivation_unavailable", 0);
+        } catch (ActivationApi.Failure failure) {
+            if (!"activation_invalid".equals(failure.code)) throw failure;
+            // The authoritative server already considers this token revoked. Clear only its stale local state.
+        }
+        return new Revocation(id, token);
+    }
+
     static String newInstallationId() {
         byte[] random = new byte[32];
         new SecureRandom().nextBytes(random);
