@@ -100,9 +100,10 @@ public final class TitleDetailActivity extends Activity {
     private View buildUi() {
         boolean phone = config.isPhoneMode();
         boolean tvSeries = !phone && "series".equals(section);
+        boolean phoneMovie = phone && "movies".equals(section);
         int accent = UiTheme.accent(this);
         ScrollView scroll = new ScrollView(this);
-        scroll.setBackgroundColor(phone ? 0xD6090B0E : Color.TRANSPARENT);
+        scroll.setBackgroundColor(phoneMovie ? 0x80090B0E : phone ? 0xD6090B0E : Color.TRANSPARENT);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(phone ? 18 : 40), dp(phone ? 16 : 28), dp(phone ? 18 : 40), dp(26));
@@ -157,15 +158,15 @@ public final class TitleDetailActivity extends Activity {
 
         LinearLayout actions = horizontal();
         actions.setGravity(phone ? Gravity.CENTER_HORIZONTAL : Gravity.START | Gravity.CENTER_VERTICAL);
-        Button watch = tvSeries ? null : primaryButton(getString(R.string.watch_now), phone ? 18 : 15, accent);
+        Button watch = "series".equals(section) ? null : primaryButton(getString(R.string.watch_now), phone ? 18 : 15, accent);
         watchButton = watch;
         if (watch != null) watch.setOnClickListener(v -> openPlayer());
         favoriteButton = secondaryButton("", phone ? 17 : 14, accent);
         favoriteButton.setOnClickListener(v -> { favorites.toggle(id); updateFavoriteButton(); });
         updateFavoriteButton();
         if (phone) {
-            actions.addView(watch, new LinearLayout.LayoutParams(0, dp(54), 1f));
-            LinearLayout.LayoutParams fp = new LinearLayout.LayoutParams(0, dp(54), 1f); fp.setMargins(dp(10),0,0,0);
+            if (watch != null) actions.addView(watch, new LinearLayout.LayoutParams(0, dp(54), 1f));
+            LinearLayout.LayoutParams fp = new LinearLayout.LayoutParams(0, dp(54), 1f); fp.setMargins(dp(watch == null ? 0 : 10),0,0,0);
             actions.addView(favoriteButton, fp);
         } else {
             // Android TV: deliberately compact buttons so the poster/info remains the focus.
@@ -210,14 +211,18 @@ public final class TitleDetailActivity extends Activity {
 
         if (watch != null) watch.requestFocus();
         else favoriteButton.requestFocus();
-        if (phone) return MobileBottomNav.wrap(this,scroll,section,MobileBottomNav.destinations(this,""));
+        if (phone && !phoneMovie) return MobileBottomNav.wrap(this,scroll,section,MobileBottomNav.destinations(this,""));
         FrameLayout screen = new FrameLayout(this);
-        cinematicBackground = new TvCinematicBackground(this);
+        cinematicBackground = phoneMovie
+                ? new TvCinematicBackground(this, TvArtworkLoader.mobilePoster(this), TvArtworkLoader.mobilePoster(this))
+                : new TvCinematicBackground(this);
         screen.addView(cinematicBackground, new FrameLayout.LayoutParams(-1, -1));
-        screen.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
+        View foreground = phoneMovie ? MobileBottomNav.wrap(this,scroll,section,MobileBottomNav.destinations(this,"")) : scroll;
+        if (phoneMovie) foreground.setBackgroundColor(Color.TRANSPARENT);
+        screen.addView(foreground, new FrameLayout.LayoutParams(-1, -1));
         cinematicBackground.setFallback(PukankiApi.posterUrl(this, id), true);
         String suppliedArtwork = safe(getIntent().getStringExtra("tv_artwork_url"));
-        if ("movies".equals(section) && !suppliedArtwork.isEmpty())
+        if (!phone && "movies".equals(section) && !suppliedArtwork.isEmpty())
             cinematicBackground.show(suppliedArtwork, getIntent().getBooleanExtra("tv_artwork_portrait", true));
         else cinematicBackground.showFallback();
         return screen;
@@ -403,7 +408,7 @@ public final class TitleDetailActivity extends Activity {
     }
 
     private void openPlayer() {
-        if (!config.isPhoneMode() && "series".equals(section)) {
+        if ("series".equals(section)) {
             // No generic series route replaces a missing exact episode selection.
             if (seriesSelection == null) return;
             TvSeriesMetadata.Episode episode = seriesSelection.selectedEpisode();

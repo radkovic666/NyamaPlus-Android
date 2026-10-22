@@ -136,7 +136,7 @@ final class TvEpisodeCard extends FrameLayout {
     }
 
     int preferredWidth() {
-        if (phone) return LayoutParams.MATCH_PARENT;
+        if (phone) return dp(Math.max(1, getResources().getConfiguration().screenWidthDp - 68));
         int screen = getResources().getConfiguration().screenWidthDp;
         return dp(Math.max(350, Math.min(560, Math.round((screen > 0 ? screen : 960) * .45f))));
     }

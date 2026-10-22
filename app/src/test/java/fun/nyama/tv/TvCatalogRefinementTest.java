@@ -529,4 +529,64 @@ public class TvCatalogRefinementTest {
         reset();layout();assertEquals(false,get("browseRequested"));assertEquals(View.GONE,grid.getVisibility());
     }
 
+    private void phoneLayout(int width,int height) {
+        root.measure(View.MeasureSpec.makeMeasureSpec(width,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(height,View.MeasureSpec.EXACTLY));
+        root.layout(0,0,width,height);Shadows.shadowOf(Looper.getMainLooper()).idle();
+        root.measure(View.MeasureSpec.makeMeasureSpec(width,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(height,View.MeasureSpec.EXACTLY));
+        root.layout(0,0,width,height);
+    }
+    private int phoneGeneration() throws Exception {
+        return ((java.util.concurrent.atomic.AtomicInteger)get("requestGeneration")).get();
+    }
+    private void phoneResult(int generation,CatalogPage result) throws Exception {
+        Method method=CatalogActivity.class.getDeclaredMethod("applyPhonePage",int.class,CatalogPage.class);method.setAccessible(true);method.invoke(activity,generation,result);
+    }
+    @Test public void mobileMoviePagesStartAtTopInPortraitAndLandscape() throws Exception { assertMobilePages("movies"); }
+    @Test public void mobileSeriesPagesStartAtTopInPortraitAndLandscape() throws Exception { assertMobilePages("series"); }
+    private void assertMobilePages(String section) throws Exception {
+        catalog(section,true);List<CatalogItem> items=titles(30);
+        search().setText("Movie");genres().add("Drama");set("sortMode","rating");set("favoritesOnly",true);
+        for(int[] size:new int[][]{{360,800},{800,360}}) {
+            phoneResult(phoneGeneration(),new CatalogPage(items,90,1,3));phoneLayout(size[0],size[1]);
+            grid.setSelectionFromTop(18,-20);phoneLayout(size[0],size[1]);assertTrue(grid.getFirstVisiblePosition()>0);
+            ((Button)get("next")).performClick();int generation=phoneGeneration();
+            assertTrue(grid.getFirstVisiblePosition()>0);assertEquals(true,get("mobileScrollToFirstAfterPageChange"));
+            phoneResult(generation,new CatalogPage(items,90,2,3));phoneLayout(size[0],size[1]);
+            assertEquals(0,grid.getFirstVisiblePosition());assertEquals(grid.getPaddingTop(),grid.getChildAt(0).getTop());
+            assertEquals(false,get("mobileScrollToFirstAfterPageChange"));assertEquals(2,get("page"));
+            grid.setSelectionFromTop(18,-20);phoneLayout(size[0],size[1]);assertTrue(grid.getFirstVisiblePosition()>0);
+            ((Button)get("prev")).performClick();phoneResult(phoneGeneration(),new CatalogPage(items,90,1,3));phoneLayout(size[0],size[1]);
+            assertEquals(0,grid.getFirstVisiblePosition());assertEquals(grid.getPaddingTop(),grid.getChildAt(0).getTop());
+            assertEquals(Arrays.asList("Drama"),genres());assertEquals("rating",get("sortMode"));assertEquals(true,get("favoritesOnly"));assertEquals("Movie",search().getText().toString());
+        }
+    }
+    @Test public void mobileSamePageDetailAndRotationPreserveTheVisibleRowAndOffset() throws Exception {
+        catalog("movies",true);List<CatalogItem> items=titles(30);
+        phoneResult(phoneGeneration(),new CatalogPage(items,90,1,3));phoneLayout(360,800);
+        grid.setSelectionFromTop(18,-20);phoneLayout(360,800);
+        int first=grid.getFirstVisiblePosition(),top=grid.getChildAt(0).getTop()-grid.getPaddingTop();assertTrue(first>0);
+        Method open=CatalogActivity.class.getDeclaredMethod("openDetail",CatalogItem.class);open.setAccessible(true);open.invoke(activity,items.get(first));
+        phoneResult(phoneGeneration(),new CatalogPage(items,90,1,3));phoneLayout(360,800);
+        assertEquals(first,grid.getFirstVisiblePosition());assertEquals(top,grid.getChildAt(0).getTop()-grid.getPaddingTop());
+        android.os.Bundle state=new android.os.Bundle();Method save=CatalogActivity.class.getDeclaredMethod("onSaveInstanceState",android.os.Bundle.class);save.setAccessible(true);save.invoke(activity,state);
+        assertEquals(first,state.getInt("grid_pos"));assertFalse(state.getBoolean("mobile_page_top"));
+        Method restore=CatalogActivity.class.getDeclaredMethod("restoreState",android.os.Bundle.class);restore.setAccessible(true);restore.invoke(activity,state);
+        grid.setSelectionFromTop(0,0);phoneLayout(360,800);
+        phoneResult(phoneGeneration(),new CatalogPage(items,90,1,3));phoneLayout(360,800);
+        assertEquals(first,grid.getFirstVisiblePosition());assertEquals(top,grid.getChildAt(0).getTop()-grid.getPaddingTop());
+    }
+    @Test public void mobileStalePageCallbacksAndPostedScrollResetsCannotReplaceNewerState() throws Exception {
+        catalog("series",true);List<CatalogItem> items=titles(30);
+        phoneResult(0,new CatalogPage(items,90,1,3));phoneLayout(360,800);
+        Method change=CatalogActivity.class.getDeclaredMethod("changeCatalogPage",int.class);change.setAccessible(true);
+        change.invoke(activity,1);int older=phoneGeneration();change.invoke(activity,1);int newer=phoneGeneration();
+        phoneResult(newer,new CatalogPage(items,90,3,3));
+        phoneResult(older,new CatalogPage(items.subList(0,1),90,2,3));phoneLayout(360,800);
+        assertEquals(3,get("page"));assertEquals(30,grid.getCount());assertEquals(0,grid.getFirstVisiblePosition());
+        // A reset posted for an already-applied page must also be ignored once another request starts.
+        change.invoke(activity,-1);phoneResult(phoneGeneration(),new CatalogPage(items,90,2,3));
+        invoke("loadPhonePage");grid.setSelectionFromTop(18,-20);phoneLayout(360,800);
+        assertTrue(grid.getFirstVisiblePosition()>0);assertEquals(2,get("page"));
+    }
+
 }

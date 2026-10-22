@@ -181,28 +181,21 @@ final class TvSeriesSelectionView extends LinearLayout {
         episodesHeading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         episodesHeading.setPadding(0, dp(10), 0, dp(3));
         addView(episodesHeading);
-        if (phone) {
-            episodeRows = new LinearLayout(getContext());
-            episodeRows.setOrientation(VERTICAL);
-            episodeRows.setTag("episode-row");
-            addView(episodeRows, new LayoutParams(-1, -2));
-            if (!metadata.source.isEmpty()) {
-                TextView attribution = label(metadata.source, 12, 0xFFCDD6E0);
-                attribution.setTag("series-metadata-source");
-                attribution.setPadding(0, dp(10), 0, dp(4));
-                String source = safeSourceUrl(metadata.sourceUrl);
-                if (!source.isEmpty()) { attribution.setOnClickListener(v -> listener.onSource(source)); attribution.setMinHeight(dp(48)); }
-                addView(attribution);
-            }
-        } else {
-            HorizontalScrollView episodeScroll = horizontalScroll("episode-scroll");
-            episodeRows = horizontalRow();
-            episodeRows.setTag("episode-row");
-            episodeRows.setPadding(dp(4), dp(6), dp(4), dp(6));
-            episodeScroll.addView(episodeRows, new HorizontalScrollView.LayoutParams(-2, -2));
-            addView(episodeScroll, new LayoutParams(-1, -2));
-            episodeScroll.addOnLayoutChangeListener((view, left, top, right, bottom,
-                    oldLeft, oldTop, oldRight, oldBottom) -> fitEpisodeCards((HorizontalScrollView) view));
+        HorizontalScrollView episodeScroll = horizontalScroll("episode-scroll");
+        episodeRows = horizontalRow();
+        episodeRows.setTag("episode-row");
+        episodeRows.setPadding(dp(4), dp(6), dp(4), dp(6));
+        episodeScroll.addView(episodeRows, new HorizontalScrollView.LayoutParams(-2, -2));
+        addView(episodeScroll, new LayoutParams(-1, -2));
+        episodeScroll.addOnLayoutChangeListener((view, left, top, right, bottom,
+                oldLeft, oldTop, oldRight, oldBottom) -> fitEpisodeCards((HorizontalScrollView) view));
+        if (phone && !metadata.source.isEmpty()) {
+            TextView attribution = label(metadata.source, 12, 0xFFCDD6E0);
+            attribution.setTag("series-metadata-source");
+            attribution.setPadding(0, dp(10), 0, dp(4));
+            String source = safeSourceUrl(metadata.sourceUrl);
+            if (!source.isEmpty()) { attribution.setOnClickListener(v -> listener.onSource(source)); attribution.setMinHeight(dp(48)); }
+            addView(attribution);
         }
         int rememberedSeason = preferences.getInt(imdbId + ":season", -1);
         int initialSeason = seasons.get(0).number;
@@ -309,7 +302,7 @@ final class TvSeriesSelectionView extends LinearLayout {
             episodeRows.addView(card, lp);
             episodeCards.add(card);
         }
-        if (!phone) fitEpisodeCards((HorizontalScrollView) episodeRows.getParent());
+        fitEpisodeCards((HorizontalScrollView) episodeRows.getParent());
         saveSelection();
         refreshStates();
         refreshWatchProgress();
@@ -337,14 +330,14 @@ final class TvSeriesSelectionView extends LinearLayout {
         boolean resized = false;
         for (TvEpisodeCard card : episodeCards) {
             LayoutParams params = (LayoutParams) card.getLayoutParams();
-            int width = Math.min(card.preferredWidth(), available);
+            int width = phone ? available : Math.min(card.preferredWidth(), available);
             if (params.width != width) {
                 params.width = width;
                 card.setLayoutParams(params);
                 resized = true;
             }
         }
-        if (resized) viewport.post(() -> reveal(selectedEpisodeCard()));
+        if (resized && !phone) viewport.post(() -> reveal(selectedEpisodeCard()));
     }
 
     void refreshWatchProgress() {

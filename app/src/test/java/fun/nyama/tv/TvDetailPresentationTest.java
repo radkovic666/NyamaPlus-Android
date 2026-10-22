@@ -181,19 +181,32 @@ public class TvDetailPresentationTest {
         assertEquals(enriched, info.getText().toString());
     }
 
-    @Test public void phoneDetailKeepsOriginalScrollAndPersistentNavigationWithoutCinematicLayer() throws Exception {
+    @Test public void phoneMovieBackdropKeepsSharpPosterWatchAndPersistentNavigation() throws Exception {
         TitleDetailActivity detail = detail(true, "movies");
-        assertNull(get(detail, "cinematicBackground"));
+        TvCinematicBackground background=(TvCinematicBackground)get(detail,"cinematicBackground");assertNotNull(background);
+        assertEquals(PukankiApi.posterUrl(detail,IMDB),background.currentRequestedUrl());
         ViewGroup content = detail.findViewById(android.R.id.content);
         ViewGroup screen=(ViewGroup)content.getChildAt(0);
-        assertTrue(screen.getChildAt(0) instanceof ScrollView);
+        assertSame(background,screen.getChildAt(0));
+        ViewGroup foreground=(ViewGroup)screen.getChildAt(1);
+        assertEquals(android.graphics.Color.TRANSPARENT,((android.graphics.drawable.ColorDrawable)foreground.getBackground()).getColor());
+        assertTrue(foreground.getChildAt(0) instanceof ScrollView);
+        assertEquals(0x80090B0E,((android.graphics.drawable.ColorDrawable)foreground.getChildAt(0).getBackground()).getColor());
+        assertTrue(views(foreground).stream().anyMatch(v->v instanceof android.widget.ImageView && ((android.widget.ImageView)v).getScaleType()==android.widget.ImageView.ScaleType.FIT_CENTER));
+        Button watch=(Button)get(detail,"watchButton");assertNotNull(watch);watch.performClick();
+        Intent player=Shadows.shadowOf(detail).getNextStartedActivity();assertEquals("movies",player.getStringExtra("type"));assertEquals(IMDB,player.getStringExtra("id"));
+        for(int[] size:new int[][]{{360,800},{800,360}}) {
+            screen.measure(View.MeasureSpec.makeMeasureSpec(size[0],View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(size[1],View.MeasureSpec.EXACTLY));screen.layout(0,0,size[0],size[1]);
+            assertEquals(size[0],background.getWidth());assertEquals(size[1],background.getHeight());
+            assertTrue(foreground.getChildAt(0).getBottom()<=foreground.getChildAt(1).getTop());
+        }
         MobileBottomNav nav=screen.findViewWithTag("mobile-bottom-navigation");assertNotNull(nav);
         nav.revealTemporarily();nav.hideNow();assertEquals(View.VISIBLE,nav.getVisibility());
         nav.findViewWithTag("mobile-nav-movies").performClick();
         Intent destination=Shadows.shadowOf(detail).getNextStartedActivity();
         assertEquals(CatalogActivity.class.getName(),destination.getComponent().getClassName());
         assertEquals("movies",destination.getStringExtra(CatalogActivity.EXTRA_SECTION));
-        assertFalse(views(content).stream().anyMatch(view -> view instanceof TvCinematicBackground));
+        assertTrue(views(content).stream().anyMatch(view -> view instanceof TvCinematicBackground));
     }
 
     @Test public void tvInformationRetainsWorkingAttributionLinksOutsideEpisodeSelector() throws Exception {
@@ -217,4 +230,39 @@ public class TvDetailPresentationTest {
         assertFalse(views(phone).stream().filter(view -> view instanceof TextView)
                 .anyMatch(view -> ((TextView) view).getText().toString().contains("TVmaze")));
     }
+    @Test public void phoneSeriesRetainsDarkDetailsAndNavigationWithoutMovieBackdropOrWatch() throws Exception {
+        TitleDetailActivity detail=detail(true,"series");
+        assertNull(get(detail,"cinematicBackground"));assertNull(get(detail,"watchButton"));
+        assertNotNull(get(detail,"favoriteButton"));assertNotNull(detail.findViewById(android.R.id.content).findViewWithTag("mobile-bottom-navigation"));
+    }
+
+    @Test @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
+    public void mobileMovieRendersReadablePosterBackdropInPortraitAndLandscape() throws Exception {
+        TitleDetailActivity detail=detail(true,"movies");
+        TvCinematicBackground background=(TvCinematicBackground)get(detail,"cinematicBackground");
+        FrameLayout screen=(FrameLayout)background.getParent();View foreground=screen.getChildAt(1);
+        Bitmap poster=Bitmap.createBitmap(360,640,Bitmap.Config.RGB_565);
+        android.graphics.Canvas paint=new android.graphics.Canvas(poster);android.graphics.Paint brush=new android.graphics.Paint();
+        brush.setShader(new android.graphics.LinearGradient(0,0,360,640,0xFF0D77BB,0xFFED8A39,android.graphics.Shader.TileMode.CLAMP));paint.drawRect(0,0,360,640,brush);
+        brush.setShader(null);brush.setColor(0xFFF1D7AD);paint.drawRect(70,130,290,510,brush);
+        java.io.ByteArrayOutputStream bytes=new java.io.ByteArrayOutputStream();poster.compress(Bitmap.CompressFormat.PNG,100,bytes);
+        Bitmap blurred=TvArtworkLoader.decode(bytes.toByteArray(),true,360,640);
+        android.widget.ImageView[] layers=(android.widget.ImageView[])field(TvCinematicBackground.class,"images").get(background);
+        layers[0].setImageBitmap(blurred);layers[0].setAlpha(1f);
+        for(View v:views(foreground))if(v instanceof android.widget.ImageView&&((android.widget.ImageView)v).getScaleType()==android.widget.ImageView.ScaleType.FIT_CENTER)((android.widget.ImageView)v).setImageBitmap(poster);
+        Method render=TitleDetailActivity.class.getDeclaredMethod("renderInfo",JSONObject.class);render.setAccessible(true);
+        render.invoke(detail,new JSONObject().put("Plot","A cinematic story, with the original movie details and readable controls.").put("Director","Sample director"));
+        for(int[] size:new int[][]{{360,800},{800,360}}) {
+            screen.measure(View.MeasureSpec.makeMeasureSpec(size[0],View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(size[1],View.MeasureSpec.EXACTLY));screen.layout(0,0,size[0],size[1]);
+            Bitmap image=Bitmap.createBitmap(size[0],size[1],Bitmap.Config.ARGB_8888);screen.draw(new android.graphics.Canvas(image));
+            assertEquals(android.widget.ImageView.ScaleType.CENTER_CROP,layers[0].getScaleType());
+            int edge=image.getPixel(5,100);assertTrue(android.graphics.Color.red(edge)<130&&android.graphics.Color.green(edge)<130&&android.graphics.Color.blue(edge)<130);
+            assertNotEquals(android.graphics.Color.BLACK,edge);
+            String directory=System.getenv("NYAMA_UI_ARTIFACTS");
+            if(directory!=null){java.io.File folder=new java.io.File(directory);assertTrue(folder.isDirectory()||folder.mkdirs());try(java.io.FileOutputStream output=new java.io.FileOutputStream(new java.io.File(folder,"mobile-movie-"+size[0]+"x"+size[1]+".png"))){assertTrue(image.compress(Bitmap.CompressFormat.PNG,100,output));}}
+            image.recycle();
+        }
+        background.release();blurred.recycle();poster.recycle();
+    }
+
 }

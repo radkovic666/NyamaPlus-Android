@@ -82,6 +82,8 @@ public final class CatalogActivity extends Activity {
     private final ArrayList<String> selectedGenres = new ArrayList<>();
     private List<String> availableGenres = new ArrayList<>();
     private int restorePosition = -1;
+    private boolean mobileScrollToFirstAfterPageChange;
+    private int mobileRestoreTop;
     private String restoredQuery = "";
     private boolean firstResume = true;
     private boolean firstGridFocus = true;
@@ -205,7 +207,15 @@ public final class CatalogActivity extends Activity {
         out.putString("sort", sortMode);
         out.putBoolean("favorites", favoritesOnly);
         out.putStringArrayList("genres", new ArrayList<>(selectedGenres));
-        if (grid != null) { int p = grid.getSelectedItemPosition(); out.putInt("grid_pos", p >= 0 ? p : grid.getFirstVisiblePosition()); }
+        if (grid != null) {
+            int p = grid.getSelectedItemPosition();
+            out.putInt("grid_pos", config.isPhoneMode() ? mobileScrollToFirstAfterPageChange ? 0 : grid.getFirstVisiblePosition()
+                    : p >= 0 ? p : grid.getFirstVisiblePosition());
+            if (config.isPhoneMode()) {
+                out.putInt("mobile_grid_top", mobileGridTop());
+                out.putBoolean("mobile_page_top", mobileScrollToFirstAfterPageChange);
+            }
+        }
     }
 
     private void restoreState(Bundle state) {
@@ -219,6 +229,10 @@ public final class CatalogActivity extends Activity {
         ArrayList<String> genres = state.getStringArrayList("genres");
         if (genres != null) selectedGenres.addAll(genres);
         restorePosition = state.getInt("grid_pos", -1);
+        if (config.isPhoneMode()) {
+            mobileRestoreTop = state.getInt("mobile_grid_top", 0);
+            mobileScrollToFirstAfterPageChange = state.getBoolean("mobile_page_top", false);
+        }
     }
 
     private String stateKey(String suffix) { return section + ":" + suffix; }
@@ -233,6 +247,10 @@ public final class CatalogActivity extends Activity {
         sortMode = p.getString(stateKey("sort"), "reviews");
         favoritesOnly = p.getBoolean(stateKey("favorites"), false);
         restorePosition = p.getInt(stateKey("grid_pos"), -1);
+        if (config.isPhoneMode()) {
+            mobileRestoreTop = p.getInt(stateKey("mobile_grid_top"), 0);
+            mobileScrollToFirstAfterPageChange = p.getBoolean(stateKey("mobile_page_top"), false);
+        }
         String packed = p.getString(stateKey("genres"), "");
         if (packed != null && !packed.trim().isEmpty()) {
             for (String g : packed.split("\\|\\|", -1)) if (!g.trim().isEmpty()) selectedGenres.add(g.trim());
@@ -244,12 +262,14 @@ public final class CatalogActivity extends Activity {
         int pos = restorePosition;
         if (grid != null && grid.getCount() > 0) {
             int selected = grid.getSelectedItemPosition();
-            pos = selected >= 0 ? selected : grid.getFirstVisiblePosition();
+            pos = config.isPhoneMode() ? grid.getFirstVisiblePosition() : selected >= 0 ? selected : grid.getFirstVisiblePosition();
         }
         StringBuilder genres = new StringBuilder();
         for (String g : selectedGenres) { if (genres.length() > 0) genres.append("||"); genres.append(g); }
-        getSharedPreferences(STATE_PREFS, MODE_PRIVATE).edit()
-                .putBoolean(stateKey("browse_requested"), browseRequested)
+        SharedPreferences.Editor saved = getSharedPreferences(STATE_PREFS, MODE_PRIVATE).edit();
+        if (config.isPhoneMode()) saved.putInt(stateKey("mobile_grid_top"), mobileGridTop())
+                .putBoolean(stateKey("mobile_page_top"), mobileScrollToFirstAfterPageChange);
+        saved.putBoolean(stateKey("browse_requested"), browseRequested)
                 .putBoolean(stateKey("daily_browsing"), dailyBrowsing)
                 .putString(stateKey("browse_label"), browseLabel)
                 .putInt(stateKey("page"), page)
@@ -257,8 +277,13 @@ public final class CatalogActivity extends Activity {
                 .putString(stateKey("sort"), sortMode)
                 .putBoolean(stateKey("favorites"), favoritesOnly)
                 .putString(stateKey("genres"), genres.toString())
-                .putInt(stateKey("grid_pos"), Math.max(0, pos))
+                .putInt(stateKey("grid_pos"), config.isPhoneMode() && mobileScrollToFirstAfterPageChange ? 0 : Math.max(0, pos))
                 .apply();
+    }
+
+    private int mobileGridTop() {
+        return mobileScrollToFirstAfterPageChange || grid == null || grid.getChildCount() == 0 ? 0
+                : grid.getChildAt(0).getTop() - grid.getPaddingTop();
     }
 
     private View buildUi() {
@@ -670,6 +695,7 @@ public final class CatalogActivity extends Activity {
         if (target < 1 || target > totalPages) return;
         page = target;
         restorePosition = -1;
+        if (config.isPhoneMode()) { mobileScrollToFirstAfterPageChange = true; mobileRestoreTop = 0; }
         focusFirstAfterPageChange = !config.isPhoneMode();
         if (!config.isPhoneMode() && tvCatalogReady && !tvVisibleCatalog.isEmpty()) {
             applyTvLocalPage(tvVisibleCatalog, currentQuery());
@@ -873,17 +899,29 @@ public final class CatalogActivity extends Activity {
         List<String> genres = new ArrayList<>(selectedGenres);
         String favIds = favorites.csv();
         int requestedPage = page;
+        String requestedSort = sortMode;
+        boolean requestedFavorites = favoritesOnly;
         io.execute(() -> {
             try {
                 CatalogPage result = PukankiApi.fetchCatalog(this, section, requestedPage, PAGE_SIZE,
-                        q, genres, sortMode, favoritesOnly, favIds);
+                        q, genres, requestedSort, requestedFavorites, favIds);
                 if (generation != requestGeneration.get()) return;
-                runOnUiThread(() -> applyPage(result));
+                runOnUiThread(() -> applyPhonePage(generation, result));
             } catch (Exception e) {
                 if (generation != requestGeneration.get()) return;
-                runOnUiThread(() -> showLoadFailure(e));
+                runOnUiThread(() -> {
+                    if (currentPhoneRequest(generation)) showLoadFailure(e);
+                });
             }
         });
+    }
+
+    private boolean currentPhoneRequest(int generation) {
+        return generation == requestGeneration.get() && !isFinishing() && !isDestroyed();
+    }
+
+    private void applyPhonePage(int generation, CatalogPage result) {
+        if (currentPhoneRequest(generation)) applyPage(result);
     }
 
     /** Immutable state prevents an old filter request from being cached under new filter values. */
@@ -1218,7 +1256,15 @@ public final class CatalogActivity extends Activity {
             focusFirstAfterPageChange = false;
             return;
         }
-        if (focusFirstAfterPageChange && !config.isPhoneMode() && !result.items.isEmpty()) {
+        if (config.isPhoneMode() && mobileScrollToFirstAfterPageChange) {
+            mobileScrollToFirstAfterPageChange = false;
+            restorePosition = -1; mobileRestoreTop = 0;
+            int generation = requestGeneration.get();
+            grid.setSelectionFromTop(0, 0);
+            grid.post(() -> {
+                if (currentPhoneRequest(generation)) grid.setSelectionFromTop(0, 0);
+            });
+        } else if (focusFirstAfterPageChange && !config.isPhoneMode() && !result.items.isEmpty()) {
             landingFocusPending=false;
             focusFirstAfterPageChange = false;
             firstGridFocus = false;
@@ -1229,7 +1275,8 @@ public final class CatalogActivity extends Activity {
             });
         } else if (restorePosition >= 0 && !result.items.isEmpty()) {
             int pos = Math.min(restorePosition, result.items.size() - 1);
-            grid.setSelection(pos);
+            if (config.isPhoneMode()) { grid.setSelectionFromTop(pos, mobileRestoreTop); mobileRestoreTop = 0; }
+            else grid.setSelection(pos);
             restorePosition = -1;
         } else if (firstGridFocus && !config.isPhoneMode() && !result.items.isEmpty()) {
             firstGridFocus = false;
@@ -1242,6 +1289,7 @@ public final class CatalogActivity extends Activity {
         if (item == null) return;
         restorePosition = config.isPhoneMode() ? grid.getFirstVisiblePosition()
                 : Math.max(0, adapter.snapshot().indexOf(item));
+        if (config.isPhoneMode()) mobileRestoreTop = mobileGridTop();
         Intent i = new Intent(this, TitleDetailActivity.class);
         i.putExtra("id", item.id); i.putExtra("type", section); i.putExtra("title", item.title);
         i.putExtra("originalTitle", item.originalTitle); i.putExtra("year", item.year); i.putExtra("endYear", item.endYear);

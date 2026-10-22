@@ -45,12 +45,24 @@ final class TvArtworkLoader {
 
     TvArtworkLoader(Context context) { this(context, TvArtworkLoader::fetchBitmap); }
 
-    TvArtworkLoader(Context context, Fetch fetch) {
+    TvArtworkLoader(Context context, Fetch fetch) { this(context, fetch, false); }
+
+    static TvArtworkLoader mobilePoster(Context context) {
+        return mobilePoster(context, TvArtworkLoader::fetchBitmap);
+    }
+
+    static TvArtworkLoader mobilePoster(Context context, Fetch fetch) {
+        return new TvArtworkLoader(context, fetch, true);
+    }
+
+    private TvArtworkLoader(Context context, Fetch fetch, boolean mobilePoster) {
         this.fetch = fetch;
         ActivityManager manager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
         boolean lowMemory = manager != null && (manager.isLowRamDevice() || manager.getMemoryClass() <= 128);
         DisplayMetrics display = context.getResources().getDisplayMetrics();
-        int[] size = targetSize(display.widthPixels, display.heightPixels, lowMemory);
+        // Phone movie backdrops use the same bounded blurred poster across rotations.
+        // TV keeps its existing display-dependent target sizes and cache keys.
+        int[] size = mobilePoster ? new int[]{360, 640} : targetSize(display.widthPixels, display.heightPixels, lowMemory);
         width = size[0]; height = size[1];
         if (lowMemory) MEMORY.resize(LOW_MEMORY_CACHE_BYTES);
         worker.allowCoreThreadTimeOut(true);

@@ -716,7 +716,7 @@ public class TvSeriesSelectionTest {
         assertNull(summary.getEllipsize());
     }
 
-    @Test public void phoneSeriesAddsMetadataAndKeepsGenericFallback() throws Exception {
+    @Test public void phoneSeriesHasOnlyEpisodePlaybackActionsAndKeepsFavorites() throws Exception {
         TitleDetailActivity activity = detail(true, IMDB);
         assertNotNull(selector(activity));
         List<ScrollView> scrolls = new ArrayList<>();
@@ -724,13 +724,14 @@ public class TvSeriesSelectionTest {
         assertEquals(1, scrolls.size());
         LinearLayout root = (LinearLayout) scrolls.get(0).getChildAt(0);
         assertEquals(LinearLayout.VERTICAL, ((LinearLayout) root.getChildAt(1)).getOrientation());
-        watch(activity).performClick();
-        Intent intent = Shadows.shadowOf(activity).getNextStartedActivity();
-        assertEquals(IMDB, intent.getStringExtra("id"));
-        assertFalse(intent.hasExtra("season"));
-        assertFalse(intent.hasExtra("return_to_series"));
+        assertNull(watch(activity));
+        Button favorite = (Button) field("favoriteButton").get(activity);
+        assertNotNull(favorite);assertTrue(favorite.performClick());
+        assertTrue(new MovieFavorites(activity).isFavorite(IMDB));
+        assertEquals(0,((LinearLayout.LayoutParams)favorite.getLayoutParams()).leftMargin);
+        assertNull(Shadows.shadowOf(activity).getNextStartedActivity());
     }
-    @Test public void phoneEpisodesAreVerticalResponsiveAndLaunchTheExactSelection() throws Exception {
+    @Test public void phoneEpisodesAreHorizontalResponsiveAndLaunchTheExactSelection() throws Exception {
         for (int[] size : new int[][]{{360,800},{800,360}}) {
             TitleDetailActivity activity = detail(true, IMDB);
             TvSeriesSelectionView selector = selector(activity);
@@ -740,9 +741,16 @@ public class TvSeriesSelectionTest {
             root.measure(View.MeasureSpec.makeMeasureSpec(size[0],View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(size[1],View.MeasureSpec.EXACTLY));
             root.layout(0,0,size[0],size[1]);Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
             LinearLayout rows = (LinearLayout)tagged(selector,"episode-row");
-            assertEquals(LinearLayout.VERTICAL, rows.getOrientation());
+            assertEquals(LinearLayout.HORIZONTAL, rows.getOrientation());
+            assertTrue(rows.getParent() instanceof HorizontalScrollView);
+            assertEquals(View.LAYOUT_DIRECTION_LTR,rows.getLayoutDirection());
+            assertEquals("episode:3:2",rows.getChildAt(0).getTag());assertEquals("episode:3:4",rows.getChildAt(1).getTag());
             TvEpisodeCard card = (TvEpisodeCard)tagged(selector,"episode:3:4");
-            assertTrue(card.getWidth() <= size[0]);assertTrue(card.getWidth()>0);
+            assertTrue(card.getWidth() < ((View)rows.getParent()).getWidth());assertTrue(card.getWidth()>0);
+            HorizontalScrollView carousel=(HorizontalScrollView)rows.getParent();
+            carousel.scrollTo(card.getLeft(),0);int scroll=carousel.getScrollX();
+            root.requestLayout();root.measure(View.MeasureSpec.makeMeasureSpec(size[0],View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(size[1],View.MeasureSpec.EXACTLY));root.layout(0,0,size[0],size[1]);
+            Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();assertEquals(scroll,carousel.getScrollX());
             assertNull(card.findViewWithTag("episode-card-text-scroll"));
             assertTrue(text(card).contains("Actual summary 4"));
             assertTrue(card.performClick());
@@ -753,7 +761,7 @@ public class TvSeriesSelectionTest {
             assertNotNull(root.findViewWithTag("mobile-bottom-navigation"));
             TvSeriesSelectionView restored = new TvSeriesSelectionView(activity,IMDB,new TvSeriesSelectionView.Listener(){
                 public void onSelectionChanged(TvSeriesMetadata.Episode e,boolean present){} public void onPlay(TvSeriesMetadata.Episode e){} public void onSource(String url){}
-            });
+            },true);
             restored.bind(metadata(IMDB));assertEquals(3,restored.selectedEpisode().season);assertEquals(4,restored.selectedEpisode().number);
         }
     }
@@ -769,7 +777,37 @@ public class TvSeriesSelectionTest {
         assertEquals(ViewGroup.LayoutParams.WRAP_CONTENT,card.getLayoutParams().height);
         assertNull(((TextView)card.findViewWithTag("episode-card-summary")).getEllipsize());
         assertFalse(tagged(selector,"episode:1:7").isClickable());
-        selector.showUnavailable();assertNull(selector.selectedEpisode());assertNotNull(watch(activity));
+        selector.showUnavailable();assertNull(selector.selectedEpisode());assertNull(watch(activity));
+    }
+
+    @Test public void phoneCarouselSwipesInChronologicalOrderAndReleasesOffscreenStillsInBothLanguages() throws Exception {
+        for(String language:new String[]{fun.nyama.tv.Config.LANG_EN,fun.nyama.tv.Config.LANG_BG}) {
+            new android.app.Instrumentation().setInTouchMode(true);
+            ActivityController<Activity> host=Robolectric.buildActivity(Activity.class).setup().visible();
+            try {
+                fun.nyama.tv.Config config=new fun.nyama.tv.Config(host.get());config.setDeviceMode(fun.nyama.tv.Config.MODE_PHONE);config.setLanguage(language);
+                TvSeriesSelectionView selector=new TvSeriesSelectionView(host.get(),IMDB,noOpListener(),true);
+                ScrollView outer=new ScrollView(host.get());outer.addView(selector,new ScrollView.LayoutParams(-1,-2));host.get().setContentView(outer);
+                List<TvSeriesMetadata.Episode> episodes=new ArrayList<>();for(int n=1;n<=20;n++)episodes.add(episode(1,n,NOW-1000));
+                selector.bind(new TvSeriesMetadata(IMDB,"TVmaze (CC BY-SA)","",Arrays.asList(new TvSeriesMetadata.Season(1,episodes))));
+                View root=host.get().getWindow().getDecorView();
+                for(int pass=0;pass<3;pass++){root.measure(View.MeasureSpec.makeMeasureSpec(360,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(800,View.MeasureSpec.EXACTLY));root.layout(0,0,360,800);Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();}
+                HorizontalScrollView carousel=(HorizontalScrollView)tagged(selector,"episode-scroll");LinearLayout row=(LinearLayout)tagged(selector,"episode-row");
+                for(int n=1;n<=20;n++)assertEquals("episode:1:"+n,row.getChildAt(n-1).getTag());
+                int verticalBefore=outer.getScrollY();
+                int[] actions={MotionEvent.ACTION_DOWN,MotionEvent.ACTION_MOVE,MotionEvent.ACTION_MOVE,MotionEvent.ACTION_UP};float[] x={280,80,20,20};
+                for(int i=0;i<actions.length;i++){MotionEvent e=MotionEvent.obtain(100,100+i*40,actions[i],x[i],80,0);carousel.dispatchTouchEvent(e);e.recycle();}
+                assertTrue(carousel.getScrollX()>0);assertEquals(verticalBefore,outer.getScrollY());
+                TvEpisodeCard first=(TvEpisodeCard)row.getChildAt(0),last=(TvEpisodeCard)row.getChildAt(19);
+                carousel.scrollTo(row.getWidth(),0);Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
+                assertFalse(first.getLocalVisibleRect(new Rect()));assertTrue(last.getLocalVisibleRect(new Rect()));
+                Bitmap still=Bitmap.createBitmap(32,18,Bitmap.Config.RGB_565);first.setStill(still);last.setStill(still);
+                Field markers=TvSeriesSelectionView.class.getDeclaredField("requestedStills");markers.setAccessible(true);
+                @SuppressWarnings("unchecked") Set<TvEpisodeCard> requested=(Set<TvEpisodeCard>)markers.get(selector);requested.add(first);requested.add(last);
+                Method visible=TvSeriesSelectionView.class.getDeclaredMethod("loadVisibleStills");visible.setAccessible(true);visible.invoke(selector);
+                assertFalse(first.hasStill());assertTrue(last.hasStill());assertFalse(requested.contains(first));assertTrue(requested.contains(last));
+            } finally {host.pause().stop().destroy();}
+        }
     }
 
 }

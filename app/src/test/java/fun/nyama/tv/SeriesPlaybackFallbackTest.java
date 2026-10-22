@@ -43,6 +43,8 @@ public class SeriesPlaybackFallbackTest {
 
     @After public void after() throws Exception {
         for (TitleDetailActivity activity : activities) {
+            TvCinematicBackground background=(TvCinematicBackground)field("cinematicBackground").get(activity);
+            if(background!=null)background.release();
             ((ExecutorService) field("io").get(activity)).shutdownNow();
         }
         posterCache().evictAll();
@@ -121,8 +123,13 @@ public class SeriesPlaybackFallbackTest {
         render.invoke(activity, info);
     }
 
-    private static Intent launch(TitleDetailActivity activity) {
-        assertTrue(watch(activity).performClick());
+    private static Intent launchEpisode(TitleDetailActivity activity) throws Exception {
+        TvSeriesSelectionView selector=(TvSeriesSelectionView)field("seriesSelection").get(activity);
+        String imdb=(String)field("id").get(activity);long now=System.currentTimeMillis();
+        selector.bind(new TvSeriesMetadata(imdb,"TVmaze","",java.util.Arrays.asList(new TvSeriesMetadata.Season(3,java.util.Arrays.asList(
+                new TvSeriesMetadata.Episode(3,4,"Exact episode",42,"Description","",now-1000,now))))));
+        assertNull(field("watchButton").get(activity));
+        assertTrue(selector.findViewWithTag("episode:3:4").performClick());
         Intent intent = Shadows.shadowOf(activity).getNextStartedActivity();
         assertNotNull(intent);
         assertEquals(MoviePlayerActivity.class.getName(), intent.getComponent().getClassName());
@@ -163,17 +170,19 @@ public class SeriesPlaybackFallbackTest {
         render(first, new JSONObject().put("imdbID", "tt0903747").put("tmdbID", "1396")
                 .put("Type", "movie").put("Plot", "Unrelated metadata"));
         TitleDetailActivity second = detail(true, "tt0903747", "Breaking Bad", false);
-        Intent firstIntent = launch(first);
-        Intent secondIntent = launch(second);
+        Intent firstIntent = launchEpisode(first);
+        Intent secondIntent = launchEpisode(second);
         assertEquals("tt0944947", firstIntent.getStringExtra("id"));
         assertEquals("Game of Thrones", firstIntent.getStringExtra("title"));
         assertEquals("series", firstIntent.getStringExtra("type"));
         assertEquals("tt0903747", secondIntent.getStringExtra("id"));
         assertEquals("Breaking Bad", secondIntent.getStringExtra("title"));
         assertEquals("series", secondIntent.getStringExtra("type"));
+        assertEquals(3,firstIntent.getIntExtra("season",-1));assertEquals(4,firstIntent.getIntExtra("episode",-1));
+        assertEquals(3,secondIntent.getIntExtra("season",-1));assertEquals(4,secondIntent.getIntExtra("episode",-1));
     }
 
-    @Test public void phoneRetainsVerticalDetailsAndEqualWidthActions() throws Exception {
+    @Test public void phoneSeriesRetainsVerticalDetailsAndFullWidthFavoritesWithoutGenericWatch() throws Exception {
         TitleDetailActivity activity = detail(true, "tt0944947", "Game of Thrones", true);
         ScrollView scroll = null;
         for (View view : views(activity.getWindow().getDecorView())) {
@@ -186,20 +195,14 @@ public class SeriesPlaybackFallbackTest {
         LinearLayout poster = (LinearLayout) body.getChildAt(0);
         assertEquals(2, poster.getChildCount()); // Poster and existing phone title underneath it.
         assertEquals("Game of Thrones", ((TextView) poster.getChildAt(1)).getText().toString());
-        Button watch = watch(activity);
-        LinearLayout actions = (LinearLayout) watch.getParent();
-        assertEquals(2, actions.getChildCount());
-        for (int i = 0; i < actions.getChildCount(); i++) {
-            LinearLayout.LayoutParams layout = (LinearLayout.LayoutParams) actions.getChildAt(i).getLayoutParams();
-            assertEquals(0, layout.width);
-            assertEquals(1f, layout.weight, 0f);
-        }
-        assertEquals(3, buttons(activity).size());
-        Intent intent = launch(activity);
-        assertEquals("tt0944947", intent.getStringExtra("id"));
-        assertFalse(intent.hasExtra("season"));
-        assertFalse(intent.hasExtra("episode"));
-        assertFalse(intent.hasExtra(MoviePlayerActivity.EXTRA_RETURN_TO_CATALOG));
+        assertNull(field("watchButton").get(activity));
+        Button favorite=(Button)field("favoriteButton").get(activity);
+        LinearLayout actions=(LinearLayout)favorite.getParent();assertEquals(1,actions.getChildCount());
+        LinearLayout.LayoutParams layout=(LinearLayout.LayoutParams)favorite.getLayoutParams();
+        assertEquals(0,layout.width);assertEquals(1f,layout.weight,0f);assertEquals(0,layout.leftMargin);
+        assertEquals(2,buttons(activity).size());
+        favorite.performClick();assertTrue(new MovieFavorites(activity).isFavorite("tt0944947"));
+        assertNull(Shadows.shadowOf(activity).getNextStartedActivity());
     }
 
     @Test public void tvMovieRetainsWatchAndRequestsReturnThroughItsExistingDetail() throws Exception {

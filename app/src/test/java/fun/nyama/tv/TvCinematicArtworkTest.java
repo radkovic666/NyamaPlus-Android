@@ -222,4 +222,39 @@ public class TvCinematicArtworkTest {
         Shadows.shadowOf(Looper.getMainLooper()).idle();
         assertEquals(0, callbacks.get());
     }
+    @Test @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
+    public void mobilePosterIsActuallyBlurredOffThreadAndReusedAcrossRotation() throws Exception {
+        int[] pixels=new int[720*1280];
+        for(int y=0;y<1280;y++)for(int x=0;x<720;x++)pixels[y*720+x]=x<360?android.graphics.Color.WHITE:android.graphics.Color.BLACK;
+        Bitmap sharp=Bitmap.createBitmap(pixels,720,1280,Bitmap.Config.RGB_565);
+        ByteArrayOutputStream bytes=new ByteArrayOutputStream();assertTrue(sharp.compress(Bitmap.CompressFormat.PNG,100,bytes));
+        AtomicInteger fetches=new AtomicInteger();AtomicReference<Bitmap> delivered=new AtomicReference<>();
+        TvArtworkLoader.Fetch fetch=(url,portrait,width,height)->{
+            assertNotEquals(Looper.getMainLooper(),Looper.myLooper());assertTrue(portrait);
+            assertEquals(360,width);assertEquals(640,height);fetches.incrementAndGet();
+            return TvArtworkLoader.decode(bytes.toByteArray(),portrait,width,height);
+        };
+        TvArtworkLoader first=TvArtworkLoader.mobilePoster(RuntimeEnvironment.getApplication(),fetch);loaders.add(first);
+        first.load(FIRST,true,delivered::set);awaitWorker(first);
+        Bitmap blurred=delivered.get();assertNotNull(blurred);assertTrue(blurred.getWidth()<=360&&blurred.getHeight()<=640);
+        int middle=android.graphics.Color.red(blurred.getPixel(blurred.getWidth()/2,blurred.getHeight()/2));assertTrue(middle>30&&middle<225);
+        first.release();RuntimeEnvironment.setQualifiers("land");
+        TvArtworkLoader rotated=TvArtworkLoader.mobilePoster(RuntimeEnvironment.getApplication(),fetch);loaders.add(rotated);
+        rotated.load(FIRST,true,delivered::set);awaitWorker(rotated);
+        assertSame(blurred,delivered.get());assertEquals(1,fetches.get());sharp.recycle();
+    }
+
+    @Test public void mobileMissingPosterKeepsTheDarkFallbackAndReleasesImages() throws Exception {
+        TvArtworkLoader missing=TvArtworkLoader.mobilePoster(RuntimeEnvironment.getApplication(),(url,portrait,width,height)->null);loaders.add(missing);
+        TvCinematicBackground background=background(loader((url,portrait,width,height)->null),missing);
+        background.setFallback(FIRST,true);background.showFallback();awaitWorker(missing);
+        Shadows.shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(400));
+        boolean hasNeutral=false;
+        for(ImageView image:images(background))if(image.getDrawable() instanceof android.graphics.drawable.BitmapDrawable) {
+            Bitmap bitmap=((android.graphics.drawable.BitmapDrawable)image.getDrawable()).getBitmap();
+            assertEquals(1,bitmap.getWidth());assertEquals(android.graphics.Color.rgb(13,17,24),bitmap.getPixel(0,0));hasNeutral=true;
+        }
+        assertTrue(hasNeutral);background.release();for(ImageView image:images(background))assertNull(image.getDrawable());
+    }
+
 }
