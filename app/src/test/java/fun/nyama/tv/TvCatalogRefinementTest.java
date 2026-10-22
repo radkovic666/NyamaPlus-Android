@@ -190,11 +190,11 @@ public class TvCatalogRefinementTest {
         adapterItems(cached);
         render.invoke(activity, rows); layout();
         View home = (View) get("homeRows");
-        assertEquals(View.VISIBLE, home.getVisibility()); assertEquals(View.VISIBLE, grid.getVisibility());
+        assertEquals(View.VISIBLE, home.getVisibility()); assertEquals(View.GONE, grid.getVisibility());
         LinearLayout stack=(LinearLayout)get("tvBrowseStack");
         assertSame(get("rowContainer"),stack.getChildAt(0));assertSame(get("moreHeading"),stack.getChildAt(1));
         assertSame(grid,stack.getChildAt(2));assertEquals("catalog-pagination",stack.getChildAt(3).getTag());
-        assertEquals(18,grid.getCount());assertTrue(grid.getHeight()>grid.getChildAt(0).getHeight());
+        assertEquals(18,grid.getCount());assertEquals(View.GONE,((View)get("paging")).getVisibility());assertEquals(View.GONE,((View)get("moreHeading")).getVisibility());
         @SuppressWarnings("unchecked") List<View> cards = (List<View>) get("rowCards");
         assertTrue(cards.size() > 6 && cards.size() <= 42);
         View first = cards.get(0); assertTrue(first.requestFocus()); layout();
@@ -212,14 +212,12 @@ public class TvCatalogRefinementTest {
         assertEquals("movies", detail.getStringExtra("type")); assertEquals("Original", detail.getStringExtra("originalTitle"));
         View last=cards.get(cards.size()-1);last.requestFocus();
         assertTrue(last.dispatchKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN,android.view.KeyEvent.KEYCODE_DPAD_DOWN)));
-        assertTrue(grid.hasFocus());
-        Object sameAdapter=grid.getAdapter();set("tvCatalogReady",true);set("tvVisibleCatalog",titles(35));set("totalPages",2);
-        Button forward=(Button)get("next");forward.setEnabled(true);grid.setSelection(grid.getCount()-1);grid.requestFocus();layout();
-        assertTrue(grid.dispatchKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN,android.view.KeyEvent.KEYCODE_DPAD_DOWN)));
-        assertTrue(forward.hasFocus());forward.performClick();layout();
-        assertEquals(2,get("page"));assertEquals(5,grid.getCount());assertSame(sameAdapter,grid.getAdapter());assertEquals(0,io.jobs.size());
-        assertEquals(View.VISIBLE, home.getVisibility());assertEquals(View.GONE,((View)get("rowContainer")).getVisibility());
-        assertEquals(View.GONE,((View)get("moreHeading")).getVisibility());assertEquals(View.VISIBLE,grid.getVisibility());
+        assertFalse(grid.hasFocus());
+        View featuredMore=root.findViewWithTag("catalog-more-featured");assertNotNull(featuredMore);
+        assertTrue(featuredMore.requestFocus());assertTrue(featuredMore.performClick());layout();
+        assertEquals(rows.get(0).items.size(),grid.getCount());assertEquals(View.VISIBLE,grid.getVisibility());
+        activity.onBackPressed();layout();assertEquals(View.GONE,grid.getVisibility());assertTrue(featuredMore.hasFocus());
+
     }
 
     @Test public void tvXResetsAllFiltersAndUsesCompleteValidatedCacheWithoutNetwork() throws Exception {
@@ -234,7 +232,7 @@ public class TvCatalogRefinementTest {
         assertEquals("reviews", get("sortMode")); assertEquals(1, get("page"));
         assertEquals(35, get("total")); assertEquals(2, get("totalPages"));
         assertEquals(30, grid.getAdapter().getCount());
-        assertEquals(0, grid.getSelectedItemPosition()); assertTrue(grid.hasFocus());
+        assertEquals(View.GONE, grid.getVisibility()); assertFalse(grid.hasFocus());
         assertEquals(0, io.jobs.size());
         assertEquals(View.VISIBLE, ((Button) get("searchClearButton")).getVisibility());
         assertTrue(((Button) get("searchClearButton")).isFocusable());
@@ -492,4 +490,43 @@ public class TvCatalogRefinementTest {
         @Override public boolean isTerminated() { return shutdown; }
         @Override public boolean awaitTermination(long timeout, TimeUnit unit) { return shutdown; }
     }
+    @Test public void actionMoreUsesFullGenreCatalogPaginationAndRestoresTheSameRowFocus() throws Exception {
+        catalog("movies",false);
+        List<CatalogItem> all=new ArrayList<>();
+        for(CatalogItem item:titles(35))all.add(new CatalogItem(item.id,"movie",item.title,"","2024","","90","Action","8.0","100","",""));
+        set("availableGenres",Arrays.asList("Action","Comedy","Drama"));
+        cacheVisible("movies",titles(40));
+        PukankiApi.cacheVisibleTvCatalog(activity,"movies",Arrays.asList("Action"),"reviews",false,new MovieFavorites(activity).csv(),all);
+        List<CatalogRows.Row> rows=CatalogRows.observeAndRead(activity,"movies",all,System.currentTimeMillis());
+        Method render=CatalogActivity.class.getDeclaredMethod("renderRows",List.class);render.setAccessible(true);render.invoke(activity,rows);layout();
+        View more=root.findViewWithTag("catalog-more-action");assertNotNull(more);
+        android.view.ViewGroup strip=(android.view.ViewGroup)more.getParent();
+        View lastPoster=strip.getChildAt(strip.getChildCount()-2);assertTrue(lastPoster.requestFocus());
+        assertTrue(lastPoster.dispatchKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN,android.view.KeyEvent.KEYCODE_DPAD_RIGHT)));
+        assertTrue(more.hasFocus());
+        int scroll=((android.widget.ScrollView)get("homeRows")).getScrollY();
+        more.performClick();layout();
+        assertEquals(Arrays.asList("Action"),genres());assertEquals(35,get("total"));assertEquals(30,grid.getCount());
+        assertEquals(View.GONE,((View)get("rowContainer")).getVisibility());assertEquals(View.VISIBLE,grid.getVisibility());
+        Object same=grid.getAdapter();((Button)get("next")).performClick();layout();
+        assertEquals(2,get("page"));assertEquals(5,grid.getCount());assertSame(same,grid.getAdapter());assertTrue(io.jobs.isEmpty());
+        activity.onBackPressed();layout();
+        assertEquals(View.GONE,grid.getVisibility());assertEquals(View.VISIBLE,((View)get("rowContainer")).getVisibility());
+        assertTrue(more.hasFocus());assertEquals(scroll,((android.widget.ScrollView)get("homeRows")).getScrollY());
+        assertTrue(genres().isEmpty());assertEquals(false,get("browseRequested"));
+        // A new landing search must use the whole section, not the previous Action cache.
+        search().setText("Movie 39");invoke("handleSearchChanged");layout();
+        assertEquals(1,grid.getCount());assertEquals("tt1000039",((CatalogItem)grid.getAdapter().getItem(0)).id);
+        assertTrue(io.jobs.isEmpty());
+    }
+
+    @Test public void explicitDefaultSortOpensBrowseAndResetHidesGridAgain() throws Exception {
+        catalog("series",false);set("availableGenres",Arrays.asList("Drama"));cacheVisible("series",titles(35));
+        invoke("showFilters");Shadows.shadowOf(Looper.getMainLooper()).idle();
+        android.app.AlertDialog dialog=org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+        dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick();layout();
+        assertEquals("reviews",get("sortMode"));assertEquals(true,get("browseRequested"));assertEquals(View.VISIBLE,grid.getVisibility());
+        reset();layout();assertEquals(false,get("browseRequested"));assertEquals(View.GONE,grid.getVisibility());
+    }
+
 }

@@ -199,7 +199,7 @@ public class LiveSessionTest {
         config.setClockPosition(fun.nyama.tv.Config.CLOCK_TOP_RIGHT);call("buildUi",new Class<?>[]{});idle();layout(800,360);
         call("refreshPlaylistNow",new Class<?>[]{boolean.class},true);idle();layout(800,360);
         View clock=(View)get("cornerClock"),dot=(View)get("refreshSuccessDot");
-        assertTrue(dot.getTop()>=clock.getBottom()+8);assertTrue(dot.getRight()<=800-18);
+        assertEquals(clock.getTop()+clock.getHeight()/2f,dot.getTop()+dot.getHeight()/2f,1f);assertTrue(dot.getRight()<=clock.getLeft()-6);
         call("hideRefreshSuccess",new Class<?>[]{});
         call("refreshPlaylistNow",new Class<?>[]{});idle();
         assertEquals(View.GONE,dot.getVisibility());assertEquals(View.VISIBLE,((View)get("status")).getVisibility());

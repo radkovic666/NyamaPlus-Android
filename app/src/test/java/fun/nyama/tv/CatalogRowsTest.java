@@ -105,4 +105,11 @@ public class CatalogRowsTest {
         new fun.nyama.tv.Config(context).setPukankiBaseUrl("https://catalog.example.invalid");
         assertTrue(CatalogRows.observeAndRead(context, "movies", Collections.emptyList(), now).isEmpty());
     }
+    @Test public void categoryMappingUsesOnlyActualMatchingCatalogGenreLabels() {
+        assertEquals(java.util.Arrays.asList("Action","Екшън"),CatalogRows.catalogGenres("action",java.util.Arrays.asList("Drama","Action","Comedy","Екшън")));
+        assertEquals(java.util.Arrays.asList("Sci-Fi","Фантастика"),CatalogRows.catalogGenres("scifi",java.util.Arrays.asList("Family","Sci-Fi","Фантастика")));
+        assertTrue(CatalogRows.catalogGenres("crime",java.util.Arrays.asList("Drama","Action")).isEmpty());
+        assertTrue(CatalogRows.catalogGenres("featured",java.util.Arrays.asList("Action")).isEmpty());
+    }
+
 }

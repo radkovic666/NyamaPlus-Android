@@ -73,6 +73,12 @@ public final class CatalogActivity extends Activity {
     private int total = 0;
     private String sortMode = "reviews";
     private boolean favoritesOnly;
+    private boolean browseRequested;
+    private boolean dailyBrowsing;
+    private List<CatalogItem> dailyBrowseItems;
+    private String browseLabel = "";
+    private int landingScrollY;
+    private LinearLayout paging;
     private final ArrayList<String> selectedGenres = new ArrayList<>();
     private List<String> availableGenres = new ArrayList<>();
     private int restorePosition = -1;
@@ -191,6 +197,9 @@ public final class CatalogActivity extends Activity {
 
     @Override protected void onSaveInstanceState(Bundle out) {
         super.onSaveInstanceState(out);
+        out.putBoolean("browse_requested", browseRequested);
+        out.putBoolean("daily_browsing", dailyBrowsing);
+        out.putString("browse_label", browseLabel);
         out.putInt("page", page);
         out.putString("query", search == null ? "" : search.getText().toString());
         out.putString("sort", sortMode);
@@ -200,6 +209,9 @@ public final class CatalogActivity extends Activity {
     }
 
     private void restoreState(Bundle state) {
+        browseRequested = state.getBoolean("browse_requested", false);
+        dailyBrowsing = state.getBoolean("daily_browsing", false);
+        browseLabel = state.getString("browse_label", "");
         page = Math.max(1, state.getInt("page", 1));
         restoredQuery = state.getString("query", "");
         sortMode = state.getString("sort", "reviews");
@@ -213,6 +225,9 @@ public final class CatalogActivity extends Activity {
 
     private void restorePersistentState() {
         SharedPreferences p = getSharedPreferences(STATE_PREFS, MODE_PRIVATE);
+        browseRequested = p.getBoolean(stateKey("browse_requested"), false);
+        dailyBrowsing = p.getBoolean(stateKey("daily_browsing"), false);
+        browseLabel = p.getString(stateKey("browse_label"), "");
         page = Math.max(1, p.getInt(stateKey("page"), 1));
         restoredQuery = p.getString(stateKey("query"), "");
         sortMode = p.getString(stateKey("sort"), "reviews");
@@ -234,6 +249,9 @@ public final class CatalogActivity extends Activity {
         StringBuilder genres = new StringBuilder();
         for (String g : selectedGenres) { if (genres.length() > 0) genres.append("||"); genres.append(g); }
         getSharedPreferences(STATE_PREFS, MODE_PRIVATE).edit()
+                .putBoolean(stateKey("browse_requested"), browseRequested)
+                .putBoolean(stateKey("daily_browsing"), dailyBrowsing)
+                .putString(stateKey("browse_label"), browseLabel)
                 .putInt(stateKey("page"), page)
                 .putString(stateKey("query"), search == null ? restoredQuery : search.getText().toString())
                 .putString(stateKey("sort"), sortMode)
@@ -484,7 +502,7 @@ public final class CatalogActivity extends Activity {
         if(phone) root.addView(grid, new LinearLayout.LayoutParams(-1, 0, 1f));
         else tvBrowseStack.addView(grid,new LinearLayout.LayoutParams(-1,-2));
 
-        LinearLayout paging = horizontal();
+        paging = horizontal();
         prev = smallButton(getString(R.string.previous_page));
         next = smallButton(getString(R.string.next_page));
         pageStatus = text("", 12, 0xFFC6CDD6, true);
@@ -544,12 +562,13 @@ public final class CatalogActivity extends Activity {
         selectedGenres.clear();
         favoritesOnly = false;
         sortMode = "reviews";
+        browseRequested = false; dailyBrowsing = false; dailyBrowseItems = null; browseLabel = "";
         page = 1;
         restorePosition = 0;
         focusFirstAfterPageChange = true;
         updateFilterIndicator();
         savePersistentState();
-        loadTvPage();
+        if (rowContainer.getChildCount() > 0) restoreLandingRows(); else loadTvPage();
     }
 
     private void updateTvCardHighlights() {
@@ -777,6 +796,7 @@ public final class CatalogActivity extends Activity {
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setTextColor(0xFFB8C0CA);
             dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(0xFFB8C0CA);
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                browseRequested = true; dailyBrowsing = false; dailyBrowseItems = null; browseLabel = "";
                 favoritesOnly = favoriteCheck.isChecked();
                 int checked = 0;
                 for (int i = 0; i < sortIds.length; i++)
@@ -794,6 +814,7 @@ public final class CatalogActivity extends Activity {
                 dialog.dismiss();
             });
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
+                browseRequested = false; dailyBrowsing = false; dailyBrowseItems = null; browseLabel = "";
                 favoritesOnly = false;
                 sortMode = "reviews";
                 selectedGenres.clear();
@@ -821,6 +842,8 @@ public final class CatalogActivity extends Activity {
             loadPage();
             return;
         }
+        browseRequested = !currentQuery().isEmpty() || browseRequested;
+        dailyBrowsing = false; dailyBrowseItems = null; browseLabel = "";
         ++tvSearchGeneration;
         if (tvCatalogReady) { applyTvLocalPage(tvVisibleCatalog, currentQuery()); return; }
         if (currentQuery().isEmpty() && !tvInitialVisiblePage.isEmpty()) {
@@ -893,6 +916,23 @@ public final class CatalogActivity extends Activity {
     }
 
     private void loadTvPage() {
+        if (dailyBrowsing) {
+            updateDailyRow();
+            if (dailyBrowseItems != null) { applyTvLocalPage(dailyBrowseItems, ""); return; }
+            final int generation = ++tvPageGeneration;
+            loading.setVisibility(View.VISIBLE);
+            rowsIo.execute(() -> {
+                List<CatalogRows.Row> saved = CatalogRows.observeAndRead(getApplicationContext(), section,
+                        java.util.Collections.emptyList(), System.currentTimeMillis());
+                List<CatalogItem> items = new ArrayList<>();
+                for (CatalogRows.Row row : saved) if ("featured".equals(row.key)) items.addAll(row.items);
+                main.post(() -> {
+                    if (!dailyBrowsing || generation != tvPageGeneration || isFinishing() || isDestroyed()) return;
+                    dailyBrowseItems = items; applyTvLocalPage(items, "");
+                });
+            });
+            return;
+        }
         final TvCatalogRequest request = new TvCatalogRequest(section, selectedGenres, sortMode,
                 favoritesOnly, favorites.csv(), page);
         final String query = currentQuery();
@@ -965,16 +1005,63 @@ public final class CatalogActivity extends Activity {
     }
 
     private boolean isRowLanding() {
-        return currentQuery().isEmpty() && !favoritesOnly && selectedGenres.isEmpty()
+        return !browseRequested && currentQuery().isEmpty() && !favoritesOnly && selectedGenres.isEmpty()
                 && page == 1 && "reviews".equals(sortMode);
     }
 
     private void updateDailyRow() {
         if (homeRows == null) return;
         rowsGeneration++;
-        boolean show = isRowLanding() && rowContainer.getChildCount() > 0;
-        rowContainer.setVisibility(show ? View.VISIBLE : View.GONE);
-        moreHeading.setVisibility(show ? View.VISIBLE : View.GONE);
+        boolean landing = isRowLanding();
+        rowContainer.setVisibility(landing && rowContainer.getChildCount() > 0 ? View.VISIBLE : View.GONE);
+        moreHeading.setVisibility(landing ? View.GONE : View.VISIBLE);
+        moreHeading.setText(browseLabel.isEmpty() ? (Config.LANG_EN.equals(config.language()) ? "Results" : "Резултати") : browseLabel);
+        grid.setVisibility(landing ? View.GONE : View.VISIBLE);
+        paging.setVisibility(landing ? View.GONE : View.VISIBLE);
+    }
+
+    private void openCategoryBrowse(CatalogRows.Row row) {
+        List<String> genres = CatalogRows.catalogGenres(row.key, availableGenres);
+        if (!"featured".equals(row.key) && genres.isEmpty()) {
+            status.setText(Config.LANG_EN.equals(config.language()) ? "Category unavailable. Try again shortly." : "Категорията не е достъпна. Опитайте отново след малко.");
+            loadGenres(); return;
+        }
+        landingScrollY = homeRows.getScrollY();
+        browseRequested = true; dailyBrowsing = "featured".equals(row.key);
+        dailyBrowseItems = dailyBrowsing ? new ArrayList<>(row.items) : null;
+        browseLabel = Config.LANG_EN.equals(config.language()) ? row.en : row.bg;
+        selectedGenres.clear(); selectedGenres.addAll(genres);
+        favoritesOnly = false; sortMode = "reviews"; page = 1; restorePosition = -1;
+        tvDataGeneration++; tvPageGeneration++; rowsGeneration++;
+        focusFirstAfterPageChange = true;
+        updateDailyRow(); updateFilterIndicator(); savePersistentState();
+        homeRows.scrollTo(0, 0); loadTvPage();
+    }
+
+    private void restoreLandingRows() {
+        tvDataGeneration++; tvPageGeneration++; tvSearchGeneration++; rowsGeneration++;
+        TvCatalogRequest landing = new TvCatalogRequest(section, selectedGenres, sortMode,
+                favoritesOnly, favorites.csv(), page);
+        if (!landing.key.equals(tvDataKey)) {
+            // Keep row views for focus restoration, but never search the previous category's data.
+            tvDataKey = ""; tvCatalogReady = false;
+            tvVisibleCatalog.clear(); tvInitialVisiblePage.clear();
+            synchronized (tvRawCatalog) { tvRawCatalog.clear(); }
+        }
+        loading.setVisibility(View.GONE); catalogRetry.setVisibility(View.GONE); status.setText("");
+        updateDailyRow();
+        homeRows.post(() -> {
+            if (!isRowLanding() || isFinishing() || isDestroyed()) return;
+            if (lastRowFocus != null) lastRowFocus.requestFocus();
+            homeRows.scrollTo(0, landingScrollY);
+        });
+    }
+
+    @Override public void onBackPressed() {
+        if (config != null && !config.isPhoneMode() && !isRowLanding()) {
+            resetTvCatalog(); return;
+        }
+        super.onBackPressed();
     }
 
     private void observeRows(List<CatalogItem> verified) {
@@ -993,8 +1080,8 @@ public final class CatalogActivity extends Activity {
     }
 
     private void renderRows(List<CatalogRows.Row> rows) {
-        boolean restoreFocus = rowContainer.hasFocus() || (landingFocusPending && rowCards.isEmpty() && grid.hasFocus()
-                && grid.getSelectedItemPosition()<=0 && homeRows.getScrollY()==0);
+        boolean restoreFocus = rowContainer.hasFocus() || landingFocusPending;
+        String focusedMore = lastRowFocus != null && lastRowFocus.getTag() instanceof String ? (String) lastRowFocus.getTag() : "";
         String focusedId = lastRowFocus != null && lastRowFocus.getTag() instanceof Holder
                 ? ((Holder) lastRowFocus.getTag()).item.id : "";
         rowContainer.removeAllViews(); rowCards.clear(); lastRowFocus = null;
@@ -1013,6 +1100,7 @@ public final class CatalogActivity extends Activity {
                 CatalogItem item = row.items.get(i);
                 View card = rowAdapter.getView(i, null, cards);
                 card.setFocusable(true); card.setClickable(true);
+                if (card.getId() == View.NO_ID) card.setId(View.generateViewId());
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(144), dp(tvPosterHeightDp() + 92));
                 lp.rightMargin = dp(12); cards.addView(card, lp); rowCards.add(card);
                 if (focusedId.equals(item.id) && lastRowFocus == null) lastRowFocus = card;
@@ -1031,19 +1119,45 @@ public final class CatalogActivity extends Activity {
                         lastRowFocus = v; lastContentFocus = 3;
                         setCatalogSidebarExpanded(true, true); sidebar.focusFirst(); return true;
                     }
-                    if(key==KeyEvent.KEYCODE_DPAD_DOWN && event.getAction()==KeyEvent.ACTION_DOWN
-                            && row==rows.get(rows.size()-1) && grid.getCount()>0) {
-                        lastContentFocus=2;grid.setSelection(Math.min(column,grid.getCount()-1));grid.requestFocus();return true;
+                    if (key == KeyEvent.KEYCODE_DPAD_RIGHT && column == row.items.size()-1 && event.getAction() == KeyEvent.ACTION_DOWN) {
+                        View more = rowContainer.findViewWithTag("catalog-more-" + row.key);
+                        if (more != null) more.requestFocus(); return true;
                     }
+                    if (key == KeyEvent.KEYCODE_DPAD_DOWN && event.getAction() == KeyEvent.ACTION_DOWN && row == rows.get(rows.size()-1)) return true;
                     return false;
                 });
             }
+            TextView more = text((Config.LANG_EN.equals(config.language()) ? "More…" : "Още…") + "  →", 19, Color.WHITE, true);
+            more.setId(View.generateViewId()); more.setTag("catalog-more-" + row.key);
+            more.setGravity(Gravity.CENTER); more.setFocusable(true); more.setClickable(true);
+            more.setPadding(dp(12), dp(12), dp(12), dp(12));
+            more.setBackground(panelBackground(0xE51B222C, 0xFF526171, 1));
+            more.setContentDescription((Config.LANG_EN.equals(config.language()) ? "More: " : "Още: ") + (Config.LANG_EN.equals(config.language()) ? row.en : row.bg));
+            View lastPoster = cards.getChildCount() == 0 ? null : cards.getChildAt(cards.getChildCount()-1);
+            if (lastPoster != null) { lastPoster.setNextFocusRightId(more.getId()); more.setNextFocusLeftId(lastPoster.getId()); }
+            more.setNextFocusRightId(more.getId());
+            more.setOnKeyListener((v,key,event) -> {
+                if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+                if (key == KeyEvent.KEYCODE_DPAD_RIGHT || (key == KeyEvent.KEYCODE_DPAD_DOWN && row == rows.get(rows.size()-1))) return true;
+                if (key == KeyEvent.KEYCODE_DPAD_LEFT && lastPoster != null) { lastPoster.requestFocus(); return true; }
+                return false;
+            });
+            more.setOnFocusChangeListener((v,focused) -> {
+                int accent = UiTheme.accent(this);
+                more.setBackground(panelBackground(focused ? accent : 0xE51B222C, focused ? accent : 0xFF526171, focused ? 3 : 1));
+                more.setTextColor(focused ? UiTheme.contrastingTextColor(accent) : Color.WHITE);
+                if (focused) { lastRowFocus = more; lastContentFocus = 3; setCatalogSidebarExpanded(false,true); }
+            });
+            more.setOnClickListener(v -> openCategoryBrowse(row));
+            LinearLayout.LayoutParams moreParams = new LinearLayout.LayoutParams(dp(144), dp(tvPosterHeightDp() + 92));
+            moreParams.rightMargin = dp(12); cards.addView(more, moreParams);
+            if (focusedMore.equals(more.getTag())) lastRowFocus = more;
             rowContainer.addView(strip, new LinearLayout.LayoutParams(-1, -2));
         }
         if (lastRowFocus == null && !rowCards.isEmpty()) lastRowFocus = rowCards.get(0);
         boolean show = !rows.isEmpty();
         if(show)landingFocusPending=false;
-        rowContainer.setVisibility(show ? View.VISIBLE : View.GONE);moreHeading.setVisibility(show?View.VISIBLE:View.GONE);
+        updateDailyRow();
         if (show && restoreFocus && lastRowFocus != null) lastRowFocus.requestFocus();
         homeRows.post(this::loadVisibleRowPosters);
     }
@@ -1053,6 +1167,7 @@ public final class CatalogActivity extends Activity {
         List<View> cards=new ArrayList<>(rowCards);
         if(grid!=null)for(int i=0;i<grid.getChildCount();i++)cards.add(grid.getChildAt(i));
         for (View card : cards) {
+            if (!(card.getTag() instanceof Holder)) continue;
             Holder holder = (Holder) card.getTag();
             if (!holder.posterRequested && card.isShown() && card.getGlobalVisibleRect(visible)) {
                 holder.posterRequested = true;
@@ -1090,15 +1205,19 @@ public final class CatalogActivity extends Activity {
         if (!config.isPhoneMode()) {
             catalogRetry.setVisibility(View.GONE);
             updateDailyRow();
-            observeRows(tvCatalogReady ? tvVisibleCatalog.subList(0, Math.min(CatalogRows.MAX_CANDIDATES, tvVisibleCatalog.size()))
+            if (isRowLanding()) observeRows(tvCatalogReady ? tvVisibleCatalog.subList(0, Math.min(CatalogRows.MAX_CANDIDATES, tvVisibleCatalog.size()))
                     : result.items);
         }
         loading.setVisibility(View.GONE);
-        status.setText(config.isPhoneMode() ? getString(R.string.catalog_count,total) : "");
+        status.setText(config.isPhoneMode() || !isRowLanding() ? getString(R.string.catalog_count,total) : "");
         pageStatus.setText(getString(R.string.page_of, page, totalPages));
         prev.setEnabled(page > 1);
         next.setEnabled(page < totalPages);
         updateFilterIndicator();
+        if (isRowLanding() && !config.isPhoneMode()) {
+            focusFirstAfterPageChange = false;
+            return;
+        }
         if (focusFirstAfterPageChange && !config.isPhoneMode() && !result.items.isEmpty()) {
             landingFocusPending=false;
             focusFirstAfterPageChange = false;
@@ -1106,8 +1225,7 @@ public final class CatalogActivity extends Activity {
             restorePosition = -1;
             grid.setSelection(0);
             grid.post(() -> {
-                grid.setSelection(0);
-                grid.requestFocus();
+                if (!isRowLanding()) { grid.setSelection(0); grid.requestFocus(); }
             });
         } else if (restorePosition >= 0 && !result.items.isEmpty()) {
             int pos = Math.min(restorePosition, result.items.size() - 1);

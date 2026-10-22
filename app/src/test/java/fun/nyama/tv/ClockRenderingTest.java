@@ -35,6 +35,14 @@ public class ClockRenderingTest {
             ViewGroup root=activity.findViewById(android.R.id.content);
             root.measure(View.MeasureSpec.makeMeasureSpec(360,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(800,View.MeasureSpec.EXACTLY));root.layout(0,0,360,800);
             java.lang.reflect.Field f=MainActivity.class.getDeclaredField("cornerClock");f.setAccessible(true);OutlineTextView clock=(OutlineTextView)f.get(activity);
+            java.lang.reflect.Field dotField=MainActivity.class.getDeclaredField("refreshSuccessDot");dotField.setAccessible(true);
+            View dot=(View)dotField.get(activity);dot.setVisibility(View.VISIBLE);
+            java.lang.reflect.Method position=MainActivity.class.getDeclaredMethod("positionRefreshSuccess");position.setAccessible(true);position.invoke(activity);
+            root.measure(View.MeasureSpec.makeMeasureSpec(360,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(800,View.MeasureSpec.EXACTLY));root.layout(0,0,360,800);
+            assertEquals(clock.getTop()+clock.getHeight()/2f,dot.getTop()+dot.getHeight()/2f,1f);
+            if(corner.endsWith("right"))assertTrue(dot.getRight()<=clock.getLeft()-6);
+            else assertTrue(dot.getLeft()>=clock.getRight()+6);
+            assertTrue(dot.getLeft()>=0 && dot.getTop()>=0 && dot.getRight()<=360 && dot.getBottom()<=800);
             clock.onPreDraw();
             Bitmap bitmap=Bitmap.createBitmap(360,800,Bitmap.Config.ARGB_8888);root.draw(new Canvas(bitmap));
             android.graphics.Rect bounds=new android.graphics.Rect(0,0,clock.getWidth(),clock.getHeight());

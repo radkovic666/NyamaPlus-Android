@@ -1223,13 +1223,31 @@ public final class MainActivity extends Activity implements ChannelBrowserOverla
     }
 
     private void positionRefreshSuccess() {
-        if (refreshSuccessDot == null) return;
-        int top = dp(16);
-        if (cornerClock.getVisibility() == View.VISIBLE && Config.CLOCK_TOP_RIGHT.equals(config.clockPosition()))
-            top += Math.max(cornerClock.getHeight(), cornerClock.getMinimumHeight()) + dp(8);
+        if (refreshSuccessDot == null || playbackOverlays == null) return;
+        int size = dp(10), gap = dp(6);
+        int width = playbackOverlays.getWidth(), height = playbackOverlays.getHeight();
+        if (width <= 0 || height <= 0) return; // The clock's layout listener completes placement.
+        int left = Math.max(0, width - dp(18) - size), top = dp(16);
+        if (cornerClock != null && cornerClock.getVisibility() == View.VISIBLE && cornerClock.getWidth() > 0) {
+            // Both views share the inset-safe playback container. Keep the dot at the
+            // measured clock's centre, on its inward-facing side, in every corner.
+            boolean right = cornerClock.getLeft() + cornerClock.getWidth() / 2 > width / 2;
+            left = right ? cornerClock.getLeft() - gap - size : cornerClock.getRight() + gap;
+            top = Math.round(cornerClock.getTop() + (cornerClock.getHeight() - size) / 2f);
+        }
+        left = Math.max(playbackOverlays.getPaddingLeft(), Math.min(left,
+                width - playbackOverlays.getPaddingRight() - size));
+        top = Math.max(playbackOverlays.getPaddingTop(), Math.min(top,
+                height - playbackOverlays.getPaddingBottom() - size));
         FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) refreshSuccessDot.getLayoutParams();
-        if (lp.topMargin != top || lp.rightMargin != dp(18)) {
-            lp.topMargin = top; lp.rightMargin = dp(18); refreshSuccessDot.setLayoutParams(lp);
+        int start = playbackOverlays.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL
+                ? width - playbackOverlays.getPaddingRight() - left - size
+                : left - playbackOverlays.getPaddingLeft();
+        int y = top - playbackOverlays.getPaddingTop();
+        if (lp.gravity != (Gravity.TOP | Gravity.START) || lp.getMarginStart() != start || lp.topMargin != y) {
+            lp.gravity = Gravity.TOP | Gravity.START;
+            lp.setMargins(0, y, 0, 0); lp.setMarginStart(start); lp.setMarginEnd(0);
+            refreshSuccessDot.setLayoutParams(lp);
         }
     }
 

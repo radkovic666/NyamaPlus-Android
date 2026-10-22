@@ -22,12 +22,18 @@ final class TvEpisodeCard extends FrameLayout {
     private final TextView flag;
     private final ScrollView information;
     private final int accent;
+    private final boolean phone;
     private final boolean bulgarian;
     private int informationTargetY;
 
     TvEpisodeCard(Context context, TvSeriesMetadata.Episode episode, boolean bulgarian) {
+        this(context, episode, bulgarian, false);
+    }
+
+    TvEpisodeCard(Context context, TvSeriesMetadata.Episode episode, boolean bulgarian, boolean phone) {
         super(context);
         this.bulgarian = bulgarian;
+        this.phone = phone;
         accent = UiTheme.accent(context);
         setId(View.generateViewId());
         setFocusable(true);
@@ -39,7 +45,7 @@ final class TvEpisodeCard extends FrameLayout {
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(14), dp(12), dp(14), dp(12));
         content.setClipToPadding(false);
-        addView(content, new LayoutParams(-1, -1));
+        addView(content, new LayoutParams(-1, phone ? -2 : -1));
         still = new ImageView(context);
         still.setTag("episode-card-image");
         still.setScaleType(ImageView.ScaleType.CENTER_CROP);
@@ -49,7 +55,7 @@ final class TvEpisodeCard extends FrameLayout {
         imageShape.setCornerRadius(dp(8));
         still.setBackground(imageShape);
         still.setClipToOutline(true);
-        content.addView(still, new LinearLayout.LayoutParams(-1, dp(compact() ? 104 : 138)));
+        content.addView(still, new LinearLayout.LayoutParams(-1, dp(phone ? 180 : compact() ? 104 : 138)));
 
         String numbering = (bulgarian ? "Сезон " : "Season ") + episode.season
                 + "  ·  " + (bulgarian ? "Епизод " : "Episode ") + episode.number;
@@ -68,20 +74,28 @@ final class TvEpisodeCard extends FrameLayout {
         if (details.isEmpty()) metadata.setVisibility(GONE);
         content.addView(metadata, new LinearLayout.LayoutParams(-1, -2));
 
-        information = new ScrollView(context);
-        information.setTag("episode-card-text-scroll");
-        information.setFocusable(false);
-        information.setDescendantFocusability(FOCUS_BLOCK_DESCENDANTS);
-        information.setFillViewport(false);
-        information.setSmoothScrollingEnabled(true);
-        information.setVerticalScrollBarEnabled(true);
-        information.setPadding(0, 0, dp(5), 0);
-        LinearLayout.LayoutParams informationParams = new LinearLayout.LayoutParams(-1, 0, 1f);
-        informationParams.topMargin = dp(9);
-        content.addView(information, informationParams);
         LinearLayout text = new LinearLayout(context);
         text.setOrientation(LinearLayout.VERTICAL);
-        information.addView(text, new ScrollView.LayoutParams(-1, -2));
+        if (phone) {
+            // One outer detail-page scroller; descriptions expand naturally on touch screens.
+            information = null;
+            LinearLayout.LayoutParams textParams = new LinearLayout.LayoutParams(-1, -2);
+            textParams.topMargin = dp(9);
+            content.addView(text, textParams);
+        } else {
+            information = new ScrollView(context);
+            information.setTag("episode-card-text-scroll");
+            information.setFocusable(false);
+            information.setDescendantFocusability(FOCUS_BLOCK_DESCENDANTS);
+            information.setFillViewport(false);
+            information.setSmoothScrollingEnabled(true);
+            information.setVerticalScrollBarEnabled(true);
+            information.setPadding(0, 0, dp(5), 0);
+            LinearLayout.LayoutParams informationParams = new LinearLayout.LayoutParams(-1, 0, 1f);
+            informationParams.topMargin = dp(9);
+            content.addView(information, informationParams);
+            information.addView(text, new ScrollView.LayoutParams(-1, -2));
+        }
         title = label(episode.title, 21, true);
         title.setTag("episode-card-title");
         text.addView(title, new LinearLayout.LayoutParams(-1, -2));
@@ -98,10 +112,12 @@ final class TvEpisodeCard extends FrameLayout {
         LinearLayout.LayoutParams summaryParams = new LinearLayout.LayoutParams(-1, -2);
         summaryParams.topMargin = dp(8);
         text.addView(summary, summaryParams);
-        TextView hint = label(bulgarian ? "↓ Описание  ·  задръжте ↑ за сезони" : "↓ Description  ·  hold ↑ for seasons", 12, false);
-        hint.setTextColor(0xFFCBD5E0);
-        hint.setPadding(0, dp(7), 0, 0);
-        content.addView(hint, new LinearLayout.LayoutParams(-1, -2));
+        if (!phone) {
+            TextView hint = label(bulgarian ? "↓ Описание  ·  задръжте ↑ за сезони" : "↓ Description  ·  hold ↑ for seasons", 12, false);
+            hint.setTextColor(0xFFCBD5E0);
+            hint.setPadding(0, dp(7), 0, 0);
+            content.addView(hint, new LinearLayout.LayoutParams(-1, -2));
+        }
 
         flag = label("", 12, true);
         flag.setTag("watch-status");
@@ -120,17 +136,20 @@ final class TvEpisodeCard extends FrameLayout {
     }
 
     int preferredWidth() {
+        if (phone) return LayoutParams.MATCH_PARENT;
         int screen = getResources().getConfiguration().screenWidthDp;
         return dp(Math.max(350, Math.min(560, Math.round((screen > 0 ? screen : 960) * .45f))));
     }
 
     int preferredHeight() {
+        if (phone) return LayoutParams.WRAP_CONTENT;
         int screen = getResources().getConfiguration().screenHeightDp;
         return dp(Math.max(320, Math.min(440, Math.round((screen > 0 ? screen : 720) * .54f))));
     }
 
     /** Text stays inside this focus target; LEFT/RIGHT and OK remain available at every offset. */
     boolean scrollInformation(int direction) {
+        if (information == null) return false;
         int maximum = information.getChildCount() == 0 ? 0 : Math.max(0,
                 information.getChildAt(0).getHeight() - information.getHeight()
                         + information.getPaddingTop() + information.getPaddingBottom());
@@ -146,6 +165,14 @@ final class TvEpisodeCard extends FrameLayout {
         return true;
     }
 
+
+    @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
+        super.onSizeChanged(width, height, oldWidth, oldHeight);
+        if (!phone || width <= 0) return;
+        int imageHeight = Math.min(dp(260), Math.max(dp(100), Math.round((width - dp(34)) * 9f / 16f)));
+        android.view.ViewGroup.LayoutParams params = still.getLayoutParams();
+        if (params.height != imageHeight) { params.height = imageHeight; still.setLayoutParams(params); }
+    }
 
     private boolean compact() {
         int height = getResources().getConfiguration().screenHeightDp;

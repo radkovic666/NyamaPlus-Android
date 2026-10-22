@@ -114,8 +114,13 @@ final class CatalogRows {
     }
 
     static boolean matches(CatalogItem item, String genre) {
+        if (item == null) return false;
         if ("featured".equals(genre)) return item != null && TvPlaybackSource.validImdb(item.id);
-        String value = item.genres.toLowerCase(Locale.ROOT);
+        return genreMatches(item.genres, genre);
+    }
+
+    private static boolean genreMatches(String genres, String genre) {
+        String value = genres.toLowerCase(Locale.ROOT);
         switch (genre) {
             case "action": return value.contains("action") || value.contains("екшън");
             case "comedy": return value.contains("comedy") || value.contains("комеди");
@@ -128,6 +133,14 @@ final class CatalogRows {
             default: return false;
         }
     }
+    /** Preserve the API's actual labels; never submit an invented or unrelated genre. */
+    static List<String> catalogGenres(String category, List<String> available) {
+        List<String> result = new ArrayList<>();
+        if ("featured".equals(category)) return result;
+        for (String genre : available) if (genreMatches(genre, category)) result.add(genre);
+        return result;
+    }
+
     private static List<String> keys(JSONObject object) {
         List<String> result = new ArrayList<>(); object.keys().forEachRemaining(result::add); return result;
     }

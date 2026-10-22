@@ -716,9 +716,9 @@ public class TvSeriesSelectionTest {
         assertNull(summary.getEllipsize());
     }
 
-    @Test public void phoneDetailsKeepOriginalVerticalLayoutAndGenericPlayer() throws Exception {
+    @Test public void phoneSeriesAddsMetadataAndKeepsGenericFallback() throws Exception {
         TitleDetailActivity activity = detail(true, IMDB);
-        assertNull(selector(activity));
+        assertNotNull(selector(activity));
         List<ScrollView> scrolls = new ArrayList<>();
         for (View view : views(activity.getWindow().getDecorView())) if (view instanceof ScrollView) scrolls.add((ScrollView) view);
         assertEquals(1, scrolls.size());
@@ -730,4 +730,46 @@ public class TvSeriesSelectionTest {
         assertFalse(intent.hasExtra("season"));
         assertFalse(intent.hasExtra("return_to_series"));
     }
+    @Test public void phoneEpisodesAreVerticalResponsiveAndLaunchTheExactSelection() throws Exception {
+        for (int[] size : new int[][]{{360,800},{800,360}}) {
+            TitleDetailActivity activity = detail(true, IMDB);
+            TvSeriesSelectionView selector = selector(activity);
+            selector.bind(metadata(IMDB));
+            tagged(selector,"season:3").performClick();
+            View root = activity.getWindow().getDecorView();
+            root.measure(View.MeasureSpec.makeMeasureSpec(size[0],View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(size[1],View.MeasureSpec.EXACTLY));
+            root.layout(0,0,size[0],size[1]);Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();
+            LinearLayout rows = (LinearLayout)tagged(selector,"episode-row");
+            assertEquals(LinearLayout.VERTICAL, rows.getOrientation());
+            TvEpisodeCard card = (TvEpisodeCard)tagged(selector,"episode:3:4");
+            assertTrue(card.getWidth() <= size[0]);assertTrue(card.getWidth()>0);
+            assertNull(card.findViewWithTag("episode-card-text-scroll"));
+            assertTrue(text(card).contains("Actual summary 4"));
+            assertTrue(card.performClick());
+            Intent intent = Shadows.shadowOf(activity).getNextStartedActivity();
+            assertEquals(3,intent.getIntExtra("season",-1));assertEquals(4,intent.getIntExtra("episode",-1));
+            assertTrue(intent.getBooleanExtra("return_to_series",false));
+            assertNotNull(tagged(selector,"series-metadata-source"));
+            assertNotNull(root.findViewWithTag("mobile-bottom-navigation"));
+            TvSeriesSelectionView restored = new TvSeriesSelectionView(activity,IMDB,new TvSeriesSelectionView.Listener(){
+                public void onSelectionChanged(TvSeriesMetadata.Episode e,boolean present){} public void onPlay(TvSeriesMetadata.Episode e){} public void onSource(String url){}
+            });
+            restored.bind(metadata(IMDB));assertEquals(3,restored.selectedEpisode().season);assertEquals(4,restored.selectedEpisode().number);
+        }
+    }
+
+    @Test public void phoneDescriptionsExpandFullyAndUnknownEpisodesCannotPlay() throws Exception {
+        TitleDetailActivity activity=detail(true,IMDB);
+        TvSeriesSelectionView selector=selector(activity);
+        String full="Complete paragraph. ".repeat(120);
+        TvSeriesMetadata.Episode longEpisode=new TvSeriesMetadata.Episode(1,2,"A complete episode title",45,"preview","","",NOW-1000,NOW,full,"2026-10-01");
+        selector.bind(new TvSeriesMetadata(IMDB,"TVmaze (CC BY-SA)","https://www.tvmaze.com/shows/82/game-of-thrones",Arrays.asList(new TvSeriesMetadata.Season(1,Arrays.asList(longEpisode,episode(1,7,-1))))));
+        TvEpisodeCard card=(TvEpisodeCard)tagged(selector,"episode:1:2");
+        assertEquals(full,((TextView)card.findViewWithTag("episode-card-summary")).getText().toString());
+        assertEquals(ViewGroup.LayoutParams.WRAP_CONTENT,card.getLayoutParams().height);
+        assertNull(((TextView)card.findViewWithTag("episode-card-summary")).getEllipsize());
+        assertFalse(tagged(selector,"episode:1:7").isClickable());
+        selector.showUnavailable();assertNull(selector.selectedEpisode());assertNotNull(watch(activity));
+    }
+
 }

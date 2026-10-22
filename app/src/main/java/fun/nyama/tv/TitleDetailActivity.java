@@ -176,7 +176,7 @@ public final class TitleDetailActivity extends Activity {
         LinearLayout.LayoutParams ap = new LinearLayout.LayoutParams(-1, -2); ap.setMargins(0, dp(18), 0, dp(16));
         info.addView(actions, ap);
 
-        if (tvSeries) {
+        if ("series".equals(section)) {
             seriesSelection = new TvSeriesSelectionView(this, id, new TvSeriesSelectionView.Listener() {
                 @Override public void onSelectionChanged(TvSeriesMetadata.Episode episode, boolean metadataPresent) {
                     // Episode cards are the only Android TV series playback actions.
@@ -190,7 +190,7 @@ public final class TitleDetailActivity extends Activity {
                     if (url.isEmpty()) cinematicBackground.showFallback();
                     else cinematicBackground.show(url, false);
                 }
-            });
+            }, phone);
             seriesSelection.setAbove(favoriteButton);
             // Added below the persistent title information after it is constructed.
         }
@@ -420,7 +420,7 @@ public final class TitleDetailActivity extends Activity {
     }
 
     private void openEpisode(TvSeriesMetadata.Episode episode) {
-        if (config.isPhoneMode() || !"series".equals(section) || episode == null
+        if (!"series".equals(section) || episode == null
                 || !episode.eligibleForPlayback() || episode.season < 0 || episode.number <= 0
                 || !id.matches("tt[0-9]{7,10}") || seriesSelection == null
                 || seriesSelection.selectedEpisode() != episode) return;
