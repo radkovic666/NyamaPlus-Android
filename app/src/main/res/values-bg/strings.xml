@@ -196,4 +196,24 @@
     <string name="deactivate_unavailable">Деактивирането ще бъде достъпно, когато сървърът потвърди поддръжка за освобождаване и на двете места за устройството.</string>
     <string name="deactivate_error">Деактивирането не може да бъде завършено. Опитайте отново.</string>
     <string name="deactivate_link_error">Връзката на устройството не може да бъде потвърдена. Опитайте след обичайно обновяване на плейлиста или се свържете с поддръжката.</string>
+    <string name="tv_subtitles_title">Субтитри</string>
+    <string name="tv_subtitles_unavailable">Действието не е достъпно за текущия плеър или субтитри. Използвайте контролите на плеъра или обновете списъка.</string>
+    <string name="tv_subtitles_actual_tracks">Налични субтитри в този плеър. Етикетите са от източника.</string>
+    <string name="tv_subtitles_protected">Субтитрите още не са достъпни за приложението. Плеърът може да има собствено меню.</string>
+    <string name="tv_subtitles_provider">Използвай контролите за субтитри на плеъра</string>
+    <string name="tv_subtitles_provider_help">Използвайте контролите на плеъра. MENU, CAPTIONS или BACK връща менюто на Nyama+.</string>
+    <string name="tv_subtitles_auto">Автоматично (%1$s)</string>
+    <string name="tv_subtitles_off">Изключени</string>
+    <string name="tv_subtitles_track">Субтитри %1$d</string>
+    <string name="tv_subtitles_captions">Надписи</string>
+    <string name="tv_subtitles_delay">Забавяне на субтитрите: %1$+.1f s</string>
+    <string name="tv_subtitles_reset">Нулирай</string>
+    <string name="tv_subtitles_delay_help">Положителното забавяне показва субтитрите по-късно. Диапазон: −5 до +5 секунди.</string>
+    <string name="tv_subtitles_delay_unavailable">Синхронизацията изисква изцяло заредени и достъпни текстови субтитри.</string>
+    <string name="tv_subtitles_import_bg">Добави локален SRT / VTT файл (български)…</string>
+    <string name="tv_subtitles_import_en">Добави локален SRT / VTT файл (English)…</string>
+    <string name="tv_subtitles_file_error">Файлът не може да бъде прочетен. Изберете валиден SRT или VTT файл до 1 MB.</string>
+    <string name="tv_subtitles_picker_unavailable">На този телевизор няма инсталиран избор на документи.</string>
+    <string name="tv_subtitles_refresh">Обнови списъка със субтитри</string>
+    <string name="tv_subtitles_import_help">Текстът от добавен файл със субтитри е достъпен за избрания плеър.</string>
 </resources>

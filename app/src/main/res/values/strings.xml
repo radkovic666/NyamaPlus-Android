@@ -196,4 +196,24 @@ Install the new version now?</string>
     <string name="deactivate_unavailable">Deactivation is available after the server confirms support for releasing both device slots.</string>
     <string name="deactivate_error">Could not complete deactivation. Please retry.</string>
     <string name="deactivate_link_error">The device link could not be verified. Retry after an ordinary playlist refresh or contact support.</string>
+    <string name="tv_subtitles_title">Subtitles</string>
+    <string name="tv_subtitles_unavailable">This action is unavailable for the current player or track. Use the player controls, or refresh the list.</string>
+    <string name="tv_subtitles_actual_tracks">Available tracks in this player. Labels come from the source.</string>
+    <string name="tv_subtitles_protected">Native tracks are not accessible yet. The player may offer its own subtitle menu.</string>
+    <string name="tv_subtitles_provider">Use player subtitle controls</string>
+    <string name="tv_subtitles_provider_help">Use the player controls. MENU, CAPTIONS or BACK returns to Nyama+ subtitles.</string>
+    <string name="tv_subtitles_auto">Automatic (%1$s)</string>
+    <string name="tv_subtitles_off">Off</string>
+    <string name="tv_subtitles_track">Track %1$d</string>
+    <string name="tv_subtitles_captions">Captions</string>
+    <string name="tv_subtitles_delay">Subtitle delay: %1$+.1f s</string>
+    <string name="tv_subtitles_reset">Reset</string>
+    <string name="tv_subtitles_delay_help">Positive delay shows subtitles later. Range: −5 to +5 seconds.</string>
+    <string name="tv_subtitles_delay_unavailable">Timing adjustment needs a fully loaded, accessible text track.</string>
+    <string name="tv_subtitles_import_bg">Add local SRT / VTT file (Bulgarian)…</string>
+    <string name="tv_subtitles_import_en">Add local SRT / VTT file (English)…</string>
+    <string name="tv_subtitles_file_error">Cannot read this subtitle file. Choose a valid SRT or VTT file up to 1 MB.</string>
+    <string name="tv_subtitles_picker_unavailable">No document picker is installed on this TV.</string>
+    <string name="tv_subtitles_refresh">Refresh track list</string>
+    <string name="tv_subtitles_import_help">The selected player page can access text from an added subtitle file.</string>
 </resources>

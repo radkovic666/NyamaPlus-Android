@@ -69,6 +69,7 @@ public class MoviePlayerControlsTest {
         ActivationAccess.deny();
         context.getSharedPreferences("nyama_activation_mode", 0).edit().clear().commit();
         context.getSharedPreferences("nyama_tv_private", 0).edit().clear().commit();
+        context.getSharedPreferences("nyama_tv_subtitles", 0).edit().clear().commit();
         fun.nyama.tv.Config config = new fun.nyama.tv.Config(context);
         config.saveUrls("https://example.invalid/playlist.m3u", "https://example.invalid/epg.xml");
         config.setPin("1234");
@@ -306,12 +307,11 @@ public class MoviePlayerControlsTest {
         assertTrue("Invalid episode selection must not silently fall back to any media", loaded == null || "about:blank".equals(loaded));
     }
 
-    @Test public void upDownMenuInfoAndSettingsNeverCreateATvPlaybackToolbar() throws Exception {
+    @Test public void upDownAndSettingsKeepPlaybackFreeOfATvToolbar() throws Exception {
         MoviePlayerActivity activity = open(false, "movies").get();
         RecordingWebView recording = recordProviderKeys(activity);
         assertNoTvPlaybackBar(activity);
-        for (int key : new int[] { KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
-                KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_INFO, KeyEvent.KEYCODE_SETTINGS }) {
+        for (int key : new int[] { KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_SETTINGS }) {
             press(activity, key);
             assertNoTvPlaybackBar(activity);
             assertTrue(visibleButtons(activity).isEmpty());
@@ -1399,6 +1399,30 @@ public class MoviePlayerControlsTest {
         rapidRight(activity, 10); target.answer("inaccessible", 0, 1, false); idle();
         assertEquals(1, target.keys.size()); assertSame(target, web(activity));
         assertEquals(1, target.loads); assertFalse(flag(activity, "rendererRecoveryUsed"));
+    }
+
+    @Test public void tvCaptionsMenuAndInfoOpenAnExplicitModalWithoutReloadingPlayback() throws Exception {
+        MoviePlayerActivity activity=open(false,"movies").get();String playing=url(activity);
+        for(int key:new int[]{KeyEvent.KEYCODE_CAPTIONS,KeyEvent.KEYCODE_MENU,KeyEvent.KEYCODE_INFO}) {
+            press(activity,key);TvSubtitleController subtitles=(TvSubtitleController)field("tvSubtitles").get(activity);
+            assertNotNull(subtitles);assertTrue(subtitles.isShowing());assertEquals(playing,url(activity));assertNoTvPlaybackBar(activity);
+            press(activity,KeyEvent.KEYCODE_BACK);assertFalse(subtitles.isShowing());assertFalse(flag(activity,"closeArmed"));assertFalse(activity.isFinishing());
+        }
+        RecordingWebView recording=recordProviderKeys(activity);press(activity,KeyEvent.KEYCODE_DPAD_RIGHT);assertKeyPair(recording,KeyEvent.KEYCODE_DPAD_RIGHT);
+        press(activity,KeyEvent.KEYCODE_DPAD_CENTER);assertKeyPair(recording,KeyEvent.KEYCODE_SPACE);
+    }
+
+    @Test public void providerSubtitleModeDelegatesDpadAndBackReturnsToNativeCaptionsInsteadOfExiting() throws Exception {
+        MoviePlayerActivity activity=open(false,"movies").get();RecordingWebView recording=recordProviderKeys(activity);
+        field("tvProviderSubtitleMode").set(activity,true);press(activity,KeyEvent.KEYCODE_DPAD_LEFT);assertKeyPair(recording,KeyEvent.KEYCODE_DPAD_LEFT);
+        assertFalse(flag(activity,"closeArmed"));press(activity,KeyEvent.KEYCODE_BACK);assertKeyPair(recording,KeyEvent.KEYCODE_ESCAPE);
+        assertFalse(flag(activity,"tvProviderSubtitleMode"));assertTrue(((TvSubtitleController)field("tvSubtitles").get(activity)).isShowing());assertFalse(activity.isFinishing());
+    }
+
+    @Test public void phoneCaptionsKeepTheOriginalActionWithoutInstantiatingTvSubtitles() throws Exception {
+        MoviePlayerActivity phone=open(true,"movies").get();press(phone,KeyEvent.KEYCODE_MENU);
+        assertNull(field("tvSubtitles").get(phone));assertNotNull(phoneButton(phone,phone.getString(R.string.player_subtitles)));
+        assertEquals(View.VISIBLE,controls(phone).getVisibility());
     }
 
 }

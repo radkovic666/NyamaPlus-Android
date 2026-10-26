@@ -28,7 +28,7 @@ final class TvSubtitlePolicy {
               return (imdb?2:0)+(season>=0&&s!==null&&s!==''&&e!==null&&e!==''?4:0);
             }
             function choose(){
-              if(best.readyState<1)return;
+              if(best.readyState<1||best.__nyamaSubtitleManual)return;
               var old=best.__nyamaAutoSubtitle;
               if(old&&old.track.mode!=='showing')return;
               for(var k=0;k<best.textTracks.length;k++){

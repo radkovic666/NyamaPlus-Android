@@ -83,6 +83,10 @@ public final class MoviePlayerActivity extends Activity {
     private long livePlaybackSession;
     private static java.lang.ref.WeakReference<MoviePlayerActivity> activePlayer = new java.lang.ref.WeakReference<>(null);
     private boolean providerMenuMode;
+    private TvSubtitleController tvSubtitles;
+    private boolean tvProviderSubtitleMode;
+    private String tvSubtitleImportLanguage = "bg";
+    private static final int TV_SUBTITLE_FILE_REQUEST = 7308;
     private boolean returnToSeries;
     private boolean playbackFailed;
     private boolean leavingPlayback;
@@ -517,6 +521,8 @@ public final class MoviePlayerActivity extends Activity {
     /** Prefer an actually available app-language HTML5 track once, without touching protected frames. */
     private void installTvPlaybackAssist() {
         if (!tvMode || webView == null) return;
+        ensureTvSubtitles();
+        if (tvSubtitles != null && tvSubtitles.restorePreference()) return;
         // A generic series route does not establish the currently selected episode.
         if ("series".equals(type) && (getIntent().getIntExtra("season", -1) < 0
                 || getIntent().getIntExtra("episode", -1) <= 0)) return;
@@ -618,6 +624,7 @@ public final class MoviePlayerActivity extends Activity {
     private void handleTvRendererLoss(WebView failed) {
         Log.w(TAG, "TV initialization renderer_gone recovery=" + (rendererRecoveryUsed ? 1 : 0));
         closeTvSeekQueue();
+        closeTvSubtitles();
         long now = android.os.SystemClock.elapsedRealtime();
         TvPlayerProgressBridge.PositionSnapshot providerPosition = episodeProgress == null ? null : episodeProgress.recentPosition(now);
         if (providerPosition != null) {
@@ -724,6 +731,71 @@ public final class MoviePlayerActivity extends Activity {
 
     private void togglePlayPause() {
         runVideoScript("var v=document.querySelector('video');if(!v)return '0';if(v.paused){v.play();}else{v.pause();}return '1';", false);
+    }
+
+    private void ensureTvSubtitles() {
+        if (!tvMode || tvSubtitles != null || loadedPlayerUrl.isEmpty() || webView == null) return;
+        tvSubtitles = new TvSubtitleController(this, new TvSubtitleController.Host() {
+            @Override public void evaluate(String script, android.webkit.ValueCallback<String> callback) {
+                WebView target = webView;
+                long surface = tvSurfaceGeneration;
+                if (target == null || leavingPlayback || playbackFailed || !isSelectedMainDocument(target.getUrl())) { callback.onReceiveValue(null); return; }
+                try {
+                    target.evaluateJavascript(script, value -> {
+                        if (target == webView && surface == tvSurfaceGeneration && !isFinishing() && !isDestroyed()
+                                && !leavingPlayback && isSelectedMainDocument(target.getUrl())) callback.onReceiveValue(value);
+                    });
+                } catch (RuntimeException unavailable) { callback.onReceiveValue(null); }
+            }
+            @Override public void automatic() { installTvPlaybackAssist(); }
+            @Override public void pickFile(String language) {
+                tvSubtitleImportLanguage = language;
+                Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                        .setType("*/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                try { startActivityForResult(picker, TV_SUBTITLE_FILE_REQUEST); }
+                catch (android.content.ActivityNotFoundException unavailable) { Toast.makeText(MoviePlayerActivity.this, R.string.tv_subtitles_picker_unavailable, Toast.LENGTH_LONG).show(); }
+            }
+            @Override public void providerControls() {
+                tvProviderSubtitleMode = true; clearBackArm();
+                View target = customView != null ? customView : webView;
+                if (target != null) target.requestFocus();
+                Toast.makeText(MoviePlayerActivity.this, R.string.tv_subtitles_provider_help, Toast.LENGTH_LONG).show();
+            }
+            @Override public void returnFocus() {
+                View target = customView != null ? customView : webView;
+                if (target != null && tvForeground && !leavingPlayback && !playbackFailed) target.requestFocus();
+            }
+        }, loadedPlayerUrl, config.language());
+    }
+
+    private void openTvSubtitles() {
+        if (!tvMode || playbackFailed || leavingPlayback) return;
+        clearBackArm(); closeTvSeekQueue(); ensureTvSubtitles();
+        if (tvSubtitles != null) tvSubtitles.show();
+    }
+
+    private void leaveTvProviderSubtitles() {
+        tvProviderSubtitleMode = false; clearBackArm();
+        View target = customView != null ? customView : webView;
+        if (target != null) {
+            long now = android.os.SystemClock.uptimeMillis();
+            target.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ESCAPE, 0));
+            target.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ESCAPE, 0));
+        }
+        openTvSubtitles();
+    }
+
+    private void closeTvSubtitles() {
+        tvProviderSubtitleMode = false;
+        if (tvSubtitles != null) { tvSubtitles.close(); tvSubtitles = null; }
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (tvMode && requestCode == TV_SUBTITLE_FILE_REQUEST && resultCode == RESULT_OK && data != null && data.getData() != null) {
+            ensureTvSubtitles();
+            if (tvSubtitles != null) tvSubtitles.importFile(data.getData(), tvSubtitleImportLanguage);
+        }
     }
 
     private void openSubtitles() {
@@ -1041,6 +1113,8 @@ public final class MoviePlayerActivity extends Activity {
 
     /** TV BACK is intentionally two distinct physical presses; duplicate callbacks are ignored. */
     private void handleTvBackPressed() {
+        if (tvSubtitles != null && tvSubtitles.isShowing()) { tvSubtitles.dismiss(); clearBackArm(); return; }
+        if (tvProviderSubtitleMode) { leaveTvProviderSubtitles(); return; }
         long now = android.os.SystemClock.uptimeMillis();
         if (now - lastAcceptedBackAt < BACK_DUPLICATE_GUARD_MS) return;
         lastAcceptedBackAt = now;
@@ -1072,12 +1146,14 @@ public final class MoviePlayerActivity extends Activity {
         int repeat = event.getRepeatCount();
 
         switch (keyCode) {
+            case KeyEvent.KEYCODE_CAPTIONS:
+            case KeyEvent.KEYCODE_MENU:
+            case KeyEvent.KEYCODE_INFO:
+                if (repeat == 0) openTvSubtitles(); return true;
             case KeyEvent.KEYCODE_DPAD_UP:
             case KeyEvent.KEYCODE_DPAD_DOWN:
-            case KeyEvent.KEYCODE_MENU:
             case KeyEvent.KEYCODE_SETTINGS:
-            case KeyEvent.KEYCODE_INFO:
-                // Playback mode has no Nyama+ controls surface or hidden focus targets.
+                // Playback shortcuts remain unchanged outside the explicit subtitle menu.
                 return true;
             case KeyEvent.KEYCODE_DPAD_LEFT:
                 if (repeat == 0) seekTvPlayback(-10); return true;
@@ -1107,6 +1183,7 @@ public final class MoviePlayerActivity extends Activity {
 
     private boolean isTvRemoteKey(int keyCode) {
         switch (keyCode) {
+            case KeyEvent.KEYCODE_CAPTIONS:
             case KeyEvent.KEYCODE_MENU:
             case KeyEvent.KEYCODE_SETTINGS:
             case KeyEvent.KEYCODE_INFO:
@@ -1132,6 +1209,19 @@ public final class MoviePlayerActivity extends Activity {
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
         if(event!=null&&event.getAction()==KeyEvent.ACTION_DOWN)cancelPlayer1InitialStart();
+        if (tvMode && event != null && tvSubtitles != null && tvSubtitles.isShowing()) return tvSubtitles.dispatch(event);
+        if (tvMode && event != null && tvProviderSubtitleMode && isTvRemoteKey(event.getKeyCode())) {
+            int key = event.getKeyCode();
+            if (key == KeyEvent.KEYCODE_MENU || key == KeyEvent.KEYCODE_INFO || key == KeyEvent.KEYCODE_CAPTIONS) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) leaveTvProviderSubtitles();
+            } else if (key == KeyEvent.KEYCODE_BACK || key == KeyEvent.KEYCODE_ESCAPE) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) leaveTvProviderSubtitles();
+            } else {
+                View target = customView != null ? customView : webView;
+                if (target != null) target.dispatchKeyEvent(event);
+            }
+            return true;
+        }
         if (tvMode && playbackFailed && event != null
                 && event.getKeyCode() != KeyEvent.KEYCODE_BACK && event.getKeyCode() != KeyEvent.KEYCODE_ESCAPE)
             return super.dispatchKeyEvent(event); // Retry/Return are real focusable error actions, not playback controls.
@@ -1297,6 +1387,8 @@ public final class MoviePlayerActivity extends Activity {
         cancelPlayer1InitialStart();
         if (tvMode) {
             tvForeground = false;
+            tvProviderSubtitleMode = false;
+            if (tvSubtitles != null) tvSubtitles.pause();
             closeTvSeekQueue();
         }
         if (episodeProgress != null) episodeProgress.pause();
@@ -1318,6 +1410,7 @@ public final class MoviePlayerActivity extends Activity {
             webView.resumeTimers();
         }
         if (tvMode && rendererRecoveryPending) recoverTvRenderer();
+        if (tvMode && tvSubtitles != null) tvSubtitles.resume();
     }
 
     @SuppressWarnings("deprecation")
@@ -1362,6 +1455,7 @@ public final class MoviePlayerActivity extends Activity {
 
     private void releaseMovieWebView() {
         if (tvMode) {
+            closeTvSubtitles();
             closeTvSeekQueue();
         }
         if (episodeProgress != null) {
