@@ -196,4 +196,27 @@ Install the new version now?</string>
     <string name="deactivate_unavailable">Deactivation is available after the server confirms support for releasing both device slots.</string>
     <string name="deactivate_error">Could not complete deactivation. Please retry.</string>
     <string name="deactivate_link_error">The device link could not be verified. Retry after an ordinary playlist refresh or contact support.</string>
+    <string name="subs_auto_bg">Automatic Bulgarian (VidAPI)</string>
+    <string name="subs_search">Search OpenSubtitles</string>
+    <string name="subs_attribution">Subtitle search powered by OpenSubtitles.com. Bulgarian results only.</string>
+    <string name="subs_player2_only">OpenSubtitles selection is available with Player 2. Player 1 keeps its provider controls.</string>
+    <string name="subs_episode_required">Select an exact episode before searching for subtitles.</string>
+    <string name="subs_close">Close</string>
+    <string name="subs_continue">Continue</string>
+    <string name="subs_loading">Searching / preparing subtitle… Playback continues.</string>
+    <string name="subs_empty">No Bulgarian releases found. VidAPI Bulgarian remains available.</string>
+    <string name="subs_selected">Selected release</string>
+    <string name="subs_unconfigured">OpenSubtitles service is not configured. Automatic Bulgarian remains available.</string>
+    <string name="subs_unauthorized">Subtitle service authorization failed. Playback is unchanged.</string>
+    <string name="subs_rate_limited">Subtitle quota or request limit reached. Try later; playback is unchanged.</string>
+    <string name="subs_unavailable">Subtitle service unavailable or invalid response. Playback is unchanged.</string>
+    <string name="subs_offset">Timing: %1$s seconds (applied after reload)</string>
+    <string name="subs_earlier">Earlier −0.5 s</string>
+    <string name="subs_later">Later +0.5 s</string>
+    <string name="subs_reset">Reset timing to zero</string>
+    <string name="subs_apply_offset">Apply timing and reload</string>
+    <string name="subs_timing_position">Timing needs a verified current playback position. No reload was performed.</string>
+    <string name="subs_reload_notice">Selecting a file may reload the player. Use Automatic Bulgarian if the provider cannot load it. Subtitle availability depends on the provider.</string>
+    <string name="subs_restart_confirm">The provider has not supplied a current position. Changing subtitles may restart this title. Playback is requested paused; you may need to press Play. Continue?</string>
+    <string name="subs_file_failed">The selected subtitle fetch failed. Returning to Automatic Bulgarian when a safe position is available; a restart needs confirmation.</string>
 </resources>

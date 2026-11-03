@@ -23,7 +23,7 @@ final class TvPlaybackSource {
     private static String parameters(Uri.Builder uri, String language, int accent, String player) {
         // These options are documented for Player 2; do not invent options for Player 1.
         if (Config.PLAYER_1.equals(player)) return uri.build().toString();
-        return uri.appendQueryParameter("ds_lang", "en".equals(language) ? "en" : "bg")
+        return uri.appendQueryParameter("ds_lang", "bg")
                 .appendQueryParameter("autoplay", "1")
                 .appendQueryParameter("primaryColor", String.format(Locale.ROOT, "#%06X", accent & 0xFFFFFF))
                 .build().toString();
@@ -53,4 +53,39 @@ final class TvPlaybackSource {
         return parameters(base(imdbId, "tv", player).appendPath(Integer.toString(season))
                 .appendPath(Integer.toString(episode)), language, accent, player);
     }
+    /** Compose from the selected route, preserving identity and unrelated query options. */
+    static String subtitles(String url, String signedUrl, String label, Double position, Boolean paused) {
+        Uri original = Uri.parse(url);
+        if (!HOST.equals(original.getHost())) throw new IllegalArgumentException("provider");
+        // Fallback also accepts the generic series chooser, without inventing an episode.
+        if (!(original.getPathSegments().size() == 3 && "embed".equals(original.getPathSegments().get(0))
+                && "tv".equals(original.getPathSegments().get(1)) && validImdb(original.getPathSegments().get(2))))
+            SubtitleMedia.fromUrl(url);
+        if (!"https".equals(original.getScheme()) || original.getUserInfo() != null || original.getPort() != -1)
+            throw new IllegalArgumentException("origin");
+        Uri.Builder b = original.buildUpon().clearQuery().fragment(null);
+        for (String name : original.getQueryParameterNames()) {
+            if (name.equals("ds_lang") || name.matches("sub_url|sub_file|sub_label|sub_lang|sub_default")) continue;
+            if (position != null && name.equals("resumeAt")) continue;
+            if (paused != null && name.equals("autoplay")) continue;
+            for (String value : original.getQueryParameters(name)) b.appendQueryParameter(name, value);
+        }
+        b.appendQueryParameter("ds_lang", "bg");
+        if (signedUrl != null) {
+            SubtitleMedia.fromUrl(url); // No external file on an unidentified series episode.
+            Uri file = Uri.parse(signedUrl);
+            if (!"https".equals(file.getScheme()) || file.getUserInfo() != null || file.getFragment() != null
+                    || file.getHost() == null || file.getPort() != -1 || signedUrl.length() > 4096)
+                throw new IllegalArgumentException("subtitle_url");
+            b.appendQueryParameter("sub_url", signedUrl).appendQueryParameter("sub_lang", "bg")
+                    .appendQueryParameter("sub_label", SubtitleApi.label(label)).appendQueryParameter("sub_default", "true");
+        }
+        if (position != null) {
+            if (!Double.isFinite(position) || position < 0 || position > 259200) throw new IllegalArgumentException("position");
+            b.appendQueryParameter("resumeAt", Long.toString((long) Math.floor(position)));
+        }
+        if (paused != null) b.appendQueryParameter("autoplay", paused ? "0" : "1");
+        return b.build().toString();
+    }
+
 }

@@ -10,9 +10,13 @@ android {
         applicationId 'fun.nyama.plus'
         minSdk 24
         targetSdk 36
-        versionCode 43
-        versionName '1.0.41'
+        versionCode 45
+        versionName '1.0.43'
+        // Public deployment URL only; never configure OpenSubtitles credentials in Android.
+        buildConfigField 'String', 'SUBTITLES_BACKEND', groovy.json.JsonOutput.toJson(providers.gradleProperty('nyamaSubtitlesBackend').getOrElse(''))
     }
+
+    buildFeatures { buildConfig true }
 
     buildTypes {
         release {

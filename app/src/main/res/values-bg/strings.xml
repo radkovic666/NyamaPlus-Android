@@ -196,4 +196,27 @@
     <string name="deactivate_unavailable">Деактивирането ще бъде достъпно, когато сървърът потвърди поддръжка за освобождаване и на двете места за устройството.</string>
     <string name="deactivate_error">Деактивирането не може да бъде завършено. Опитайте отново.</string>
     <string name="deactivate_link_error">Връзката на устройството не може да бъде потвърдена. Опитайте след обичайно обновяване на плейлиста или се свържете с поддръжката.</string>
+    <string name="subs_auto_bg">Автоматични български (VidAPI)</string>
+    <string name="subs_search">Търси в OpenSubtitles</string>
+    <string name="subs_attribution">Търсене чрез OpenSubtitles.com. Само български субтитри.</string>
+    <string name="subs_player2_only">Изборът от OpenSubtitles е достъпен с Плейър 2. Плейър 1 използва своите контроли.</string>
+    <string name="subs_episode_required">Изберете конкретен епизод преди търсене на субтитри.</string>
+    <string name="subs_close">Затвори</string>
+    <string name="subs_continue">Продължи</string>
+    <string name="subs_loading">Търсене / подготовка на субтитри… Видеото продължава.</string>
+    <string name="subs_empty">Няма намерени български издания. Българските субтитри на VidAPI остават достъпни.</string>
+    <string name="subs_selected">Избрано издание</string>
+    <string name="subs_unconfigured">Услугата OpenSubtitles не е настроена. Автоматичните български остават достъпни.</string>
+    <string name="subs_unauthorized">Неуспешно удостоверяване за субтитри. Видеото не е променено.</string>
+    <string name="subs_rate_limited">Достигната квота или лимит за заявки. Опитайте по-късно; видеото не е променено.</string>
+    <string name="subs_unavailable">Услугата за субтитри е недостъпна или отговорът е невалиден. Видеото не е променено.</string>
+    <string name="subs_offset">Синхронизация: %1$s секунди (след презареждане)</string>
+    <string name="subs_earlier">По-рано −0,5 сек</string>
+    <string name="subs_later">По-късно +0,5 сек</string>
+    <string name="subs_reset">Нулирай синхронизацията</string>
+    <string name="subs_apply_offset">Приложи синхронизацията и презареди</string>
+    <string name="subs_timing_position">Синхронизацията изисква потвърдена текуща позиция. Видеото не е презаредено.</string>
+    <string name="subs_reload_notice">Изборът на файл може да презареди плейъра. Изберете Автоматични български, ако файлът не се зареди. Наличността зависи от източника.</string>
+    <string name="subs_restart_confirm">Източникът не е предоставил текуща позиция. Смяната на субтитрите може да стартира заглавието отначало. Ще поискаме пауза; може да е нужно да натиснете Пусни. Продължавате ли?</string>
+    <string name="subs_file_failed">Зареждането на избраните субтитри е неуспешно. Връщане към Автоматични български при известна позиция; рестартирането изисква потвърждение.</string>
 </resources>

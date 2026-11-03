@@ -101,6 +101,11 @@ public final class MoviePlayerActivity extends Activity {
     private long tvActivityCreatedAt;
     private long tvDocumentLoadAt;
     private long tvWatchStartedAt;
+    private SubtitlePicker subtitlePicker;
+    private boolean subtitleForeground;
+    private android.app.AlertDialog subtitleConfirm;
+    private long subtitleApplyGeneration;
+    private String failedSubtitleUrl = "";
     private TvPlayerProgressBridge episodeProgress;
     private TvSeekQueue tvSeekQueue;
     private WebView tvSeekView;
@@ -347,17 +352,22 @@ public final class MoviePlayerActivity extends Activity {
             }
 
             @Override public void onReceivedHttpError(WebView view, WebResourceRequest request, android.webkit.WebResourceResponse response) {
+                if (request != null && !request.isForMainFrame() && response != null && response.getStatusCode() >= 400
+                        && handleSubtitleFileFailure(view, request.getUrl() == null ? null : request.getUrl().toString())) return;
                 if (tvMode && view == webView && request != null && response != null && isPlaybackDocument(request))
                     showPlaybackError(tvText("Епизодът или видеото не е достъпно от този източник.", "This episode or video is unavailable from this source."));
             }
 
             @Override public void onReceivedError(WebView view, WebResourceRequest request, android.webkit.WebResourceError error) {
+                if (request != null && !request.isForMainFrame()
+                        && handleSubtitleFileFailure(view, request.getUrl() == null ? null : request.getUrl().toString())) return;
                 if (tvMode && view == webView && request != null && isPlaybackDocument(request))
                     showPlaybackError(tvText("Видеото не може да бъде заредено. Проверете връзката и опитайте отново.", "Cannot load this video. Check your connection and try again."));
             }
 
             @Override public void onReceivedSslError(WebView view, android.webkit.SslErrorHandler handler, android.net.http.SslError error) {
                 super.onReceivedSslError(view, handler, error); // Default certificate rejection is preserved.
+                if (error != null && handleSubtitleFileFailure(view, error.getUrl())) return;
                 if (tvMode && view == webView && error != null && isPlaybackDocumentUrl(Uri.parse(safe(error.getUrl()))))
                     showPlaybackError(tvText("Не може да се установи защитена връзка с видео източника.", "Cannot establish a secure connection to the video source."));
             }
@@ -514,15 +524,15 @@ public final class MoviePlayerActivity extends Activity {
             """;
     }
 
-    /** Prefer an actually available app-language HTML5 track once, without touching protected frames. */
+    /** Prefer an actually available Bulgarian VidAPI / app-language Player 1 track once, without touching protected frames. */
     private void installTvPlaybackAssist() {
-        if (!tvMode || webView == null) return;
+        if (!tvMode || webView == null || Uri.parse(loadedPlayerUrl).getQueryParameter("sub_url") != null) return;
         // A generic series route does not establish the currently selected episode.
         if ("series".equals(type) && (getIntent().getIntExtra("season", -1) < 0
                 || getIntent().getIntExtra("episode", -1) <= 0)) return;
         String js = TvSubtitlePolicy.script(accessibleVideoScript(), id,
                 "series".equals(type) ? getIntent().getIntExtra("season", -1) : -1,
-                getIntent().getIntExtra("episode", -1), Config.LANG_EN.equals(config.language()));
+                getIntent().getIntExtra("episode", -1), !TvPlaybackSource.HOST.equals(selectedPlaybackHost) && Config.LANG_EN.equals(config.language()));
         // Never repeatedly call play(), click provider menus or override a customer's pause.
         webView.evaluateJavascript(js, null);
     }
@@ -593,6 +603,13 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     private String tvRecoveryUrl() {
+        String file = Uri.parse(loadedPlayerUrl).getQueryParameter("sub_url");
+        if (file != null) {
+            long expiry = 0;
+            try { expiry = Long.parseLong(Uri.parse(file).getQueryParameter("expires")); } catch (Exception ignored) { }
+            if (expiry <= System.currentTimeMillis() / 1000 + 30)
+                loadedPlayerUrl = TvPlaybackSource.subtitles(loadedPlayerUrl, null, "", null, null);
+        }
         if (!TvPlaybackSource.HOST.equals(selectedPlaybackHost)
                 || !Double.isFinite(tvRecoveryPosition) || tvRecoveryPosition <= 0) return loadedPlayerUrl;
         Uri selected = Uri.parse(loadedPlayerUrl);
@@ -616,6 +633,7 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     private void handleTvRendererLoss(WebView failed) {
+        closeSubtitlePicker();
         Log.w(TAG, "TV initialization renderer_gone recovery=" + (rendererRecoveryUsed ? 1 : 0));
         closeTvSeekQueue();
         long now = android.os.SystemClock.elapsedRealtime();
@@ -727,6 +745,122 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     private void openSubtitles() {
+        if (!subtitleForeground || webView == null || playbackFailed || leavingPlayback) return;
+        if (!TvPlaybackSource.HOST.equals(selectedPlaybackHost)) {
+            if (!tvMode) openProviderSubtitles();
+            else Toast.makeText(this, R.string.subs_player2_only, Toast.LENGTH_LONG).show();
+            return;
+        }
+        clearBackArm();
+        closeTvSeekQueue();
+        if (subtitlePicker == null) subtitlePicker = new SubtitlePicker(this, new SubtitlePicker.Host() {
+            public String url() { return loadedPlayerUrl; }
+            public void cancelApply() {
+                subtitleApplyGeneration++;
+                if (subtitleConfirm != null) { subtitleConfirm.dismiss(); subtitleConfirm = null; }
+            }
+            public void apply(SubtitleApi.Selection selection, boolean timing, Runnable applied) { applySubtitle(selection, timing, applied); }
+            public void focusPlayer() {
+                if (subtitleForeground && !leavingPlayback && !isDestroyed() && webView != null) {
+                    clearBackArm(); (customView != null ? customView : webView).requestFocus();
+                }
+            }
+        });
+        subtitlePicker.show();
+    }
+
+    /** Only an exact failed signed-file fetch reported by this WebView is observable evidence. */
+    private boolean handleSubtitleFileFailure(WebView source, String url) {
+        if (!subtitleForeground || source != webView || url == null || playbackFailed || leavingPlayback || isFinishing() || isDestroyed()) return false;
+        String selected = Uri.parse(loadedPlayerUrl).getQueryParameter("sub_url");
+        if (selected == null || !selected.equals(url)) return false;
+        if (url.equals(failedSubtitleUrl)) return true; // One attempt; no repeated callback/reload loop.
+        failedSubtitleUrl = url;
+        Toast.makeText(this, R.string.subs_file_failed, Toast.LENGTH_LONG).show();
+        applySubtitle(null, false, () -> { if (subtitlePicker != null) subtitlePicker.dismiss(); });
+        return true;
+    }
+
+    private void closeSubtitlePicker() {
+        subtitleApplyGeneration++;
+        if (subtitleConfirm != null) { subtitleConfirm.dismiss(); subtitleConfirm = null; }
+        if (subtitlePicker != null) { subtitlePicker.close(); subtitlePicker = null; }
+    }
+
+    /** One explicit selection, one navigation; no cross-origin time queries or reload loops. */
+    private void applySubtitle(SubtitleApi.Selection selection, boolean timing, Runnable applied) {
+        if (!subtitleForeground || webView == null || playbackFailed || leavingPlayback) return;
+        if (selection == null && Uri.parse(loadedPlayerUrl).getQueryParameter("sub_url") == null) { applied.run(); return; }
+        final WebView target = webView;
+        final String before = loadedPlayerUrl;
+        final long operation = ++subtitleApplyGeneration;
+        final boolean[] answered = {false};
+        java.util.function.Consumer<String> answer = result -> {
+            if (answered[0]) return; answered[0] = true;
+            if (operation != subtitleApplyGeneration || target != webView || !before.equals(loadedPlayerUrl)
+                    || leavingPlayback || isFinishing() || isDestroyed()) return;
+            Double position = null; Boolean paused = null;
+            try {
+                Object raw = result == null ? null : new JSONTokener(result).nextValue();
+                JSONObject data = raw instanceof String ? new JSONObject((String) raw) : null;
+                if (data != null && data.opt("position") instanceof Number && data.opt("duration") instanceof Number
+                        && TvEpisodeProgressTracker.validMeasurement(data.getDouble("position"), data.getDouble("duration"))) {
+                    position = data.getDouble("position");
+                    if (data.opt("paused") instanceof Boolean) paused = data.getBoolean("paused");
+                }
+            } catch (Exception ignored) { }
+            if (position == null && episodeProgress != null) {
+                TvPlayerProgressBridge.PositionSnapshot snapshot = episodeProgress.recentPosition(android.os.SystemClock.elapsedRealtime());
+                if (snapshot != null) { position = snapshot.position; paused = snapshot.paused; }
+            }
+            if (position == null && timing) { Toast.makeText(this, R.string.subs_timing_position, Toast.LENGTH_LONG).show(); return; }
+            final Double resume = position;
+            final Boolean preservePaused = paused == null ? Boolean.TRUE : paused;
+            Runnable navigate = () -> {
+                if (operation != subtitleApplyGeneration || target != webView || !before.equals(loadedPlayerUrl)
+                        || leavingPlayback || isFinishing() || isDestroyed()) return;
+                if (selection != null && selection.expires <= System.currentTimeMillis() / 1000 + 30) {
+                    Toast.makeText(this, R.string.subs_unavailable, Toast.LENGTH_LONG).show(); return;
+                }
+                String base = before;
+                if (resume == null) { // An earlier resumeAt is not a current position measurement.
+                    Uri u = Uri.parse(base); Uri.Builder b = u.buildUpon().clearQuery();
+                    for (String name : u.getQueryParameterNames()) if (!"resumeAt".equals(name))
+                        for (String value : u.getQueryParameters(name)) b.appendQueryParameter(name, value);
+                    base = b.build().toString();
+                }
+                String next = TvPlaybackSource.subtitles(base, selection == null ? null : selection.url,
+                        selection == null ? "" : selection.label, resume, preservePaused);
+                applied.run();
+                if (episodeProgress != null) { episodeProgress.close(); episodeProgress = null; }
+                closeTvSeekQueue(); hideCustomView();
+                loadedPlayerUrl = next;
+                tvRecoveryPosition = Double.NaN; tvRecoveryPaused = null;
+                tvLastDirectPositionAt = -1;
+                tvSurfaceGeneration++; tvDocumentLoadGeneration = -1;
+                if (tvMode) startSelectedTvDocument();
+                else { recordDocumentLoad(); target.loadUrl(next); }
+            };
+            if (position == null) {
+                subtitleConfirm = new android.app.AlertDialog.Builder(this).setMessage(R.string.subs_restart_confirm)
+                        .setPositiveButton(R.string.subs_continue, (d, w) -> { subtitleConfirm = null; navigate.run(); })
+                        .setNegativeButton(R.string.subs_close, (d, w) -> subtitleConfirm = null).create();
+                subtitleConfirm.show();
+            } else navigate.run();
+        };
+        // Only main/same-origin accessible HTML5 media. Multiple visible videos are ambiguous.
+        String js = "(function(){try{if(location.origin!==" + JSONObject.quote("https://" + selectedPlaybackHost)
+                + "||location.pathname!==" + JSONObject.quote(Uri.parse(before).getPath()) + ")return null;"
+                + "var found=[],seen=[],opaque=false;function scan(d,n){if(n>5||seen.indexOf(d)>=0||seen.length>=16)return;seen.push(d);"
+                + "var vs=d.querySelectorAll('video');for(var i=0;i<vs.length;i++){var v=vs[i],r=v.getBoundingClientRect();"
+                + "if(r.width>0&&r.height>0&&v.readyState>=1&&Number.isFinite(v.duration)&&v.duration>0)found.push(v);}"
+                + "var fs=d.querySelectorAll('iframe');for(var j=0;j<fs.length;j++){var fr=fs[j].getBoundingClientRect();try{if(fs[j].contentDocument)scan(fs[j].contentDocument,n+1);else if(fr.width>0&&fr.height>0)opaque=true;}catch(e){if(fr.width>0&&fr.height>0)opaque=true;}}}"
+                + "scan(document,0);if(found.length!==1||opaque)return null;var v=found[0];return JSON.stringify({position:v.currentTime,duration:v.duration,paused:v.paused});}catch(e){return null;}})();";
+        main.postDelayed(() -> answer.accept(null), 1200);
+        try { target.evaluateJavascript(js, answer::accept); } catch (RuntimeException unavailable) { answer.accept(null); }
+    }
+
+    private void openProviderSubtitles() {
         String js = "var v=document.querySelector('video');" +
                 "if(v&&v.textTracks&&v.textTracks.length){var t=v.textTracks;var current=-1;for(var i=0;i<t.length;i++){if(t[i].mode==='showing'){current=i;t[i].mode='disabled';}else t[i].mode='disabled';}" +
                 "var next=(current+1)% (t.length+1);if(next<t.length){t[next].mode='showing';return 'track:'+((t[next].label||t[next].language||(''+(next+1))));}return 'track:off';}" +
@@ -1074,11 +1208,12 @@ public final class MoviePlayerActivity extends Activity {
         switch (keyCode) {
             case KeyEvent.KEYCODE_DPAD_UP:
             case KeyEvent.KEYCODE_DPAD_DOWN:
+                return true;
             case KeyEvent.KEYCODE_MENU:
             case KeyEvent.KEYCODE_SETTINGS:
             case KeyEvent.KEYCODE_INFO:
-                // Playback mode has no Nyama+ controls surface or hidden focus targets.
-                return true;
+            case KeyEvent.KEYCODE_CAPTIONS:
+                if (repeat == 0) openSubtitles(); return true;
             case KeyEvent.KEYCODE_DPAD_LEFT:
                 if (repeat == 0) seekTvPlayback(-10); return true;
             case KeyEvent.KEYCODE_DPAD_RIGHT:
@@ -1107,6 +1242,7 @@ public final class MoviePlayerActivity extends Activity {
 
     private boolean isTvRemoteKey(int keyCode) {
         switch (keyCode) {
+            case KeyEvent.KEYCODE_CAPTIONS:
             case KeyEvent.KEYCODE_MENU:
             case KeyEvent.KEYCODE_SETTINGS:
             case KeyEvent.KEYCODE_INFO:
@@ -1131,6 +1267,8 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if (subtitleConfirm != null && subtitleConfirm.isShowing()) { subtitleConfirm.dispatchKeyEvent(event); return true; }
+        if (subtitlePicker != null && subtitlePicker.showing()) return subtitlePicker.dispatch(event);
         if(event!=null&&event.getAction()==KeyEvent.ACTION_DOWN)cancelPlayer1InitialStart();
         if (tvMode && playbackFailed && event != null
                 && event.getKeyCode() != KeyEvent.KEYCODE_BACK && event.getKeyCode() != KeyEvent.KEYCODE_ESCAPE)
@@ -1294,6 +1432,10 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     @Override protected void onPause() {
+        subtitleForeground = false;
+        subtitleApplyGeneration++;
+        if (subtitleConfirm != null) { subtitleConfirm.dismiss(); subtitleConfirm = null; }
+        if (subtitlePicker != null) subtitlePicker.pause();
         cancelPlayer1InitialStart();
         if (tvMode) {
             tvForeground = false;
@@ -1310,6 +1452,7 @@ public final class MoviePlayerActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         if (isFinishing() || !ActivationAccess.require(this)) return;
+        subtitleForeground = true;
         if (tvMode) tvForeground = true;
         if (episodeProgress != null) episodeProgress.resume();
         immersive();
@@ -1322,6 +1465,7 @@ public final class MoviePlayerActivity extends Activity {
 
     @SuppressWarnings("deprecation")
     @Override public void onBackPressed() {
+        if (subtitlePicker != null && subtitlePicker.showing()) { subtitlePicker.dismiss(); return; }
         if (tvMode) { handleTvBackPressed(); return; }
         if (remoteControls != null && remoteControls.getVisibility() == View.VISIBLE) { setControlsVisible(false, false); return; }
         if (providerMenuMode) { escapeProviderMenu(); return; }
@@ -1361,6 +1505,7 @@ public final class MoviePlayerActivity extends Activity {
     }
 
     private void releaseMovieWebView() {
+        closeSubtitlePicker();
         if (tvMode) {
             closeTvSeekQueue();
         }

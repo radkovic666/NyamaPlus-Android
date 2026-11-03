@@ -80,6 +80,15 @@ final class ActivationStore implements ActivationController.Credentials {
         } catch (Exception error) { if (out != null) file.failWrite(out); throw error; }
     }
 
+    /** Read-only optional-service credentials: never take the identity creation path. */
+    String[] optionalCredentials() throws Exception {
+        synchronized (LOCK) {
+            JSONObject record = read();
+            String id = record.optString("device_id"), token = record.optString("activation_token");
+            return id.matches("[a-f0-9]{64}") && token.matches("[a-f0-9]{64}") ? new String[]{id, token} : null;
+        }
+    }
+
     /** Optional linkage checks existing secure state without the ID's create-if-missing path. */
     boolean matchesAuthorization(String id, String token) throws Exception {
         synchronized (LOCK) {

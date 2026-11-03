@@ -295,7 +295,7 @@ public class MoviePlayerControlsTest {
         assertEquals("https", uri.getScheme());
         assertEquals("vaplayer.ru", uri.getHost());
         assertEquals(path, uri.getPath());
-        assertEquals(language, uri.getQueryParameter("ds_lang"));
+        assertEquals("bg", uri.getQueryParameter("ds_lang"));
         assertEquals("1", uri.getQueryParameter("autoplay"));
         String expectedColor = String.format(java.util.Locale.ROOT, "#%06x", UiTheme.accent(activity) & 0x00ffffff);
         assertEquals(expectedColor, uri.getQueryParameter("primaryColor").toLowerCase(java.util.Locale.ROOT));
@@ -306,12 +306,11 @@ public class MoviePlayerControlsTest {
         assertTrue("Invalid episode selection must not silently fall back to any media", loaded == null || "about:blank".equals(loaded));
     }
 
-    @Test public void upDownMenuInfoAndSettingsNeverCreateATvPlaybackToolbar() throws Exception {
+    @Test public void upDownNeverCreateATvPlaybackToolbar() throws Exception {
         MoviePlayerActivity activity = open(false, "movies").get();
         RecordingWebView recording = recordProviderKeys(activity);
         assertNoTvPlaybackBar(activity);
-        for (int key : new int[] { KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
-                KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_INFO, KeyEvent.KEYCODE_SETTINGS }) {
+        for (int key : new int[] { KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN }) {
             press(activity, key);
             assertNoTvPlaybackBar(activity);
             assertTrue(visibleButtons(activity).isEmpty());
@@ -871,7 +870,7 @@ public class MoviePlayerControlsTest {
                     if (fun.nyama.tv.Config.PLAYER_1.equals(provider)) {
                         assertNull(selected.getQuery());
                         assertNull(field("episodeProgress").get(activity)); // Never trust Player 1 as a Player 2 bridge origin.
-                    } else assertEquals("en", selected.getQueryParameter("ds_lang"));
+                    } else assertEquals("bg", selected.getQueryParameter("ds_lang"));
                     assertFalse(views(activity.getWindow().getDecorView()).stream()
                             .anyMatch(view -> "mobile-bottom-navigation".equals(view.getTag())));
                     if (!phone) {
@@ -1345,7 +1344,7 @@ public class MoviePlayerControlsTest {
         assertTrue(client.onRenderProcessGone(target, null)); idle(); layoutPlayer(activity); idle();
         Uri resumed = Uri.parse(url(activity));
         assertEquals("/embed/tv/" + SERIES + "/2/3", resumed.getPath());
-        assertEquals("en", resumed.getQueryParameter("ds_lang"));
+        assertEquals("bg", resumed.getQueryParameter("ds_lang"));
         assertEquals("120", resumed.getQueryParameter("resumeAt"));
         assertEquals("0", resumed.getQueryParameter("autoplay"));
         assertTrue(Shadows.shadowOf(target).wasDestroyCalled());
@@ -1399,6 +1398,136 @@ public class MoviePlayerControlsTest {
         rapidRight(activity, 10); target.answer("inaccessible", 0, 1, false); idle();
         assertEquals(1, target.keys.size()); assertSame(target, web(activity));
         assertEquals(1, target.loads); assertFalse(flag(activity, "rendererRecoveryUsed"));
+    }
+
+    @Test public void subtitleMenuUsesNativeWindowAboveFullscreenAndBackOnlyClosesIt() throws Exception {
+        for (int shortcut : new int[]{KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_INFO, KeyEvent.KEYCODE_SETTINGS, KeyEvent.KEYCODE_CAPTIONS}) {
+            MoviePlayerActivity activity = open(false, episode(2, 3)).get();
+            RecordingWebView target = recordProviderKeys(activity);
+            ReflectionHelpers.callInstanceMethod(activity, "configureWebView", ReflectionHelpers.ClassParameter.from(WebView.class, target));
+            View custom = new View(activity);
+            Shadows.shadowOf(web(activity)).getWebChromeClient().onShowCustomView(custom, () -> {});
+            press(activity, shortcut); idle();
+            android.app.AlertDialog menu = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+            assertNotNull(menu); assertTrue(menu.isShowing());
+            assertTrue(((TextView) views(menu.getWindow().getDecorView()).stream().filter(v -> v instanceof TextView
+                    && ((TextView)v).getText().toString().contains("Automatic Bulgarian")).findFirst().get()).isFocusable());
+            assertSame(custom, field("customView").get(activity));
+            long now = SystemClock.uptimeMillis();
+            menu.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK, 0));
+            menu.dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK, 0)); idle();
+            assertFalse(menu.isShowing()); assertFalse(flag(activity, "closeArmed")); assertFalse(activity.isFinishing());
+            assertTrue(target.keys.isEmpty());
+        }
+    }
+
+    @Test public void mobileSubtitleButtonOpensNativePickerWithoutReload() throws Exception {
+        MoviePlayerActivity activity = open(true, "movies").get();
+        String before = url(activity);
+        ReflectionHelpers.callInstanceMethod(activity, "openSubtitles"); idle();
+        android.app.AlertDialog menu = org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+        assertTrue(menu.isShowing()); assertEquals(before, url(activity));
+        menu.dismiss(); assertFalse(activity.isFinishing());
+    }
+
+    static final class SubtitleProbeView extends WebView {
+        final List<ValueCallback<String>> replies = new ArrayList<>();
+        final List<String> scripts = new ArrayList<>(); int loads;
+        SubtitleProbeView(Context context) { super(context); }
+        @Override public void loadUrl(String url) { loads++; super.loadUrl(url); }
+        @Override public void evaluateJavascript(String script, ValueCallback<String> callback) {
+            scripts.add(script);
+            if (callback == null) return;
+            if (script.contains("scan(document,0)")) replies.add(callback);
+            else callback.onReceiveValue("null");
+        }
+        void answer(boolean accessible, boolean paused) throws Exception {
+            replies.remove(0).onReceiveValue(accessible ? org.json.JSONObject.quote(new org.json.JSONObject()
+                    .put("position",120.75).put("duration",600).put("paused",paused).toString()) : "null");
+        }
+    }
+    private static SubtitleProbeView subtitleProbe(MoviePlayerActivity activity) throws Exception {
+        WebView old = web(activity); String selected = url(activity);
+        TvPlayerProgressBridge bridge = (TvPlayerProgressBridge) field("episodeProgress").get(activity);
+        if (bridge != null) bridge.close(); field("episodeProgress").set(activity,null);
+        ViewGroup parent = (ViewGroup) old.getParent(); int index=parent.indexOfChild(old);
+        ViewGroup.LayoutParams params=old.getLayoutParams(); parent.removeView(old);old.destroy();
+        SubtitleProbeView target=new SubtitleProbeView(activity);field("webView").set(activity,target);
+        ReflectionHelpers.callInstanceMethod(activity,"configureWebView",ReflectionHelpers.ClassParameter.from(WebView.class,target));
+        parent.addView(target,index,params);target.loadUrl(selected);return target;
+    }
+    private static SubtitleApi.Selection subtitleSelection(String url) throws Exception {
+        long expires=System.currentTimeMillis()/1000+900;
+        String base="https://nyama.fun/api/subtitles";
+        org.json.JSONObject j=new org.json.JSONObject().put("media",SubtitleMedia.fromUrl(url).json()).put("file_id",123)
+                .put("offset_seconds",0).put("release","Actual BG release").put("expires",expires)
+                .put("url",base+"/file/"+"a".repeat(64)+"?expires="+expires+"&sig="+"b".repeat(64));
+        return new SubtitleApi.Selection(j,base,123,0,System.currentTimeMillis()/1000);
+    }
+    private static void applySubtitle(MoviePlayerActivity activity,SubtitleApi.Selection selected,boolean timing,Runnable done) {
+        ReflectionHelpers.callInstanceMethod(activity,"applySubtitle",ReflectionHelpers.ClassParameter.from(SubtitleApi.Selection.class,selected),
+                ReflectionHelpers.ClassParameter.from(boolean.class,timing),ReflectionHelpers.ClassParameter.from(Runnable.class,done));
+    }
+    @Test public void subtitleSelectionReloadsExactPausedEpisodeOnceAndAutomaticPolicyCannotOverrideIt() throws Exception {
+        MoviePlayerActivity activity=open(false,episode(2,3)).get();SubtitleProbeView target=subtitleProbe(activity);
+        String original=url(activity);SubtitleApi.Selection selection=subtitleSelection(original);int[] done={0};
+        applySubtitle(activity,selection,false,()->done[0]++);assertEquals(1,target.loads);
+        ValueCallback<String> callback=target.replies.get(0);target.answer(true,true);idle();
+        assertEquals(2,target.loads);assertEquals(1,done[0]);Uri changed=Uri.parse(url(activity));
+        assertEquals(Uri.parse(original).getPath(),changed.getPath());assertEquals("bg",changed.getQueryParameter("ds_lang"));
+        assertEquals("0",changed.getQueryParameter("autoplay"));assertEquals("120",changed.getQueryParameter("resumeAt"));
+        assertEquals(selection.url,changed.getQueryParameter("sub_url"));
+        callback.onReceiveValue("null");idle();assertEquals(2,target.loads);
+        target.scripts.clear();Shadows.shadowOf(target).getWebViewClient().onPageFinished(target,url(activity));idle();
+        assertTrue(target.scripts.stream().noneMatch(js->js.contains("__nyamaAutoSubtitle")));
+    }
+    @Test public void unknownMoviePositionExplainsRestartAndCancelKeepsCurrentPlayback() throws Exception {
+        MoviePlayerActivity activity=open(false,"movies").get();SubtitleProbeView target=subtitleProbe(activity);String before=url(activity);
+        applySubtitle(activity,subtitleSelection(before),false,()->{});target.answer(false,false);idle();
+        android.app.AlertDialog confirm=org.robolectric.shadows.ShadowAlertDialog.getLatestAlertDialog();
+        assertTrue(confirm.isShowing());assertEquals(1,target.loads);assertEquals(before,url(activity));
+        confirm.getButton(android.content.DialogInterface.BUTTON_NEGATIVE).performClick();idle();
+        assertEquals(1,target.loads);assertEquals(before,url(activity));
+    }
+    @Test public void timingWithUnknownPositionNeverReloadsAndStaleProbeAfterPauseCannotChangeTitle() throws Exception {
+        ActivityController<MoviePlayerActivity> lifecycle=open(false,"movies");MoviePlayerActivity activity=lifecycle.get();
+        SubtitleProbeView target=subtitleProbe(activity);String before=url(activity);SubtitleApi.Selection selection=subtitleSelection(before);
+        applySubtitle(activity,selection,true,()->fail("No timing reload without known position"));target.answer(false,false);idle();
+        assertEquals(1,target.loads);assertEquals(before,url(activity));
+        applySubtitle(activity,selection,false,()->fail("Stale callback"));lifecycle.pause();target.answer(true,true);idle();
+        assertEquals(1,target.loads);assertEquals(before,url(activity));
+    }
+    @Test public void expiredExternalFileIsRemovedDuringRendererRecoveryWithoutChangingEpisodeIdentity() throws Exception {
+        MoviePlayerActivity activity=open(false,episode(2,3)).get();String original=url(activity);
+        String expired="https://nyama.fun/api/subtitles/file/"+"a".repeat(64)+"?expires=1000000000&sig="+"b".repeat(64);
+        field("loadedPlayerUrl").set(activity,TvPlaybackSource.subtitles(original,expired,"BG release",null,null));
+        WebView failed=web(activity);Shadows.shadowOf(failed).getWebViewClient().onRenderProcessGone(failed,null);idle();layoutPlayer(activity);idle();
+        Uri recovered=Uri.parse(url(activity));assertEquals(Uri.parse(original).getPath(),recovered.getPath());
+        assertEquals("bg",recovered.getQueryParameter("ds_lang"));assertNull(recovered.getQueryParameter("sub_url"));
+    }
+
+    @Test public void closingSubtitlePickerInvalidatesAnInFlightPositionProbe() throws Exception {
+        MoviePlayerActivity activity=open(false,"movies").get();SubtitleProbeView target=subtitleProbe(activity);String before=url(activity);
+        press(activity,KeyEvent.KEYCODE_MENU);idle();
+        applySubtitle(activity,subtitleSelection(before),false,()->fail("Closed menu must not apply"));
+        press(activity,KeyEvent.KEYCODE_BACK);idle();target.answer(true,true);idle();
+        assertEquals(1,target.loads);assertEquals(before,url(activity));assertFalse(flag(activity,"closeArmed"));
+    }
+
+    @Test public void observableSignedFileFailureFallsBackOnceWithoutGuessingOtherResourceFailures() throws Exception {
+        MoviePlayerActivity activity=open(false,episode(2,3)).get();SubtitleProbeView target=subtitleProbe(activity);
+        SubtitleApi.Selection selection=subtitleSelection(url(activity));
+        applySubtitle(activity,selection,false,()->{});target.answer(true,true);idle();assertEquals(2,target.loads);
+        WebViewClient client=Shadows.shadowOf(target).getWebViewClient();
+        client.onReceivedError(target,request("https://vaplayer.ru/another-resource",false),networkError());
+        assertTrue(target.replies.isEmpty());assertEquals(selection.url,Uri.parse(url(activity)).getQueryParameter("sub_url"));
+        client.onReceivedError(target,request(selection.url,false),networkError());
+        client.onReceivedError(target,request(selection.url,false),networkError());
+        assertEquals(1,target.replies.size());target.answer(true,true);idle();assertEquals(3,target.loads);
+        Uri fallback=Uri.parse(url(activity));assertNull(fallback.getQueryParameter("sub_url"));
+        assertEquals("bg",fallback.getQueryParameter("ds_lang"));assertEquals("120",fallback.getQueryParameter("resumeAt"));
+        assertEquals("0",fallback.getQueryParameter("autoplay"));
+        client.onReceivedError(target,request(selection.url,false),networkError());assertTrue(target.replies.isEmpty());
     }
 
 }
