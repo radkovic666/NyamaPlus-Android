@@ -77,6 +77,7 @@ public final class CatalogActivity extends Activity {
     private boolean dailyBrowsing;
     private List<CatalogItem> dailyBrowseItems;
     private String browseLabel = "";
+    private String browseCategory = "";
     private int landingScrollY;
     private LinearLayout paging;
     private final ArrayList<String> selectedGenres = new ArrayList<>();
@@ -150,6 +151,7 @@ public final class CatalogActivity extends Activity {
         super.onResume();
         if (isFinishing() || !ActivationAccess.require(this)) return;
         if (firstResume) { firstResume = false; return; }
+        if (!config.isPhoneMode() && moreHeading != null) updateDailyRow();
         if (favoritesOnly) loadPage();
     }
 
@@ -202,6 +204,7 @@ public final class CatalogActivity extends Activity {
         out.putBoolean("browse_requested", browseRequested);
         out.putBoolean("daily_browsing", dailyBrowsing);
         out.putString("browse_label", browseLabel);
+        out.putString("browse_category", browseCategory);
         out.putInt("page", page);
         out.putString("query", search == null ? "" : search.getText().toString());
         out.putString("sort", sortMode);
@@ -222,6 +225,7 @@ public final class CatalogActivity extends Activity {
         browseRequested = state.getBoolean("browse_requested", false);
         dailyBrowsing = state.getBoolean("daily_browsing", false);
         browseLabel = state.getString("browse_label", "");
+        browseCategory = state.getString("browse_category", "");
         page = Math.max(1, state.getInt("page", 1));
         restoredQuery = state.getString("query", "");
         sortMode = state.getString("sort", "reviews");
@@ -242,6 +246,7 @@ public final class CatalogActivity extends Activity {
         browseRequested = p.getBoolean(stateKey("browse_requested"), false);
         dailyBrowsing = p.getBoolean(stateKey("daily_browsing"), false);
         browseLabel = p.getString(stateKey("browse_label"), "");
+        browseCategory = p.getString(stateKey("browse_category"), "");
         page = Math.max(1, p.getInt(stateKey("page"), 1));
         restoredQuery = p.getString(stateKey("query"), "");
         sortMode = p.getString(stateKey("sort"), "reviews");
@@ -272,6 +277,7 @@ public final class CatalogActivity extends Activity {
         saved.putBoolean(stateKey("browse_requested"), browseRequested)
                 .putBoolean(stateKey("daily_browsing"), dailyBrowsing)
                 .putString(stateKey("browse_label"), browseLabel)
+                .putString(stateKey("browse_category"), browseCategory)
                 .putInt(stateKey("page"), page)
                 .putString(stateKey("query"), search == null ? restoredQuery : search.getText().toString())
                 .putString(stateKey("sort"), sortMode)
@@ -449,7 +455,7 @@ public final class CatalogActivity extends Activity {
             tvBrowseStack.addView(rowContainer,new LinearLayout.LayoutParams(-1,-2));
             moreHeading=text(Config.LANG_EN.equals(config.language())?"More":"Още",18,0xFFC2CCDA,true);
             moreHeading.setTag("tv-catalog-more");moreHeading.setPadding(dp(8),dp(16),dp(8),dp(8));moreHeading.setVisibility(View.GONE);
-            tvBrowseStack.addView(moreHeading,new LinearLayout.LayoutParams(-1,-2));
+            root.addView(moreHeading,new LinearLayout.LayoutParams(-1,-2));
             homeRows.addView(tvBrowseStack, new ScrollView.LayoutParams(-1, -2));
             homeRows.setOnScrollChangeListener((v, x, y, oldX, oldY) -> loadVisibleRowPosters());
             root.addView(homeRows, new LinearLayout.LayoutParams(-1, 0, 1f));
@@ -587,7 +593,7 @@ public final class CatalogActivity extends Activity {
         selectedGenres.clear();
         favoritesOnly = false;
         sortMode = "reviews";
-        browseRequested = false; dailyBrowsing = false; dailyBrowseItems = null; browseLabel = "";
+        browseRequested = false; dailyBrowsing = false; dailyBrowseItems = null; browseLabel = ""; browseCategory = "";
         page = 1;
         restorePosition = 0;
         focusFirstAfterPageChange = true;
@@ -728,7 +734,10 @@ public final class CatalogActivity extends Activity {
         io.execute(() -> {
             try {
                 List<String> result = PukankiApi.fetchGenres(this, section);
-                runOnUiThread(() -> availableGenres = result);
+                runOnUiThread(() -> {
+                    availableGenres = result;
+                    if (!config.isPhoneMode() && isRowLanding() && adapter != null && !adapter.snapshot().isEmpty()) observeRows(adapter.snapshot());
+                });
             } catch (Exception ignored) {}
         });
     }
@@ -822,7 +831,7 @@ public final class CatalogActivity extends Activity {
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setTextColor(0xFFB8C0CA);
             dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(0xFFB8C0CA);
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                browseRequested = true; dailyBrowsing = false; dailyBrowseItems = null; browseLabel = "";
+                browseRequested = true; dailyBrowsing = false; dailyBrowseItems = null; browseLabel = ""; browseCategory = "";
                 favoritesOnly = favoriteCheck.isChecked();
                 int checked = 0;
                 for (int i = 0; i < sortIds.length; i++)
@@ -840,7 +849,7 @@ public final class CatalogActivity extends Activity {
                 dialog.dismiss();
             });
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> {
-                browseRequested = false; dailyBrowsing = false; dailyBrowseItems = null; browseLabel = "";
+                browseRequested = false; dailyBrowsing = false; dailyBrowseItems = null; browseLabel = ""; browseCategory = "";
                 favoritesOnly = false;
                 sortMode = "reviews";
                 selectedGenres.clear();
@@ -869,7 +878,7 @@ public final class CatalogActivity extends Activity {
             return;
         }
         browseRequested = !currentQuery().isEmpty() || browseRequested;
-        dailyBrowsing = false; dailyBrowseItems = null; browseLabel = "";
+        dailyBrowsing = false; dailyBrowseItems = null; browseLabel = ""; browseCategory = "";
         ++tvSearchGeneration;
         if (tvCatalogReady) { applyTvLocalPage(tvVisibleCatalog, currentQuery()); return; }
         if (currentQuery().isEmpty() && !tvInitialVisiblePage.isEmpty()) {
@@ -1053,6 +1062,7 @@ public final class CatalogActivity extends Activity {
         boolean landing = isRowLanding();
         rowContainer.setVisibility(landing && rowContainer.getChildCount() > 0 ? View.VISIBLE : View.GONE);
         moreHeading.setVisibility(landing ? View.GONE : View.VISIBLE);
+        if (!browseCategory.isEmpty()) browseLabel = CatalogRows.categoryLabel(browseCategory, Config.LANG_EN.equals(config.language()));
         moreHeading.setText(browseLabel.isEmpty() ? (Config.LANG_EN.equals(config.language()) ? "Results" : "Резултати") : browseLabel);
         grid.setVisibility(landing ? View.GONE : View.VISIBLE);
         paging.setVisibility(landing ? View.GONE : View.VISIBLE);
@@ -1067,6 +1077,7 @@ public final class CatalogActivity extends Activity {
         landingScrollY = homeRows.getScrollY();
         browseRequested = true; dailyBrowsing = "featured".equals(row.key);
         dailyBrowseItems = dailyBrowsing ? new ArrayList<>(row.items) : null;
+        browseCategory = row.key;
         browseLabel = Config.LANG_EN.equals(config.language()) ? row.en : row.bg;
         selectedGenres.clear(); selectedGenres.addAll(genres);
         favoritesOnly = false; sortMode = "reviews"; page = 1; restorePosition = -1;
@@ -1104,26 +1115,38 @@ public final class CatalogActivity extends Activity {
 
     private void observeRows(List<CatalogItem> verified) {
         if (homeRows == null || !currentQuery().isEmpty() || favoritesOnly) return;
-        final int generation = rowsGeneration;
+        final int dataGeneration = tvDataGeneration;
         final String requestedSection = section;
+        final int catalogPages = totalPages;
+        final String requestedBackend = config.pukankiBaseUrl();
         final Context application = getApplicationContext();
         final List<CatalogItem> snapshot = new ArrayList<>(verified);
         rowsIo.execute(() -> {
+            try { snapshot.addAll(PukankiApi.recommendationCandidates(application, requestedSection, catalogPages, System.currentTimeMillis())); }
+            catch (Exception unavailable) { /* Offline: retain genuinely verified observed candidates only. */ }
+            if (!requestedBackend.equals(new Config(application).pukankiBaseUrl())) return;
             List<CatalogRows.Row> rows = CatalogRows.observeAndRead(application, requestedSection, snapshot, System.currentTimeMillis());
             main.post(() -> {
-                if (generation != rowsGeneration || isFinishing() || isDestroyed() || !isRowLanding()) return;
+                if (dataGeneration != tvDataGeneration || !requestedSection.equals(section) || isFinishing() || isDestroyed() || !isRowLanding()) return;
                 renderRows(rows);
+                status.setText(rows.isEmpty() ? R.string.daily_no_verified : R.string.daily_ready);
             });
         });
     }
 
     private void renderRows(List<CatalogRows.Row> rows) {
+        List<CatalogRows.Row> displayedRows = new ArrayList<>(rows);
+        // A real Animation category remains reachable even if today's verified pool has no animation.
+        // The row then contains only More; no unverified or below-threshold poster is invented.
+        if ("movies".equals(section) && !CatalogRows.catalogGenres("animation", availableGenres).isEmpty()
+                && rows.stream().noneMatch(row -> "animation".equals(row.key)))
+            displayedRows.add(Math.min(2, displayedRows.size()), new CatalogRows.Row("animation", "Анимация", "Animation", java.util.Collections.emptyList()));
         boolean restoreFocus = rowContainer.hasFocus() || landingFocusPending;
         String focusedMore = lastRowFocus != null && lastRowFocus.getTag() instanceof String ? (String) lastRowFocus.getTag() : "";
         String focusedId = lastRowFocus != null && lastRowFocus.getTag() instanceof Holder
                 ? ((Holder) lastRowFocus.getTag()).item.id : "";
         rowContainer.removeAllViews(); rowCards.clear(); lastRowFocus = null;
-        for (CatalogRows.Row row : rows) {
+        for (CatalogRows.Row row : displayedRows) {
             TextView heading = text(Config.LANG_EN.equals(config.language()) ? row.en : row.bg, 18, 0xFFC2CCDA, true);
             heading.setPadding(dp(8), dp(10), dp(8), dp(6));
             rowContainer.addView(heading, new LinearLayout.LayoutParams(-1, -2));
@@ -1161,7 +1184,7 @@ public final class CatalogActivity extends Activity {
                         View more = rowContainer.findViewWithTag("catalog-more-" + row.key);
                         if (more != null) more.requestFocus(); return true;
                     }
-                    if (key == KeyEvent.KEYCODE_DPAD_DOWN && event.getAction() == KeyEvent.ACTION_DOWN && row == rows.get(rows.size()-1)) return true;
+                    if (key == KeyEvent.KEYCODE_DPAD_DOWN && event.getAction() == KeyEvent.ACTION_DOWN && row == displayedRows.get(displayedRows.size()-1)) return true;
                     return false;
                 });
             }
@@ -1176,7 +1199,7 @@ public final class CatalogActivity extends Activity {
             more.setNextFocusRightId(more.getId());
             more.setOnKeyListener((v,key,event) -> {
                 if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
-                if (key == KeyEvent.KEYCODE_DPAD_RIGHT || (key == KeyEvent.KEYCODE_DPAD_DOWN && row == rows.get(rows.size()-1))) return true;
+                if (key == KeyEvent.KEYCODE_DPAD_RIGHT || (key == KeyEvent.KEYCODE_DPAD_DOWN && row == displayedRows.get(displayedRows.size()-1))) return true;
                 if (key == KeyEvent.KEYCODE_DPAD_LEFT && lastPoster != null) { lastPoster.requestFocus(); return true; }
                 return false;
             });
@@ -1193,7 +1216,7 @@ public final class CatalogActivity extends Activity {
             rowContainer.addView(strip, new LinearLayout.LayoutParams(-1, -2));
         }
         if (lastRowFocus == null && !rowCards.isEmpty()) lastRowFocus = rowCards.get(0);
-        boolean show = !rows.isEmpty();
+        boolean show = !displayedRows.isEmpty();
         if(show)landingFocusPending=false;
         updateDailyRow();
         if (show && restoreFocus && lastRowFocus != null) lastRowFocus.requestFocus();
@@ -1247,7 +1270,8 @@ public final class CatalogActivity extends Activity {
                     : result.items);
         }
         loading.setVisibility(View.GONE);
-        status.setText(config.isPhoneMode() || !isRowLanding() ? getString(R.string.catalog_count,total) : "");
+        status.setText(config.isPhoneMode() || !isRowLanding() ? getString(R.string.catalog_count,total)
+                : rowContainer.getChildCount() == 0 ? getString(R.string.daily_preparing) : "");
         pageStatus.setText(getString(R.string.page_of, page, totalPages));
         prev.setEnabled(page > 1);
         next.setEnabled(page < totalPages);

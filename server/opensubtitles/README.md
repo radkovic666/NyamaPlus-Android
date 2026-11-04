@@ -1,3 +1,5 @@
+> Legacy mobile compatibility example. Android TV now uses `server/subsource/` through the same existing host/path. This directory is not the primary TV provider. Its generic security helpers now live in sibling `server/subtitles-common/`; include that directory when deploying this repository version. Do not install a second public subtitle route.
+
 # Nyama+ optional OpenSubtitles service
 
 This is an independently deployed PHP 8.2+ example, **not an existing nyama.fun endpoint**. Nothing in this task deploys it, alters a production database, or puts an OpenSubtitles secret in Android. The supplied APK leaves the feature disabled; native VidAPI Bulgarian remains available immediately.

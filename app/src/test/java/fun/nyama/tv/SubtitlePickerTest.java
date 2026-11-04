@@ -20,7 +20,7 @@ import static org.junit.Assert.*;
 public class SubtitlePickerTest {
     ActivityController<Activity> lifecycle;Activity activity;SubtitlePicker picker;
     String url=TvPlaybackSource.movie("tt0111161","en",1);int applied;
-    @Before public void setup(){lifecycle=Robolectric.buildActivity(Activity.class).setup();activity=lifecycle.get();new fun.nyama.tv.Config(activity).setLanguage("en");}
+    @Before public void setup(){lifecycle=Robolectric.buildActivity(Activity.class).setup();activity=lifecycle.get();new fun.nyama.tv.Config(activity).setLanguage("en");new fun.nyama.tv.Config(activity).setDeviceMode(fun.nyama.tv.Config.MODE_TV);}
     @After public void cleanup(){if(picker!=null)picker.close();lifecycle.pause().stop().destroy();}
     SubtitlePicker.Host host(){return new SubtitlePicker.Host(){public String url(){return url;}
         public void apply(SubtitleApi.Selection selection,boolean timing,Runnable done){applied++;done.run();}public void focusPlayer(){}};}
@@ -29,7 +29,7 @@ public class SubtitlePickerTest {
     void settle()throws Exception { java.lang.reflect.Field f=SubtitlePicker.class.getDeclaredField("worker");f.setAccessible(true);((ExecutorService)f.get(picker)).submit(()->{}).get(3,TimeUnit.SECONDS);Shadows.shadowOf(Looper.getMainLooper()).idle(); }
     @Test public void disabledBackendIsNotContactedAtStartupAndAutomaticOptionAlwaysWorks()throws Exception{
         int[] reads={0};picker=new SubtitlePicker(activity,host(),()->new SubtitleApi("",()->{reads[0]++;return null;},u->{fail();return null;}));
-        picker.show();assertEquals(0,reads[0]);button("Search OpenSubtitles").performClick();settle();assertEquals(0,reads[0]);
+        picker.show();assertEquals(0,reads[0]);button("Search SubSource").performClick();settle();assertEquals(0,reads[0]);
         assertTrue(picker.showing());Button auto=button("Automatic Bulgarian");assertTrue(auto.isEnabled());auto.performClick();assertEquals(1,applied);assertFalse(picker.showing());
     }
     @Test public void deliberateSearchShowsActualResultAndOneSelectionCallsHostOnce()throws Exception{
@@ -40,13 +40,22 @@ public class SubtitlePickerTest {
             else {long expiry=System.currentTimeMillis()/1000+900;response.put("file_id",123).put("offset_seconds",0).put("release","Real release label").put("expires",expiry)
                     .put("url",base+"/file/"+"a".repeat(64)+"?expires="+expiry+"&sig="+"b".repeat(64));}
             return new SubtitleIntegrationTest.Fake(u,200,response.toString());}));
-        picker.show();assertEquals(0,calls[0]);button("Search OpenSubtitles").performClick();settle();assertEquals(1,calls[0]);
+        picker.show();assertEquals(0,calls[0]);button("Search SubSource").performClick();settle();assertEquals(1,calls[0]);
         button("Real release label").performClick();settle();assertEquals(2,calls[0]);assertEquals(1,applied);assertFalse(picker.showing());
     }
     @Test public void dismissedRequestCannotApplyOrReplaceANewerMediaSession()throws Exception{
         CountDownLatch started=new CountDownLatch(1),release=new CountDownLatch(1);
         picker=new SubtitlePicker(activity,host(),()->new SubtitleApi("https://nyama.fun/api/subtitles",()->new String[]{"a","b"},u->{started.countDown();release.await(2,TimeUnit.SECONDS);return new SubtitleIntegrationTest.Fake(u,200,"{\"ok\":true}");}));
-        picker.show();button("Search OpenSubtitles").performClick();assertTrue(started.await(2,TimeUnit.SECONDS));picker.pause();
+        picker.show();button("Search SubSource").performClick();assertTrue(started.await(2,TimeUnit.SECONDS));picker.pause();
         url=TvPlaybackSource.movie("tt0133093","en",1);release.countDown();settle();assertEquals(0,applied);assertFalse(picker.showing());
     }
+    @Test public void mobileKeepsItsExistingPickerAndTvFallbackIsPinnedOutsideResults() {
+        new fun.nyama.tv.Config(activity).setDeviceMode(fun.nyama.tv.Config.MODE_PHONE);
+        picker=new SubtitlePicker(activity,host());picker.show();assertTrue(button("Search OpenSubtitles").isEnabled());picker.close();
+        new fun.nyama.tv.Config(activity).setDeviceMode(fun.nyama.tv.Config.MODE_TV);
+        picker=new SubtitlePicker(activity,host());picker.show();
+        Button automatic=button("Automatic Bulgarian");Button search=button("Search SubSource");
+        assertNotSame(automatic.getParent(),search.getParent());assertTrue(automatic.isEnabled());
+    }
+
 }

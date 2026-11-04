@@ -219,4 +219,11 @@
     <string name="subs_reload_notice">Изборът на файл може да презареди плейъра. Изберете Автоматични български, ако файлът не се зареди. Наличността зависи от източника.</string>
     <string name="subs_restart_confirm">Източникът не е предоставил текуща позиция. Смяната на субтитрите може да стартира заглавието отначало. Ще поискаме пауза; може да е нужно да натиснете Пусни. Продължавате ли?</string>
     <string name="subs_file_failed">Зареждането на избраните субтитри е неуспешно. Връщане към Автоматични български при известна позиция; рестартирането изисква потвърждение.</string>
+    <string name="subs_subsource_title">Български субтитри — SubSource</string>
+    <string name="subs_subsource_search">Търси в SubSource</string>
+    <string name="subs_subsource_attribution">Български издания от SubSource. Търсенето е само по Ваше желание.</string>
+    <string name="subs_subsource_more">Още резултати от SubSource</string>
+    <string name="daily_preparing">Подготовка на дневните предложения…</string>
+    <string name="daily_no_verified">Няма потвърдени заглавия с IMDb 6,5–10 и плакати. Използвайте филтрите или търсенето за целия каталог.</string>
+    <string name="daily_ready"></string>
 </resources>

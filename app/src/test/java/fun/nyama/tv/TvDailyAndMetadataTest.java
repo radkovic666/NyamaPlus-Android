@@ -13,11 +13,13 @@ import static org.junit.Assert.*;
 public class TvDailyAndMetadataTest {
     private Context context;
     @Before public void setup() { context=RuntimeEnvironment.getApplication(); context.getSharedPreferences("nyama_daily_titles",0).edit().clear().commit(); }
-    private CatalogItem title(int i,String rating) { return new CatalogItem("tt"+(1000000+i),"movie","Title "+i,"","2020","","60","Drama",rating,"","",""); }
+    private CatalogItem title(int i,String rating) {
+        try {java.lang.reflect.Field f=PukankiApi.class.getDeclaredField("TV_POSTER_AVAILABILITY");f.setAccessible(true);((Map<String,Boolean>)f.get(null)).put(new fun.nyama.tv.Config(context).pukankiBaseUrl()+"|tt"+(1000000+i),true);}catch(Exception e){throw new AssertionError(e);}
+        return new CatalogItem("tt"+(1000000+i),"movie","Title "+i,"","2020","","60","Drama",rating,"","",""); }
     private List<String> ids(List<CatalogItem> items) { List<String> ids=new ArrayList<>(); for(CatalogItem i:items)ids.add(i.id); return ids; }
-    @Test public void onlyReliableSevenPlusRatingsQualify() {
-        for(String rating:new String[]{"", "N/A", "6.9", "NaN", "11", "7/10"}) assertFalse(DailyTitles.eligible(title(1,rating)));
-        assertTrue(DailyTitles.eligible(title(1,"7.0"))); assertTrue(DailyTitles.eligible(title(1,"10")));
+    @Test public void onlyReliableSixPointFivePlusRatingsQualify() {
+        for(String rating:new String[]{"", "N/A", "6.49", "NaN", "11", "7/10"}) assertFalse(DailyTitles.eligible(title(1,rating)));
+        assertTrue(DailyTitles.eligible(title(1,"6.5"))); assertTrue(DailyTitles.eligible(title(1,"10")));
     }
     @Test public void selectedIdsAreStableWithinDaySeparateBySectionAndRotate() {
         long now=1704110400000L; List<CatalogItem> pool=new ArrayList<>();
@@ -44,8 +46,20 @@ public class TvDailyAndMetadataTest {
         assertEquals("Actual overview",normalized.getString("Plot")); assertEquals("Drama",normalized.getString("Genre"));
         assertEquals("66 min",normalized.getString("Runtime")); assertEquals(3,normalized.getInt("totalSeasons"));
         assertEquals("2019-05-20",normalized.getString("Released")); assertEquals("2019",normalized.getString("Year"));
+        assertFalse(normalized.has("imdbRating")); // TMDb vote_average must not be relabelled IMDb.
         assertFalse(TvTitleInfo.normalize(new JSONObject().put("number_of_seasons",0)).has("totalSeasons"));
         assertEquals("",TvTitleInfo.fallback("",new JSONObject(),"Genre"));
         assertEquals("Original",TvTitleInfo.fallback("Original",normalized,"Plot"));
     }
+    @Test public void localCalendarDayRatherThanUtcMidnightControlsRotation() {
+        TimeZone old=TimeZone.getDefault();TimeZone.setDefault(TimeZone.getTimeZone("America/Los_Angeles"));
+        try {
+            long start=java.time.Instant.parse("2024-01-01T23:59:00Z").toEpochMilli();
+            List<CatalogItem> pool=new ArrayList<>();for(int i=0;i<30;i++)pool.add(title(i,"6.5"));
+            DailyTitles.observe(context,"movies",pool,start);List<String> first=ids(DailyTitles.read(context,"movies",start));
+            assertEquals(first,ids(DailyTitles.read(context,"movies",start+120000)));
+            assertNotEquals(first,ids(DailyTitles.read(context,"movies",java.time.Instant.parse("2024-01-02T08:01:00Z").toEpochMilli())));
+        } finally {TimeZone.setDefault(old);}
+    }
+
 }

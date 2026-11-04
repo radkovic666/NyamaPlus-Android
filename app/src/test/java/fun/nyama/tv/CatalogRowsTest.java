@@ -23,6 +23,10 @@ public class CatalogRowsTest {
         context.getSharedPreferences("nyama_tv_private", 0).edit().clear().commit();
     }
     private CatalogItem title(int n, String genre, String rating) {
+        try {
+            java.lang.reflect.Field f=PukankiApi.class.getDeclaredField("TV_POSTER_AVAILABILITY");f.setAccessible(true);
+            ((Map<String,Boolean>)f.get(null)).put(new fun.nyama.tv.Config(context).pukankiBaseUrl()+"|tt"+(1000000+n),true);
+        } catch(Exception e) { throw new AssertionError(e); }
         return new CatalogItem("tt" + (1000000 + n), "movie", "Title " + n, "Original " + n,
                 "2024", "", "90", genre, rating, "200", "3", "24");
     }
@@ -33,6 +37,9 @@ public class CatalogRowsTest {
             for (int i = 0; i < 12; i++) result.add(title(n++, genre, i < 8 ? "8.2" : "6.0"));
         return result;
     }
+    private List<CatalogItem> seriesCandidates() {
+        List<CatalogItem> out=new ArrayList<>(); for(CatalogItem i:candidates()) out.add(new CatalogItem(i.id,"tvSeries",i.title,i.originalTitle,i.year,i.endYear,i.runtime,i.genres,i.rating,i.votes,i.seasons,i.episodeCount));return out;
+    }
     private List<String> ids(List<CatalogRows.Row> rows) {
         List<String> ids = new ArrayList<>();
         for (CatalogRows.Row row : rows) for (CatalogItem item : row.items) ids.add(row.key + ":" + item.id);
@@ -40,8 +47,8 @@ public class CatalogRowsTest {
     }
     @Test public void moviesAndSeriesUseRelevantDailyGenresAndAvoidRepeatsWhenAvailable() {
         for (String section : new String[]{"movies", "series"}) {
-            List<CatalogRows.Row> rows = CatalogRows.observeAndRead(context, section, candidates(), now);
-            assertEquals(7, rows.size()); assertEquals("featured", rows.get(0).key);
+            List<CatalogRows.Row> rows = CatalogRows.observeAndRead(context, section, section.equals("series") ? seriesCandidates() : candidates(), now);
+            assertEquals(section.equals("series") ? 7 : 9, rows.size()); assertEquals("featured", rows.get(0).key);
             Set<String> seen = new HashSet<>();
             for (CatalogRows.Row row : rows) {
                 assertTrue(row.items.size() >= 2 && row.items.size() <= 6);
@@ -51,8 +58,8 @@ public class CatalogRowsTest {
                 }
             }
             Set<String> keys = new HashSet<>(); for (CatalogRows.Row row : rows) keys.add(row.key);
-            assertEquals(section.equals("series"), keys.contains("crime"));
-            assertEquals(section.equals("series"), keys.contains("scifi"));
+            assertTrue(keys.contains("crime"));
+            assertTrue(keys.contains("scifi"));
         }
     }
     @Test public void stableDaySurvivesNewPagesAndReopeningAndRotatesNextDay() {
@@ -70,12 +77,11 @@ public class CatalogRowsTest {
         assertEquals(240, new JSONObject(context.getSharedPreferences("nyama_catalog_rows", 0).getString(key, "{}")).length());
         assertTrue(CatalogRows.observeAndRead(context, "movies", Collections.emptyList(), now + CatalogRows.TTL_MS + 1).isEmpty());
         List<CatalogRows.Row> unrated=CatalogRows.observeAndRead(context,"series",Arrays.asList(title(1,"","N/A"),title(2,"","")),now);
-        assertEquals(1,unrated.size());assertEquals("featured",unrated.get(0).key);
-        assertTrue(unrated.get(0).items.stream().anyMatch(item->"N/A".equals(item.rating)));
+        assertTrue(unrated.isEmpty());
     }
-    @Test public void mixedFeaturedDoesNotGateOnRatingsAndSameDaySelectionsSurvivePoolTurnover() {
+    @Test public void verifiedFeaturedStaysStableAcrossPoolTurnover() {
         List<CatalogItem> pool=new ArrayList<>();
-        for(int i=0;i<100;i++)pool.add(title(i,i%2==0?"Comedy":"Drama",i%2==0?"5.2":"N/A"));
+        for(int i=0;i<100;i++)pool.add(title(i,i%2==0?"Comedy":"Drama",i%2==0?"6.5":"8.0"));
         List<String> first=ids(CatalogRows.observeAndRead(context,"movies",pool,now));assertFalse(first.isEmpty());
         List<CatalogItem> replacements=new ArrayList<>();
         for(int i=200;i<600;i++)replacements.add(title(i,"Action, Horror, Family, Thriller","9.9"));
@@ -84,10 +90,10 @@ public class CatalogRowsTest {
         assertEquals(first,retained);
     }
     @Test public void aliasesAndSparsePoolsDoNotProduceIdenticalRowsOrFabricateCandidates() {
-        assertTrue(CatalogRows.matches(title(1, "Екшън, Комедия", ""), "action"));
-        assertTrue(CatalogRows.matches(title(1, "Фантастика", ""), "scifi"));
-        assertTrue(CatalogRows.matches(title(1, "Sci-Fi", ""), "scifi"));
-        assertTrue(CatalogRows.matches(title(1, "Криминален", ""), "crime"));
+        assertTrue(CatalogRows.matches(title(1, "Екшън, Комедия", "8"), "action"));
+        assertTrue(CatalogRows.matches(title(1, "Фантастика", "8"), "scifi"));
+        assertTrue(CatalogRows.matches(title(1, "Sci-Fi", "8"), "scifi"));
+        assertTrue(CatalogRows.matches(title(1, "Криминален", "8"), "crime"));
         List<CatalogRows.Row> rows = CatalogRows.observeAndRead(context, "movies",
                 Arrays.asList(title(1, "Drama, Comedy", "8.0"), title(2, "Drama, Comedy", "8.0")), now);
         assertEquals(1, rows.size()); assertEquals("featured", rows.get(0).key);
@@ -99,7 +105,7 @@ public class CatalogRowsTest {
         assertEquals(1, first.size());
         List<String> featured = ids(Collections.singletonList(first.get(0)));
         List<CatalogRows.Row> later = CatalogRows.observeAndRead(context, "movies",
-                Arrays.asList(title(20, "Comedy", "6.4"), title(21, "Comedy", "6.4")), now + 1000);
+                Arrays.asList(title(20, "Comedy", "6.5"), title(21, "Comedy", "6.5")), now + 1000);
         assertEquals(2, later.size()); assertEquals("comedy", later.get(1).key);
         assertEquals(featured, ids(Collections.singletonList(later.get(0))));
         new fun.nyama.tv.Config(context).setPukankiBaseUrl("https://catalog.example.invalid");
@@ -110,6 +116,34 @@ public class CatalogRowsTest {
         assertEquals(java.util.Arrays.asList("Sci-Fi","Фантастика"),CatalogRows.catalogGenres("scifi",java.util.Arrays.asList("Family","Sci-Fi","Фантастика")));
         assertTrue(CatalogRows.catalogGenres("crime",java.util.Arrays.asList("Drama","Action")).isEmpty());
         assertTrue(CatalogRows.catalogGenres("featured",java.util.Arrays.asList("Action")).isEmpty());
+    }
+
+    @Test public void animationAliasesAreDistinctFromFamilyAndAllExpandedGenresUseRealLabels() {
+        for(String name:Arrays.asList("Animation","Animated","Анимация")) {
+            assertTrue(CatalogRows.matches(title(1,name,"6.5"),"animation"));
+            assertEquals(Arrays.asList(name),CatalogRows.catalogGenres("animation",Arrays.asList("Family",name,"Drama")));
+        }
+        assertFalse(CatalogRows.matches(title(1,"Family","9.0"),"animation"));
+        for(String[] pair:new String[][]{{"adventure","Adventure"},{"fantasy","Fantasy"},{"mystery","Mystery"},{"romance","Romance"},{"documentary","Documentary"},{"history","History"},{"war","War"},{"music","Music"},{"biography","Biography"}})
+            assertEquals(Arrays.asList(pair[1]),CatalogRows.catalogGenres(pair[0],Arrays.asList("Comedy",pair[1])));
+    }
+    @Test public void ratingBoundaryTypePosterProofAndEmptyPoolsAreEnforced() throws Exception {
+        List<CatalogItem> list=Arrays.asList(title(1,"Animation","6.49"),title(2,"Animation","6.5"),title(3,"Animation","10"),title(4,"Animation","NaN"),title(5,"Animation","8"));
+        java.lang.reflect.Field f=PukankiApi.class.getDeclaredField("TV_POSTER_AVAILABILITY");f.setAccessible(true);
+        ((Map<?,?>)f.get(null)).remove(new fun.nyama.tv.Config(context).pukankiBaseUrl()+"|tt1000005");
+        List<CatalogRows.Row> rows=CatalogRows.observeAndRead(context,"movies",list,now);
+        Set<String> admitted=new HashSet<>();for(CatalogRows.Row r:rows)for(CatalogItem i:r.items)admitted.add(i.id);
+        assertEquals(new HashSet<>(Arrays.asList("tt1000002","tt1000003")),admitted);
+        assertTrue(CatalogRows.observeAndRead(context,"series",list,now).isEmpty());
+    }
+    @Test public void oneEligibleTitleStaysStableAndUniformSamplingIsNotRatingOrder() {
+        List<CatalogRows.Row> first=CatalogRows.observeAndRead(context,"movies",Arrays.asList(title(1,"Drama","6.5")),now);
+        assertEquals(1,first.get(0).items.size());
+        assertEquals(first.get(0).items.get(0).id,CatalogRows.observeAndRead(context,"movies",Arrays.asList(title(2,"Drama","10")),now+1).get(0).items.get(0).id);
+        List<Integer> pool=new ArrayList<>();for(int i=0;i<100;i++)pool.add(i);
+        List<Integer> sample=DailyTitles.sample(pool,Collections.emptySet(),6,new Random(42));
+        assertEquals(6,new HashSet<>(sample).size());assertNotEquals(pool.subList(0,6),sample);
+        assertTrue(Collections.disjoint(sample,DailyTitles.sample(pool,new HashSet<>(sample),6,new Random(43))));
     }
 
 }

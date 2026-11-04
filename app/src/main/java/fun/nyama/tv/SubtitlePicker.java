@@ -28,7 +28,7 @@ final class SubtitlePicker implements AutoCloseable {
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private SubtitleApi api;
     private AlertDialog dialog;
-    private LinearLayout content;
+    private LinearLayout content, fallbackBar;
     private boolean closed, busy;
     private int generation;
     private String identity;
@@ -37,16 +37,22 @@ final class SubtitlePicker implements AutoCloseable {
     private SubtitleApi.Selection selected;
     private double offset;
     private int message;
+    private int nextPage;
+    private final boolean subsource;
 
     SubtitlePicker(Activity activity, Host host) { this(activity, host, () -> new SubtitleApi(activity.getApplicationContext())); }
     SubtitlePicker(Activity activity, Host host, java.util.function.Supplier<SubtitleApi> clients) {
-        this.activity = activity; this.host = host; this.clients = clients;
+        this.activity = activity; this.host = host; this.clients = clients; this.subsource = !new Config(activity).isPhoneMode();
     }
     boolean dispatch(KeyEvent event) { if (dialog != null && event != null) dialog.dispatchKeyEvent(event); return true; }
     boolean showing() { return dialog != null && dialog.isShowing(); }
     void show() {
         if (closed || showing()) return;
-        identity = host.url();
+        String nextIdentity = host.url();
+        if (identity != null && !Objects.equals(android.net.Uri.parse(identity).getPath(), android.net.Uri.parse(nextIdentity).getPath())) {
+            releases = Collections.emptyList(); selected = null; nextPage = 0; offset = 0; message = 0;
+        }
+        identity = nextIdentity;
         try { media = SubtitleMedia.fromUrl(identity); } catch (IllegalArgumentException generic) { media = null; }
         boolean vidapi = TvPlaybackSource.HOST.equals(android.net.Uri.parse(identity).getHost());
         if (!vidapi) { Toast.makeText(activity, R.string.subs_player2_only, Toast.LENGTH_LONG).show(); return; }
@@ -55,7 +61,13 @@ final class SubtitlePicker implements AutoCloseable {
         content = new LinearLayout(activity); content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(18), dp(8), dp(18), dp(12)); content.setBackgroundColor(0xFF141A23);
         scroll.addView(content);
-        dialog = new AlertDialog.Builder(activity).setTitle(R.string.player_subtitles).setView(scroll)
+        View panel = scroll;
+        if (subsource) {
+            LinearLayout fixed = new LinearLayout(activity); fixed.setOrientation(LinearLayout.VERTICAL); fixed.setBackgroundColor(0xFF141A23);
+            fallbackBar = new LinearLayout(activity); fallbackBar.setOrientation(LinearLayout.VERTICAL); fallbackBar.setPadding(dp(18),dp(6),dp(18),0);
+            fixed.addView(fallbackBar,new LinearLayout.LayoutParams(-1,-2));fixed.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));panel=fixed;
+        }
+        dialog = new AlertDialog.Builder(activity).setTitle(subsource ? R.string.subs_subsource_title : R.string.player_subtitles).setView(panel)
                 .setNegativeButton(R.string.subs_close, (d, w) -> {}).create();
         dialog.setOnKeyListener((d, code, event) -> {
             if (code == KeyEvent.KEYCODE_BACK || code == KeyEvent.KEYCODE_ESCAPE || code == KeyEvent.KEYCODE_MENU
@@ -65,7 +77,7 @@ final class SubtitlePicker implements AutoCloseable {
             }
             return false;
         });
-        dialog.setOnDismissListener(d -> { cancel(); dialog = null; content = null; if (!closed) host.focusPlayer(); });
+        dialog.setOnDismissListener(d -> { cancel(); dialog = null; content = null; fallbackBar = null; if (!closed) host.focusPlayer(); });
         draw();
         dialog.show();
         if (dialog.getWindow() != null) {
@@ -74,7 +86,8 @@ final class SubtitlePicker implements AutoCloseable {
                     (int) (activity.getResources().getDisplayMetrics().heightPixels * .85));
             dialog.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE);
         }
-        if (content.getChildCount() > 0) content.getChildAt(0).requestFocus();
+        if (subsource && fallbackBar != null && fallbackBar.getChildCount() > 0) fallbackBar.getChildAt(0).requestFocus();
+        else if (content.getChildCount() > 0) content.getChildAt(0).requestFocus();
     }
     private int dp(int n) { return (int) (n * activity.getResources().getDisplayMetrics().density + .5f); }
     private void text(String value) {
@@ -104,18 +117,23 @@ final class SubtitlePicker implements AutoCloseable {
         }
         content.removeAllViews();
         boolean custom = android.net.Uri.parse(host.url()).getQueryParameter("sub_url") != null;
-        button((custom ? "" : "✓ ") + s(R.string.subs_auto_bg), true, () -> {
+        Button automatic = button((custom ? "" : "✓ ") + s(R.string.subs_auto_bg), true, () -> {
             cancel(); draw(); host.apply(null, false, this::dismiss);
         });
-        button(s(R.string.subs_search), !busy && media != null, this::search);
-        text(s(R.string.subs_attribution));
+        if (fallbackBar != null) {
+            boolean restore = fallbackBar.hasFocus(); fallbackBar.removeAllViews(); content.removeView(automatic);
+            fallbackBar.addView(automatic,new LinearLayout.LayoutParams(-1,-2)); if (restore) automatic.requestFocus();
+        }
+        button(s(subsource ? R.string.subs_subsource_search : R.string.subs_search), !busy && media != null, () -> search(1));
+        text(s(subsource ? R.string.subs_subsource_attribution : R.string.subs_attribution));
         if (media == null) text(s(R.string.subs_episode_required));
-        if (busy) text(s(R.string.subs_loading));
+        if (busy) { ProgressBar spinner = new ProgressBar(activity); content.addView(spinner, new LinearLayout.LayoutParams(dp(32), dp(32))); text(s(R.string.subs_loading)); }
         else if (message != 0) text(s(message));
         if (custom) text(s(R.string.subs_selected) + ": " + SubtitleApi.label(android.net.Uri.parse(host.url()).getQueryParameter("sub_label")));
         for (SubtitleApi.Release r : releases) {
             button((selected != null && custom && selected.fileId == r.fileId ? "✓ " : "") + r.display(), !busy, () -> select(r.fileId, 0, false));
         }
+        if (subsource && nextPage > 0) button(s(R.string.subs_subsource_more), !busy, () -> search(nextPage));
         if (selected != null && custom) {
             text(activity.getString(R.string.subs_offset, String.format(Locale.ROOT, "%+.1f", offset)));
             button(s(R.string.subs_earlier), !busy && offset > -10, () -> { offset -= .5; draw(); });
@@ -133,12 +151,18 @@ final class SubtitlePicker implements AutoCloseable {
         return !closed && showing() && request == generation && url.equals(identity) && identity.equals(host.url())
                 && !activity.isFinishing() && !activity.isDestroyed();
     }
-    private void search() {
+    private void search(int page) {
         if (busy || media == null) return;
         final SubtitleMedia requested = media;
         run(client -> {
-            List<SubtitleApi.Release> found = client.search(requested);
-            return () -> { releases = found; message = found.isEmpty() ? R.string.subs_empty : 0; draw(); };
+            SubtitleApi.Page found = client.searchPage(requested, page);
+            return () -> {
+                List<SubtitleApi.Release> merged = page == 1 ? new ArrayList<>() : new ArrayList<>(releases);
+                Set<Long> ids = new HashSet<>(); for (SubtitleApi.Release release : merged) ids.add(release.fileId);
+                for (SubtitleApi.Release release : found.releases) if (ids.add(release.fileId) && merged.size() < 400) merged.add(release);
+                releases = merged; nextPage = found.next;
+                message = releases.isEmpty() ? R.string.subs_empty : 0; draw();
+            };
         });
     }
     private void select(long fileId, double shift, boolean timing) {

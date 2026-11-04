@@ -406,6 +406,57 @@ public final class PukankiApi {
         return visible;
     }
 
+    /** Local evidence only. Recommendation admission must never launch its own poster probe. */
+    static boolean hasVerifiedTvPoster(Context context, String id) {
+        String base = new Config(context).pukankiBaseUrl();
+        if (Boolean.TRUE.equals(TV_POSTER_AVAILABILITY.get(base + "|" + id))) return true;
+        java.io.File poster = new java.io.File(new java.io.File(context.getCacheDir(), "pukanki_posters"), id + ".jpg");
+        return TvPlaybackSource.validImdb(id) && poster.isFile() && poster.length() > 512;
+    }
+
+    /** Once/day background diversity: at most 3 catalog pages and 24 poster probes, 6 in flight. */
+    interface RecommendationPage { List<CatalogItem> fetch(int page) throws Exception; }
+    interface RecommendationPosters { List<CatalogItem> verify(List<CatalogItem> candidates) throws Exception; }
+    static List<CatalogItem> recommendationCandidates(Context context, String section, int pages, long now) throws Exception {
+        return recommendationCandidates(context, section, pages, now,
+                page -> parseItems(fetchCatalogRoot(context, section, page, 30, "", java.util.Collections.emptyList(), "reviews", false, "")),
+                candidates -> validateTvPostersFast(context, candidates));
+    }
+    @android.annotation.SuppressLint("ApplySharedPref") // Worker only: persist the attempt before network work.
+    static List<CatalogItem> recommendationCandidates(Context context, String section, int pages, long now,
+            RecommendationPage source, RecommendationPosters posters) throws Exception {
+        String key = new Config(context).pukankiBaseUrl() + "|" + section;
+        android.content.SharedPreferences p = context.getSharedPreferences("nyama_recommendation_warmup", 0);
+        String day = new java.text.SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).format(new java.util.Date(now));
+        synchronized (PukankiApi.class) {
+            if (day.equals(p.getString(key, ""))) return java.util.Collections.emptyList();
+            p.edit().putString(key, day).commit(); // Mark attempts as well as success: no recreation retry storm.
+        }
+        List<CatalogItem> raw = getCachedRawTvCatalog(context, section, java.util.Collections.emptyList(), "reviews", false, "");
+        if (raw == null) {
+            raw = new ArrayList<>();
+            java.util.Set<Integer> selected = new java.util.LinkedHashSet<>();
+            java.util.Random random = new java.security.SecureRandom();
+            int maximum = Math.max(1, pages);
+            // Floyd's uniform page sample without allocating the entire page range.
+            int size = Math.min(3, maximum - 1);
+            for (int j = maximum - size; j < maximum; j++) {
+                int pick = 1 + random.nextInt(j);
+                selected.add(selected.contains(pick + 1) ? j + 1 : pick + 1);
+            }
+            List<Callable<List<CatalogItem>>> requests = new ArrayList<>();
+            for (int page : selected) requests.add(() -> source.fetch(page));
+            for (Future<List<CatalogItem>> request : CATALOG_SCAN.invokeAll(requests, 8, TimeUnit.SECONDS)) {
+                if (request.isCancelled()) continue;
+                try { raw.addAll(request.get()); } catch (Exception unavailable) { /* Reuse other observed pages. */ }
+            }
+        }
+        List<CatalogItem> eligible = new ArrayList<>();
+        for (CatalogItem item : raw) if (DailyTitles.eligible(item) && DailyTitles.typeMatches(item, section)) eligible.add(item);
+        eligible = DailyTitles.sample(eligible, java.util.Collections.emptySet(), 24, new java.security.SecureRandom());
+        return posters.verify(eligible);
+    }
+
     private static PosterProbe probePosterForTv(Context context, String imdbId) {
         if (imdbId == null || imdbId.trim().isEmpty()) return PosterProbe.MISSING;
         String key = new Config(context).pukankiBaseUrl() + "|" + imdbId;

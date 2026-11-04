@@ -1,3 +1,10 @@
+## 1.0.44 / versionCode 46
+- Android TV: SubSource-first explicit Bulgarian subtitle search, paged release browsing, same-host signed VTT delivery and persistent automatic VidAPI Bulgarian fallback.
+- Added an opt-in PHP SubSource API/ZIP service, bounded caches/quotas, exact episode validation and an adapter for the existing authoritative activation helper. No production deployment or DNS change.
+- TV daily Movie/Series recommendation rows now sample only verified IMDb 6.5–10 titles with poster evidence, preserve same-day choices, rotate by device-local date and warm a bounded diverse candidate pool.
+- Expanded movie genre rows including Animation, using real backend aliases, and kept selected category headings above results through pagination and state restoration.
+- Removed the shared metadata alias that relabelled TMDb vote_average as IMDb. Ordinary browsing/search and mobile UI behavior remain unchanged.
+
 ## 1.0.19 / versionCode 21
 - Mobile landscape Movies/Series: widened the navigation sidebar responsively so localized Television, Movies, Series, and Settings labels remain fully visible.
 - Mobile landscape navigation now reuses the Android TV vector icons while preserving the existing active-item accent highlight.

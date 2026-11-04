@@ -192,8 +192,8 @@ public class TvCatalogRefinementTest {
         View home = (View) get("homeRows");
         assertEquals(View.VISIBLE, home.getVisibility()); assertEquals(View.GONE, grid.getVisibility());
         LinearLayout stack=(LinearLayout)get("tvBrowseStack");
-        assertSame(get("rowContainer"),stack.getChildAt(0));assertSame(get("moreHeading"),stack.getChildAt(1));
-        assertSame(grid,stack.getChildAt(2));assertEquals("catalog-pagination",stack.getChildAt(3).getTag());
+        assertSame(get("rowContainer"),stack.getChildAt(0));assertNotSame(stack,((View)get("moreHeading")).getParent());
+        assertSame(grid,stack.getChildAt(1));assertEquals("catalog-pagination",stack.getChildAt(2).getTag());
         assertEquals(18,grid.getCount());assertEquals(View.GONE,((View)get("paging")).getVisibility());assertEquals(View.GONE,((View)get("moreHeading")).getVisibility());
         @SuppressWarnings("unchecked") List<View> cards = (List<View>) get("rowCards");
         assertTrue(cards.size() > 6 && cards.size() <= 42);
@@ -587,6 +587,31 @@ public class TvCatalogRefinementTest {
         change.invoke(activity,-1);phoneResult(phoneGeneration(),new CatalogPage(items,90,2,3));
         invoke("loadPhonePage");grid.setSelectionFromTop(18,-20);phoneLayout(360,800);
         assertTrue(grid.getFirstVisiblePosition()>0);assertEquals(2,get("page"));
+    }
+
+    @Test public void animationBrowseHeadingStaysVisibleAcrossPagesStateAndLanguageThenClearsForSearch() throws Exception {
+        catalog("movies",false);new fun.nyama.tv.Config(activity).setLanguage("en");set("availableGenres",Arrays.asList("Animation","Family"));
+        List<CatalogItem> all=new ArrayList<>();for(CatalogItem i:titles(35))all.add(new CatalogItem(i.id,"movie",i.title,"","2024","","90","Animation","8.0","100","",""));
+        PukankiApi.cacheVisibleTvCatalog(activity,"movies",Arrays.asList("Animation"),"reviews",false,new MovieFavorites(activity).csv(),all);
+        Method open=CatalogActivity.class.getDeclaredMethod("openCategoryBrowse",CatalogRows.Row.class);open.setAccessible(true);
+        open.invoke(activity,new CatalogRows.Row("animation","Анимация","Animation",all.subList(0,6)));layout();
+        android.widget.TextView heading=(android.widget.TextView)get("moreHeading");assertEquals("Animation",heading.getText().toString());assertEquals(View.VISIBLE,heading.getVisibility());
+        assertNotSame(get("tvBrowseStack"),heading.getParent());assertEquals(Arrays.asList("Animation"),genres());
+        ((Button)get("next")).performClick();layout();assertEquals("Animation",heading.getText().toString());assertEquals(2,get("page"));
+        android.os.Bundle state=new android.os.Bundle();Method save=CatalogActivity.class.getDeclaredMethod("onSaveInstanceState",android.os.Bundle.class);save.setAccessible(true);save.invoke(activity,state);
+        assertEquals("animation",state.getString("browse_category"));
+        new fun.nyama.tv.Config(activity).setLanguage("bg");invoke("updateDailyRow");assertEquals("Анимация",heading.getText().toString());
+        search().setText("Movie");invoke("handleSearchChanged");layout();assertEquals("Резултати",heading.getText().toString());
+    }
+
+    @Test public void realAnimationCategoryRemainsReachableWithoutInventingLowRatedRecommendations() throws Exception {
+        catalog("movies",false);new fun.nyama.tv.Config(activity).setLanguage("en");set("availableGenres",Arrays.asList("Animation"));
+        List<CatalogItem> low=new ArrayList<>();for(CatalogItem i:titles(4))low.add(new CatalogItem(i.id,"movie",i.title,"","2024","","90","Animation","5.0","100","",""));
+        PukankiApi.cacheVisibleTvCatalog(activity,"movies",Arrays.asList("Animation"),"reviews",false,new MovieFavorites(activity).csv(),low);
+        Method render=CatalogActivity.class.getDeclaredMethod("renderRows",List.class);render.setAccessible(true);render.invoke(activity,Collections.emptyList());layout();
+        View more=root.findViewWithTag("catalog-more-animation");assertNotNull(more);
+        assertTrue(((List<?>)get("rowCards")).isEmpty());more.performClick();layout();
+        assertEquals("Animation",((android.widget.TextView)get("moreHeading")).getText().toString());assertEquals(4,grid.getCount());
     }
 
 }

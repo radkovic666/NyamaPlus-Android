@@ -10,8 +10,9 @@ final class TvTitleInfo {
         alias(out, "Plot", "overview", "description", "summary");
         alias(out, "Released", "first_air_date", "release_date");
         alias(out, "Year", "year", "first_air_date");
-        alias(out, "imdbRating", "rating", "vote_average");
-        alias(out, "imdbVotes", "votes", "vote_count");
+        // Pukanki catalog rating is IMDb (owner confirmed); TMDb vote_average is a different source.
+        alias(out, "imdbRating", "rating");
+        alias(out, "imdbVotes", "votes");
         alias(out, "totalSeasons", "number_of_seasons");
         alias(out, "totalEpisodes", "number_of_episodes");
         alias(out, "Runtime", "runtime");

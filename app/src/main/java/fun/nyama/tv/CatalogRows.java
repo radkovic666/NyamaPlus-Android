@@ -28,11 +28,21 @@ final class CatalogRows {
     }
     private static final String[][] MOVIES = {
             {"featured", "Избрани днес", "Selected today"}, {"action", "Екшън", "Action"},
-            {"comedy", "Комедии", "Comedy"}, {"horror", "Ужаси", "Horror"},
-            {"family", "Семейни", "Family"}, {"thriller", "Трилъри", "Thriller"}, {"drama", "Драма", "Drama"}};
+            {"animation", "Анимация", "Animation"}, {"adventure", "Приключенски", "Adventure"},
+            {"comedy", "Комедии", "Comedy"}, {"scifi", "Научна фантастика", "Sci-Fi"},
+            {"fantasy", "Фентъзи", "Fantasy"}, {"crime", "Криминални", "Crime"},
+            {"mystery", "Мистерия", "Mystery"}, {"family", "Семейни", "Family"},
+            {"thriller", "Трилъри", "Thriller"}, {"drama", "Драма", "Drama"},
+            {"horror", "Ужаси", "Horror"}, {"romance", "Романтични", "Romance"},
+            {"documentary", "Документални", "Documentary"}, {"history", "Исторически", "History"},
+            {"war", "Военни", "War"}, {"music", "Музикални", "Music"}, {"biography", "Биографични", "Biography"}};
     private static final String[][] SERIES = {
-            MOVIES[0], MOVIES[1], MOVIES[2], {"crime", "Криминални", "Crime"}, MOVIES[6],
-            {"scifi", "Фантастика", "Sci-Fi"}, MOVIES[4]};
+            MOVIES[0], MOVIES[1], MOVIES[4], MOVIES[7], MOVIES[11], MOVIES[5], MOVIES[9]};
+
+    static String categoryLabel(String key, boolean english) {
+        for (String[] row : MOVIES) if (row[0].equals(key)) return row[english ? 2 : 1];
+        return "";
+    }
 
     // Serialize read/merge/write across Activity recreation. No network operations in this class.
     static synchronized List<Row> observeAndRead(Context context, String section, List<CatalogItem> verified, long now) {
@@ -41,7 +51,10 @@ final class CatalogRows {
             SharedPreferences preferences = context.getSharedPreferences("nyama_catalog_rows", 0);
             String key = new Config(context).pukankiBaseUrl() + "|" + section;
             String day = new SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).format(new Date(now));
-            JSONObject selection = preferences.getInt(key + ":selection_version", 0) == 2
+            boolean newDay = !day.equals(preferences.getString(key + ":day", ""));
+            long seed = newDay || preferences.getInt(key + ":selection_version", 0) != 3
+                    ? new java.security.SecureRandom().nextLong() : preferences.getLong(key + ":seed", 0);
+            JSONObject selection = preferences.getInt(key + ":selection_version", 0) == 3
                     && day.equals(preferences.getString(key + ":day", ""))
                     ? new JSONObject(preferences.getString(key + ":selection", "{}")) : new JSONObject();
             Set<String> pinned = new HashSet<>();
@@ -49,10 +62,15 @@ final class CatalogRows {
                 JSONArray saved = selection.optJSONArray(row);
                 if(saved!=null)for(int i=0;i<saved.length();i++)pinned.add(saved.optString(i));
             }
-            JSONObject pool = new JSONObject(preferences.getString(key + ":pool", "{}"));
+            JSONObject pool = preferences.getInt(key + ":selection_version", 0) == 3
+                    ? new JSONObject(preferences.getString(key + ":pool", "{}")) : new JSONObject();
+            JSONObject yesterday = new JSONObject(preferences.getString(key + ":selection", "{}"));
             for (String id : keys(pool)) if (!pinned.contains(id) && now - pool.getJSONObject(id).optLong("at") > TTL_MS) pool.remove(id);
             for (CatalogItem item : verified) {
                 if (item == null || !TvPlaybackSource.validImdb(item.id)) continue;
+                if (!DailyTitles.eligible(item) || !DailyTitles.typeMatches(item, section) || !PukankiApi.hasVerifiedTvPoster(context, item.id)) {
+                    pool.remove(item.id); continue;
+                }
                 pool.put(item.id, new JSONObject().put("id", item.id).put("type", item.type).put("title", item.title)
                         .put("originalTitle", item.originalTitle).put("year", item.year).put("endYear", item.endYear)
                         .put("runtime", item.runtime).put("genres", item.genres).put("rating", item.rating)
@@ -68,30 +86,28 @@ final class CatalogRows {
                 JSONArray prior = selection.optJSONArray(definition[0]);
                 if (prior != null) for (int i = 0; i < prior.length(); i++) {
                     JSONObject value = pool.optJSONObject(prior.optString(i));
-                    if (value != null && matches(CatalogItem.fromJson(value), definition[0])) chosen.add(CatalogItem.fromJson(value));
+                    if (value != null && DailyTitles.typeMatches(CatalogItem.fromJson(value), section) && matches(CatalogItem.fromJson(value), definition[0])) chosen.add(CatalogItem.fromJson(value));
                 }
-                // Keep an existing row stable for the day; fill newly available rows without reshuffling it.
-                if (chosen.size() < 2) {
+                // A nonempty saved row stays fixed, including small pools; later pages add missing genres only.
+                if (prior == null) {
                     chosen.clear();
                     List<CatalogItem> candidates = new ArrayList<>();
                     for (String id : keys(pool)) {
                         CatalogItem item = CatalogItem.fromJson(pool.getJSONObject(id));
-                        if (matches(item, definition[0])) candidates.add(item);
+                        if (DailyTitles.typeMatches(item, section) && matches(item, definition[0])) candidates.add(item);
                     }
                     candidates.sort(Comparator.comparing(item -> item.id));
-                    Collections.shuffle(candidates, new Random(day.hashCode() * 31L + section.hashCode() * 17L + definition[0].hashCode()));
-                    // Preserve the day's shuffle; ratings are metadata, not an admission gate.
-                    candidates.sort(Comparator.comparingInt(item -> used.contains(item.id) ? 1 : 0));
-                    for (CatalogItem item : candidates) {
-                        if (used.contains(item.id)) continue;
-                        chosen.add(item); if (chosen.size() == 6) break;
+                    List<CatalogItem> unused = new ArrayList<>();
+                    for (CatalogItem item : candidates) if (!used.contains(item.id)) unused.add(item);
+                    if (!unused.isEmpty()) candidates = unused;
+                    Set<String> oldIds = new HashSet<>();
+                    if (newDay) {
+                        JSONArray old = yesterday.optJSONArray(definition[0]);
+                        if (old != null) for (int i = 0; i < old.length(); i++) oldIds.add(old.optString(i));
                     }
-                    // Reuse only enough to make a useful row when the small observed pool has few alternatives.
-                    for (CatalogItem item : candidates) {
-                        if (chosen.size() >= 2) break;
-                        if (!chosen.contains(item)) chosen.add(item);
-                    }
-                    if (chosen.size() < 2) continue;
+                    Set<CatalogItem> old = new HashSet<>(); for (CatalogItem item : candidates) if (oldIds.contains(item.id)) old.add(item);
+                    chosen.addAll(DailyTitles.sample(candidates, old, 6, new Random(seed ^ definition[0].hashCode())));
+                    if (chosen.isEmpty()) continue;
                     // Avoid an identical row of the same titles under a different heading.
                     Set<String> proposed = new HashSet<>(); for (CatalogItem item : chosen) proposed.add(item.id);
                     boolean duplicate = false;
@@ -103,24 +119,25 @@ final class CatalogRows {
                     JSONArray saved = new JSONArray(); for (CatalogItem item : chosen) saved.put(item.id);
                     selection.put(definition[0], saved);
                 }
+                if (chosen.isEmpty()) continue;
                 for (CatalogItem item : chosen) used.add(item.id);
                 result.add(new Row(definition[0], definition[1], definition[2], chosen));
             }
-            preferences.edit().putString(key + ":pool", pool.toString()).putString(key + ":day", day)
-                    .putInt(key + ":selection_version", 2)
+            preferences.edit().putLong(key + ":seed", seed).putString(key + ":pool", pool.toString()).putString(key + ":day", day)
+                    .putInt(key + ":selection_version", 3)
                     .putString(key + ":selection", selection.toString()).apply();
         } catch (Exception ignored) { /* Keep normal paginated browsing available. */ }
         return result;
     }
 
     static boolean matches(CatalogItem item, String genre) {
-        if (item == null) return false;
-        if ("featured".equals(genre)) return item != null && TvPlaybackSource.validImdb(item.id);
+        if (!DailyTitles.eligible(item)) return false;
+        if ("featured".equals(genre)) return true;
         return genreMatches(item.genres, genre);
     }
 
     private static boolean genreMatches(String genres, String genre) {
-        String value = genres.toLowerCase(Locale.ROOT);
+        String value = genres == null ? "" : genres.toLowerCase(Locale.ROOT);
         switch (genre) {
             case "action": return value.contains("action") || value.contains("екшън");
             case "comedy": return value.contains("comedy") || value.contains("комеди");
@@ -129,6 +146,16 @@ final class CatalogRows {
             case "thriller": return value.contains("thriller") || value.contains("трилър");
             case "drama": return value.contains("drama") || value.contains("драма");
             case "crime": return value.contains("crime") || value.contains("криминал");
+            case "animation": return value.contains("animation") || value.contains("animated") || value.contains("анимац");
+            case "adventure": return value.contains("adventure") || value.contains("приключ");
+            case "fantasy": return value.contains("fantasy") || value.contains("фентъз");
+            case "mystery": return value.contains("mystery") || value.contains("мистер") || value.contains("мистери");
+            case "romance": return value.contains("romance") || value.contains("romantic") || value.contains("романт");
+            case "documentary": return value.contains("documentary") || value.contains("документ");
+            case "history": return value.contains("history") || value.contains("historical") || value.contains("историч");
+            case "war": return value.matches(".*(?:^|[,;/ ]|\\b)war(?:$|[,;/ ]|\\b).*") || value.contains("военн");
+            case "music": return value.contains("music") || value.contains("музик");
+            case "biography": return value.contains("biography") || value.contains("biographical") || value.contains("биограф");
             case "scifi": return value.contains("sci-fi") || value.contains("sci fi") || value.contains("science fiction") || value.contains("фантаст");
             default: return false;
         }

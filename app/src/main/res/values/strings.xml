@@ -219,4 +219,11 @@ Install the new version now?</string>
     <string name="subs_reload_notice">Selecting a file may reload the player. Use Automatic Bulgarian if the provider cannot load it. Subtitle availability depends on the provider.</string>
     <string name="subs_restart_confirm">The provider has not supplied a current position. Changing subtitles may restart this title. Playback is requested paused; you may need to press Play. Continue?</string>
     <string name="subs_file_failed">The selected subtitle fetch failed. Returning to Automatic Bulgarian when a safe position is available; a restart needs confirmation.</string>
+    <string name="subs_subsource_title">Bulgarian subtitles — SubSource</string>
+    <string name="subs_subsource_search">Search SubSource</string>
+    <string name="subs_subsource_attribution">Bulgarian releases supplied by SubSource. Search runs only on request.</string>
+    <string name="subs_subsource_more">More SubSource results</string>
+    <string name="daily_preparing">Preparing daily recommendations…</string>
+    <string name="daily_no_verified">No verified IMDb 6.5–10 titles with posters are available. Use filters or search to browse the catalog.</string>
+    <string name="daily_ready"></string>
 </resources>
